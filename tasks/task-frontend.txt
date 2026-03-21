@@ -1,0 +1,2812 @@
+ 📋 FULL PLAN: BUILD BLOG FRONTEND APP
+
+  ▎ Dựa trên phân tích main.txt (business logic + backend plan) và task-claude.txt (task management)
+
+  ---
+  🎯 TỔNG QUAN DỰ ÁN
+
+  Business Model (từ main.txt)
+
+  - Đăng bài blog: MIỄN PHÍ cho tác giả
+  - Comment thường: MIỄN PHÍ
+  - Question (câu hỏi trả phí): 1.000đ/câu
+    - Hỏi tác giả → tiền vào ví tác giả
+    - Hỏi @AI → tiền vào ví hệ thống (AI trả lời dựa trên RAG)
+  - Ví nội bộ (In-app Wallet): Nạp/rút xu
+  - Hoàn tiền tự động: Nếu tác giả không trả lời trong 48h
+  - Highlight Question: Câu hỏi trả phí được ghim, đóng khung nổi bật
+
+  ---
+  🏗️  TECH STACK FRONTEND
+
+  ┌─────────────────────────────────────────────────┐
+  │                 TECH STACK                       │
+  ├─────────────────────────────────────────────────┤
+  │  Framework:      Next.js 14+ (App Router)       │
+  │  Language:       TypeScript                      │
+  │  State:          Zustand + TanStack Query        │
+  │  Styling:        Tailwind CSS + shadcn/ui        │
+  │  Forms:          React Hook Form + Zod           │
+  │  Editor:         TipTap (Rich Text Editor)       │
+  │  Real-time:      Socket.IO Client                │
+  │  Payment UI:     Custom Wallet Components        │
+  │  Auth:           JWT (Access + Refresh Token)    │
+  │  HTTP Client:    Axios (interceptor refresh)     │
+  │  Charts:         Recharts (Dashboard)            │
+  │  Testing:        Vitest + Testing Library        │
+  │  Deploy:         Docker + Vercel/VPS             │
+  └─────────────────────────────────────────────────┘
+
+  ---
+  📁 CẤU TRÚC THƯ MỤC
+
+  src/
+  ├── app/                          # Next.js App Router
+  │   ├── (auth)/                   # Auth group layout
+  │   │   ├── login/page.tsx
+  │   │   ├── register/page.tsx
+  │   │   └── forgot-password/page.tsx
+  │   │
+  │   ├── (main)/                   # Main app layout (có navbar, sidebar)
+  │   │   ├── page.tsx              # Homepage - Feed bài viết
+  │   │   ├── explore/page.tsx      # Khám phá bài viết trending
+  │   │   ├── posts/
+  │   │   │   ├── [slug]/page.tsx   # Chi tiết bài viết (SSR)
+  │   │   │   └── new/page.tsx      # Tạo bài viết mới
+  │   │   │   └── [slug]/edit/page.tsx
+  │   │   │
+  │   │   ├── profile/
+  │   │   │   ├── [username]/page.tsx    # Profile công khai
+  │   │   │   └── settings/page.tsx      # Cài đặt tài khoản
+  │   │   │
+  │   │   ├── wallet/
+  │   │   │   ├── page.tsx               # Ví - Số dư + Lịch sử GD
+  │   │   │   ├── deposit/page.tsx       # Nạp tiền
+  │   │   │   └── withdraw/page.tsx      # Rút tiền
+  │   │   │
+  │   │   ├── dashboard/                 # Dashboard tác giả
+  │   │   │   ├── page.tsx               # Tổng quan thu nhập
+  │   │   │   ├── posts/page.tsx         # Quản lý bài viết
+  │   │   │   ├── questions/page.tsx     # Quản lý câu hỏi cần trả lời
+  │   │   │   └── earnings/page.tsx      # Chi tiết doanh thu
+  │   │   │
+  │   │   └── notifications/page.tsx     # Thông báo
+  │   │
+  │   ├── admin/                    # Admin panel
+  │   │   ├── page.tsx              # Admin dashboard
+  │   │   ├── users/page.tsx
+  │   │   ├── posts/page.tsx
+  │   │   ├── transactions/page.tsx
+  │   │   └── withdrawals/page.tsx  # Duyệt rút tiền
+  │   │
+  │   ├── layout.tsx                # Root layout
+  │   ├── loading.tsx
+  │   ├── error.tsx
+  │   └── not-found.tsx
+  │
+  ├── components/
+  │   ├── ui/                       # shadcn/ui components
+  │   │   ├── button.tsx
+  │   │   ├── card.tsx
+  │   │   ├── dialog.tsx
+  │   │   ├── dropdown-menu.tsx
+  │   │   ├── input.tsx
+  │   │   ├── badge.tsx
+  │   │   ├── avatar.tsx
+  │   │   ├── skeleton.tsx
+  │   │   ├── toast.tsx
+  │   │   ├── tabs.tsx
+  │   │   └── sheet.tsx
+  │   │
+  │   ├── layout/
+  │   │   ├── Navbar.tsx
+  │   │   ├── Sidebar.tsx
+  │   │   ├── Footer.tsx
+  │   │   ├── MobileNav.tsx
+  │   │   └── WalletBadge.tsx       # Hiện số dư trên navbar
+  │   │
+  │   ├── auth/
+  │   │   ├── LoginForm.tsx
+  │   │   ├── RegisterForm.tsx
+  │   │   ├── AuthGuard.tsx         # HOC bảo vệ route
+  │   │   └── SocialLogin.tsx
+  │   │
+  │   ├── posts/
+  │   │   ├── PostCard.tsx          # Card bài viết trong feed
+  │   │   ├── PostDetail.tsx        # Nội dung chi tiết bài viết
+  │   │   ├── PostEditor.tsx        # TipTap editor wrapper
+  │   │   ├── PostActions.tsx       # Like, bookmark, share
+  │   │   ├── PostMeta.tsx          # Tác giả, ngày, thời gian đọc
+  │   │   ├── CategoryFilter.tsx
+  │   │   ├── TagList.tsx
+  │   │   └── TextSelectionPopup.tsx # Popup "Hỏi AI (1.000đ)" khi bôi đen
+  │   │
+  │   ├── comments/
+  │   │   ├── CommentSection.tsx    # Container comments
+  │   │   ├── CommentItem.tsx       # 1 comment đơn lẻ
+  │   │   ├── CommentForm.tsx       # Form viết comment (FREE)
+  │   │   └── QuestionSuggestion.tsx # Popup gợi ý chuyển sang Question
+  │   │
+  │   ├── questions/
+  │   │   ├── QuestionSection.tsx   # Container câu hỏi trả phí
+  │   │   ├── QuestionItem.tsx      # 1 câu hỏi (có khung highlight)
+  │   │   ├── QuestionForm.tsx      # Form đặt câu hỏi (1.000đ)
+  │   │   ├── QuestionTargetSelect.tsx  # Chọn hỏi Tác giả / @AI
+  │   │   ├── AIAnswerDisplay.tsx   # Hiển thị câu trả lời AI
+  │   │   ├── AuthorAnswerForm.tsx  # Form tác giả trả lời
+  │   │   ├── RefundCountdown.tsx   # Đếm ngược 48h hoàn tiền
+  │   │   └── PaymentConfirmDialog.tsx  # Dialog xác nhận trừ 1.000đ
+  │   │
+  │   ├── wallet/
+  │   │   ├── WalletOverview.tsx    # Card tổng quan ví
+  │   │   ├── BalanceDisplay.tsx    # Hiện số dư (xu)
+  │   │   ├── TransactionList.tsx   # Danh sách giao dịch
+  │   │   ├── TransactionItem.tsx   # 1 giao dịch
+  │   │   ├── DepositForm.tsx       # Form nạp tiền
+  │   │   ├── WithdrawForm.tsx      # Form rút tiền
+  │   │   ├── PaymentMethodSelect.tsx  # Chọn VNPay/MoMo
+  │   │   └── InsufficientBalance.tsx  # Dialog báo hết tiền
+  │   │
+  │   ├── dashboard/
+  │   │   ├── EarningsChart.tsx     # Biểu đồ doanh thu
+  │   │   ├── StatsCards.tsx        # Card thống kê
+  │   │   ├── PendingQuestions.tsx   # Câu hỏi chưa trả lời
+  │   │   ├── RecentActivity.tsx
+  │   │   └── TopPosts.tsx
+  │   │
+  │   ├── profile/
+  │   │   ├── ProfileHeader.tsx
+  │   │   ├── ProfilePosts.tsx
+  │   │   ├── ProfileStats.tsx
+  │   │   └── EditProfileForm.tsx
+  │   │
+  │   ├── notifications/
+  │   │   ├── NotificationList.tsx
+  │   │   ├── NotificationItem.tsx
+  │   │   └── NotificationBell.tsx  # Bell icon trên navbar
+  │   │
+  │   └── shared/
+  │       ├── LoadingSpinner.tsx
+  │       ├── EmptyState.tsx
+  │       ├── ErrorBoundary.tsx
+  │       ├── InfiniteScroll.tsx
+  │       ├── SearchBar.tsx
+  │       ├── Pagination.tsx
+  │       ├── ConfirmDialog.tsx
+  │       ├── RichTextRenderer.tsx  # Render HTML từ TipTap
+  │       └── SEOHead.tsx
+  │
+  ├── hooks/
+  │   ├── useAuth.ts                # Hook auth state
+  │   ├── useWallet.ts              # Hook wallet balance
+  │   ├── usePosts.ts               # Hook CRUD posts
+  │   ├── useComments.ts            # Hook comments
+  │   ├── useQuestions.ts           # Hook questions (tạo/trả lời)
+  │   ├── useNotifications.ts       # Hook notifications real-time
+  │   ├── useSocket.ts              # Hook Socket.IO connection
+  │   ├── useTextSelection.ts       # Hook detect bôi đen text
+  │   ├── useInfiniteScroll.ts
+  │   ├── useDebounce.ts
+  │   └── useMediaQuery.ts
+  │
+  ├── stores/
+  │   ├── authStore.ts              # Zustand: user, tokens
+  │   ├── walletStore.ts            # Zustand: balance, transactions
+  │   ├── notificationStore.ts      # Zustand: unread count
+  │   ├── editorStore.ts            # Zustand: draft, editor state
+  │   └── uiStore.ts                # Zustand: sidebar, theme, modals
+  │
+  ├── services/
+  │   ├── api/
+  │   │   ├── client.ts             # Axios instance + interceptors
+  │   │   ├── auth.api.ts           # Login, register, refresh
+  │   │   ├── posts.api.ts          # CRUD posts
+  │   │   ├── comments.api.ts       # CRUD comments
+  │   │   ├── questions.api.ts      # CRUD questions
+  │   │   ├── wallet.api.ts         # Balance, deposit, withdraw
+  │   │   ├── users.api.ts          # Profile, settings
+  │   │   ├── notifications.api.ts  # Get notifications
+  │   │   ├── upload.api.ts         # Upload images (MinIO)
+  │   │   └── admin.api.ts          # Admin endpoints
+  │   │
+  │   └── socket/
+  │       ├── socketClient.ts       # Socket.IO setup
+  │       └── events.ts             # Event constants
+  │
+  ├── lib/
+  │   ├── utils.ts                  # cn(), formatCurrency(), etc.
+  │   ├── constants.ts              # API_URL, SOCKET_URL, FEE_AMOUNT
+  │   ├── validators.ts             # Zod schemas
+  │   └── formatters.ts             # Date, currency, number formatters
+  │
+  ├── types/
+  │   ├── auth.types.ts
+  │   ├── post.types.ts
+  │   ├── comment.types.ts
+  │   ├── question.types.ts
+  │   ├── wallet.types.ts
+  │   ├── user.types.ts
+  │   ├── notification.types.ts
+  │   └── api.types.ts              # Generic API response types
+  │
+  ├── styles/
+  │   └── globals.css               # Tailwind imports + custom styles
+  │
+  └── middleware.ts                  # Next.js middleware (auth redirect)
+
+  ---
+  🔄 PHASE-BY-PHASE DEVELOPMENT PLAN
+
+  ---
+  📌 PHASE 1: PROJECT SETUP + FOUNDATION (Tuần 1)
+
+  Task 1.1: Khởi tạo dự án
+
+  # Khởi tạo Next.js + TypeScript
+  npx create-next-app@latest blog-frontend --typescript --tailwind --eslint --app --src-dir
+
+  # Cài đặt core dependencies
+  npm install zustand @tanstack/react-query axios
+  npm install react-hook-form @hookform/resolvers zod
+  npm install socket.io-client
+  npm install date-fns
+  npm install lucide-react  # Icons
+
+  # shadcn/ui
+  npx shadcn-ui@latest init
+  npx shadcn-ui@latest add button card dialog input badge avatar skeleton toast tabs sheet dropdown-menu separator scroll-area
+
+  # Dev dependencies
+  npm install -D @types/node prettier eslint-config-prettier
+
+  Task 1.2: Cấu trúc thư mục cơ bản
+
+  - Tạo toàn bộ cấu trúc thư mục như trên
+  - Setup path aliases trong tsconfig.json
+
+  Task 1.3: Axios Client + Interceptors
+
+  // services/api/client.ts
+  import axios from 'axios';
+  import { useAuthStore } from '@/stores/authStore';
+
+  const apiClient = axios.create({
+    baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api/v1',
+    timeout: 15000,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  // Request interceptor: Attach JWT
+  apiClient.interceptors.request.use((config) => {
+    const token = useAuthStore.getState().accessToken;
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  });
+
+  // Response interceptor: Auto refresh token
+  apiClient.interceptors.response.use(
+    (response) => response,
+    async (error) => {
+      const originalRequest = error.config;
+
+      if (error.response?.status === 401 && !originalRequest._retry) {
+        originalRequest._retry = true;
+
+        try {
+          const refreshToken = useAuthStore.getState().refreshToken;
+          const { data } = await axios.post(
+            `${process.env.NEXT_PUBLIC_API_URL}/auth/refresh`,
+            { refreshToken }
+          );
+
+          useAuthStore.getState().setTokens(data.accessToken, data.refreshToken);
+          originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
+
+          return apiClient(originalRequest);
+        } catch (refreshError) {
+          useAuthStore.getState().logout();
+          window.location.href = '/login';
+          return Promise.reject(refreshError);
+        }
+      }
+
+      return Promise.reject(error);
+    }
+  );
+
+  export default apiClient;
+
+  Task 1.4: Zustand Stores Setup
+
+  // stores/authStore.ts
+  import { create } from 'zustand';
+  import { persist } from 'zustand/middleware';
+
+  interface User {
+    id: string;
+    email: string;
+    displayName: string;
+    username: string;
+    avatarUrl: string | null;
+    role: 'user' | 'author' | 'admin';
+  }
+
+  interface AuthState {
+    user: User | null;
+    accessToken: string | null;
+    refreshToken: string | null;
+    isAuthenticated: boolean;
+
+    setUser: (user: User) => void;
+    setTokens: (access: string, refresh: string) => void;
+    login: (user: User, access: string, refresh: string) => void;
+    logout: () => void;
+  }
+
+  export const useAuthStore = create<AuthState>()(
+    persist(
+      (set) => ({
+        user: null,
+        accessToken: null,
+        refreshToken: null,
+        isAuthenticated: false,
+
+        setUser: (user) => set({ user }),
+        setTokens: (accessToken, refreshToken) =>
+          set({ accessToken, refreshToken }),
+        login: (user, accessToken, refreshToken) =>
+          set({ user, accessToken, refreshToken, isAuthenticated: true }),
+        logout: () =>
+          set({
+            user: null,
+            accessToken: null,
+            refreshToken: null,
+            isAuthenticated: false,
+          }),
+      }),
+      { name: 'auth-storage' }
+    )
+  );
+
+  // stores/walletStore.ts
+  import { create } from 'zustand';
+
+  interface WalletState {
+    balance: number;          // Đơn vị: đồng
+    isLoading: boolean;
+
+    setBalance: (balance: number) => void;
+    deduct: (amount: number) => void;
+    addFunds: (amount: number) => void;
+    setLoading: (loading: boolean) => void;
+  }
+
+  export const useWalletStore = create<WalletState>((set) => ({
+    balance: 0,
+    isLoading: false,
+
+    setBalance: (balance) => set({ balance }),
+    deduct: (amount) => set((state) => ({
+      balance: Math.max(0, state.balance - amount)
+    })),
+    addFunds: (amount) => set((state) => ({
+      balance: state.balance + amount
+    })),
+    setLoading: (isLoading) => set({ isLoading }),
+  }));
+
+  Task 1.5: TanStack Query Provider
+
+  // app/providers.tsx
+  'use client';
+
+  import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+  import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+  import { useState, ReactNode } from 'react';
+  import { Toaster } from '@/components/ui/toast';
+
+  export function Providers({ children }: { children: ReactNode }) {
+    const [queryClient] = useState(
+      () =>
+        new QueryClient({
+          defaultOptions: {
+            queries: {
+              staleTime: 60 * 1000,      // 1 phút
+              retry: 2,
+              refetchOnWindowFocus: false,
+            },
+          },
+        })
+    );
+
+    return (
+      <QueryClientProvider client={queryClient}>
+        {children}
+        <Toaster />
+        <ReactQueryDevtools initialIsOpen={false} />
+      </QueryClientProvider>
+    );
+  }
+
+  Task 1.6: Types Definition
+
+  // types/post.types.ts
+  export interface Post {
+    id: string;
+    title: string;
+    slug: string;
+    content: string;            // HTML from TipTap
+    excerpt: string;
+    coverImageUrl: string | null;
+    category: Category;
+    tags: Tag[];
+    author: AuthorInfo;
+    status: 'draft' | 'published';
+    viewCount: number;
+    commentCount: number;
+    questionCount: number;
+    likeCount: number;
+    readingTime: number;        // phút
+    createdAt: string;
+    updatedAt: string;
+  }
+
+  export interface AuthorInfo {
+    id: string;
+    username: string;
+    displayName: string;
+    avatarUrl: string | null;
+    bio: string | null;
+  }
+
+  export interface Category {
+    id: string;
+    name: string;
+    slug: string;
+  }
+
+  export interface Tag {
+    id: string;
+    name: string;
+  }
+
+  // types/question.types.ts
+  export interface Question {
+    id: string;
+    content: string;
+    target: 'author' | 'ai';
+    fee: number;                // 1000
+    status: 'pending' | 'answered' | 'refunded';
+    answer: string | null;
+    answeredAt: string | null;
+    refundDeadline: string;     // createdAt + 48h
+    post: { id: string; title: string; slug: string };
+    asker: AuthorInfo;
+    createdAt: string;
+  }
+
+  // types/wallet.types.ts
+  export interface Wallet {
+    id: string;
+    userId: string;
+    balance: number;
+    totalEarned: number;
+    totalSpent: number;
+  }
+
+  export interface Transaction {
+    id: string;
+    type: 'deposit' | 'withdraw' | 'question_fee' | 'question_earning'
+         | 'ai_fee' | 'refund';
+    amount: number;
+    balanceAfter: number;
+    status: 'pending' | 'completed' | 'failed';
+    description: string;
+    relatedQuestionId: string | null;
+    createdAt: string;
+  }
+
+  // types/comment.types.ts
+  export interface Comment {
+    id: string;
+    content: string;
+    author: AuthorInfo;
+    postId: string;
+    parentId: string | null;     // Reply
+    likeCount: number;
+    isLikedByMe: boolean;
+    children: Comment[];         // Nested replies
+    createdAt: string;
+  }
+
+  // types/notification.types.ts
+  export interface Notification {
+    id: string;
+    type: 'new_question' | 'question_answered' | 'new_comment'
+         | 'question_refunded' | 'earning_received' | 'system';
+    title: string;
+    message: string;
+    isRead: boolean;
+    data: Record<string, any>;  // { postId, questionId, ... }
+    createdAt: string;
+  }
+
+  // types/api.types.ts
+  export interface ApiResponse<T> {
+    success: boolean;
+    data: T;
+    message?: string;
+  }
+
+  export interface PaginatedResponse<T> {
+    data: T[];
+    meta: {
+      total: number;
+      page: number;
+      limit: number;
+      totalPages: number;
+    };
+  }
+
+  Task 1.7: Next.js Middleware (Auth Protection)
+
+  // middleware.ts
+  import { NextResponse } from 'next/server';
+  import type { NextRequest } from 'next/server';
+
+  const protectedRoutes = ['/dashboard', '/wallet', '/posts/new', '/profile/settings'];
+  const authRoutes = ['/login', '/register'];
+  const adminRoutes = ['/admin'];
+
+  export function middleware(request: NextRequest) {
+    const { pathname } = request.nextUrl;
+
+    // Kiểm tra auth token từ cookie (set bởi client)
+    const token = request.cookies.get('auth-token')?.value;
+
+    // Redirect authenticated users away from auth pages
+    if (authRoutes.some((route) => pathname.startsWith(route)) && token) {
+      return NextResponse.redirect(new URL('/', request.url));
+    }
+
+    // Protect routes
+    if (protectedRoutes.some((route) => pathname.startsWith(route)) && !token) {
+      const loginUrl = new URL('/login', request.url);
+      loginUrl.searchParams.set('redirect', pathname);
+      return NextResponse.redirect(loginUrl);
+    }
+
+    // Admin routes
+    if (adminRoutes.some((route) => pathname.startsWith(route))) {
+      // Thêm logic check admin role ở đây
+      if (!token) {
+        return NextResponse.redirect(new URL('/login', request.url));
+      }
+    }
+
+    return NextResponse.next();
+  }
+
+  export const config = {
+    matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  };
+
+  Deliverables Tuần 1:
+
+  - ✅ Project chạy được npm run dev
+  - ✅ Axios client có interceptor refresh token
+  - ✅ Zustand stores (auth, wallet, ui)
+  - ✅ TanStack Query provider
+  - ✅ All TypeScript types defined
+  - ✅ Middleware auth protection
+  - ✅ shadcn/ui components installed
+
+  ---
+  📌 PHASE 2: AUTH + LAYOUT SYSTEM (Tuần 2)
+
+  Task 2.1: Auth API Service
+
+  // services/api/auth.api.ts
+  import apiClient from './client';
+  import { ApiResponse } from '@/types/api.types';
+
+  interface LoginPayload {
+    email: string;
+    password: string;
+  }
+
+  interface RegisterPayload {
+    email: string;
+    password: string;
+    displayName: string;
+    username: string;
+  }
+
+  interface AuthResponse {
+    user: {
+      id: string;
+      email: string;
+      displayName: string;
+      username: string;
+      avatarUrl: string | null;
+      role: string;
+    };
+    accessToken: string;
+    refreshToken: string;
+  }
+
+  export const authApi = {
+    login: (payload: LoginPayload) =>
+      apiClient.post<ApiResponse<AuthResponse>>('/auth/login', payload),
+
+    register: (payload: RegisterPayload) =>
+      apiClient.post<ApiResponse<AuthResponse>>('/auth/register', payload),
+
+    logout: () =>
+      apiClient.post('/auth/logout'),
+
+    getMe: () =>
+      apiClient.get<ApiResponse<AuthResponse['user']>>('/auth/me'),
+
+    forgotPassword: (email: string) =>
+      apiClient.post('/auth/forgot-password', { email }),
+
+    resetPassword: (token: string, password: string) =>
+      apiClient.post('/auth/reset-password', { token, password }),
+  };
+
+  Task 2.2: Login Form
+
+  // components/auth/LoginForm.tsx
+  'use client';
+
+  import { useForm } from 'react-hook-form';
+  import { zodResolver } from '@hookform/resolvers/zod';
+  import { z } from 'zod';
+  import { useMutation } from '@tanstack/react-query';
+  import { useRouter, useSearchParams } from 'next/navigation';
+  import { authApi } from '@/services/api/auth.api';
+  import { useAuthStore } from '@/stores/authStore';
+  import { Button } from '@/components/ui/button';
+  import { Input } from '@/components/ui/input';
+  import { toast } from 'sonner';
+
+  const loginSchema = z.object({
+    email: z.string().email('Email không hợp lệ'),
+    password: z.string().min(6, 'Mật khẩu tối thiểu 6 ký tự'),
+  });
+
+  type LoginFormData = z.infer<typeof loginSchema>;
+
+  export function LoginForm() {
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    const redirect = searchParams.get('redirect') || '/';
+    const login = useAuthStore((s) => s.login);
+
+    const form = useForm<LoginFormData>({
+      resolver: zodResolver(loginSchema),
+      defaultValues: { email: '', password: '' },
+    });
+
+    const mutation = useMutation({
+      mutationFn: authApi.login,
+      onSuccess: ({ data: { data } }) => {
+        login(data.user, data.accessToken, data.refreshToken);
+        // Set cookie for middleware
+        document.cookie = `auth-token=${data.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}`;
+        toast.success('Đăng nhập thành công!');
+        router.push(redirect);
+      },
+      onError: (error: any) => {
+        toast.error(error.response?.data?.message || 'Đăng nhập thất bại');
+      },
+    });
+
+    return (
+      <form onSubmit={form.handleSubmit((data) => mutation.mutate(data))}
+            className="space-y-4">
+        <div>
+          <label className="text-sm font-medium">Email</label>
+          <Input
+            type="email"
+            placeholder="your@email.com"
+            {...form.register('email')}
+          />
+          {form.formState.errors.email && (
+            <p className="text-sm text-red-500 mt-1">
+              {form.formState.errors.email.message}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">Mật khẩu</label>
+          <Input
+            type="password"
+            placeholder="••••••"
+            {...form.register('password')}
+          />
+          {form.formState.errors.password && (
+            <p className="text-sm text-red-500 mt-1">
+              {form.formState.errors.password.message}
+            </p>
+          )}
+        </div>
+
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={mutation.isPending}
+        >
+          {mutation.isPending ? 'Đang đăng nhập...' : 'Đăng nhập'}
+        </Button>
+      </form>
+    );
+  }
+
+  Task 2.3: Register Form (tương tự Login, thêm fields)
+
+  Task 2.4: Layout System
+
+  // app/(main)/layout.tsx
+  import { Navbar } from '@/components/layout/Navbar';
+  import { Sidebar } from '@/components/layout/Sidebar';
+
+  export default function MainLayout({ children }: { children: React.ReactNode }) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Navbar />
+        <div className="flex">
+          <Sidebar className="hidden lg:block w-64 shrink-0" />
+          <main className="flex-1 p-4 lg:p-8 max-w-5xl mx-auto">
+            {children}
+          </main>
+        </div>
+      </div>
+    );
+  }
+
+  Task 2.5: Navbar với Wallet Badge
+
+  // components/layout/Navbar.tsx
+  'use client';
+
+  import Link from 'next/link';
+  import { useAuthStore } from '@/stores/authStore';
+  import { useWalletStore } from '@/stores/walletStore';
+  import { WalletBadge } from './WalletBadge';
+  import { NotificationBell } from '@/components/notifications/NotificationBell';
+  import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+  import { Button } from '@/components/ui/button';
+  import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+  } from '@/components/ui/dropdown-menu';
+  import { SearchBar } from '@/components/shared/SearchBar';
+  import { PenSquare, LogOut, User, Settings, LayoutDashboard } from 'lucide-react';
+
+  export function Navbar() {
+    const { user, isAuthenticated, logout } = useAuthStore();
+    const { balance } = useWalletStore();
+
+    return (
+      <nav className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur">
+        <div className="container flex h-16 items-center justify-between px-4">
+          {/* Logo */}
+          <Link href="/" className="text-xl font-bold">
+            📝 BlogPay
+          </Link>
+
+          {/* Search */}
+          <SearchBar className="hidden md:flex max-w-md flex-1 mx-8" />
+
+          {/* Right section */}
+          <div className="flex items-center gap-3">
+            {isAuthenticated ? (
+              <>
+                {/* Viết bài */}
+                <Button asChild variant="outline" size="sm">
+                  <Link href="/posts/new">
+                    <PenSquare className="w-4 h-4 mr-2" />
+                    Viết bài
+                  </Link>
+                </Button>
+
+                {/* Ví */}
+                <WalletBadge balance={balance} />
+
+                {/* Notifications */}
+                <NotificationBell />
+
+                {/* User Menu */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger>
+                    <Avatar className="h-8 w-8">
+                      <AvatarImage src={user?.avatarUrl || ''} />
+                      <AvatarFallback>
+                        {user?.displayName?.charAt(0)}
+                      </AvatarFallback>
+                    </Avatar>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem asChild>
+                      <Link href={`/profile/${user?.username}`}>
+                        <User className="w-4 h-4 mr-2" /> Trang cá nhân
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/dashboard">
+                        <LayoutDashboard className="w-4 h-4 mr-2" /> Dashboard
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/profile/settings">
+                        <Settings className="w-4 h-4 mr-2" /> Cài đặt
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={logout}
+                      className="text-red-600"
+                    >
+                      <LogOut className="w-4 h-4 mr-2" /> Đăng xuất
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            ) : (
+              <div className="flex gap-2">
+                <Button asChild variant="ghost" size="sm">
+                  <Link href="/login">Đăng nhập</Link>
+                </Button>
+                <Button asChild size="sm">
+                  <Link href="/register">Đăng ký</Link>
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      </nav>
+    );
+  }
+
+  Task 2.6: WalletBadge Component
+
+  // components/layout/WalletBadge.tsx
+  import Link from 'next/link';
+  import { Wallet } from 'lucide-react';
+  import { formatCurrency } from '@/lib/formatters';
+
+  interface WalletBadgeProps {
+    balance: number;
+  }
+
+  export function WalletBadge({ balance }: WalletBadgeProps) {
+    return (
+      <Link
+        href="/wallet"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                   bg-amber-50 border border-amber-200 hover:bg-amber-100
+                   transition-colors text-sm font-medium text-amber-800"
+      >
+        <Wallet className="w-4 h-4" />
+        <span>{formatCurrency(balance)}</span>
+      </Link>
+    );
+  }
+
+  Deliverables Tuần 2:
+
+  - ✅ Login / Register / Forgot Password pages
+  - ✅ Navbar + Sidebar + Footer layout
+  - ✅ Mobile responsive navigation
+  - ✅ Wallet badge hiển thị số dư
+  - ✅ Auth guard (HOC + middleware)
+  - ✅ User dropdown menu
+
+  ---
+  📌 PHASE 3: POST SYSTEM - CRUD + EDITOR (Tuần 3)
+
+  Task 3.1: TipTap Rich Text Editor
+
+  npm install @tiptap/react @tiptap/starter-kit @tiptap/extension-image
+  npm install @tiptap/extension-link @tiptap/extension-placeholder
+  npm install @tiptap/extension-code-block-lowlight lowlight
+  npm install @tiptap/extension-heading @tiptap/extension-underline
+
+  // components/posts/PostEditor.tsx
+  'use client';
+
+  import { useEditor, EditorContent } from '@tiptap/react';
+  import StarterKit from '@tiptap/starter-kit';
+  import Image from '@tiptap/extension-image';
+  import Link from '@tiptap/extension-link';
+  import Placeholder from '@tiptap/extension-placeholder';
+  import Underline from '@tiptap/extension-underline';
+  import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+  import { common, createLowlight } from 'lowlight';
+  import { EditorToolbar } from './EditorToolbar';
+
+  const lowlight = createLowlight(common);
+
+  interface PostEditorProps {
+    content: string;
+    onChange: (html: string) => void;
+  }
+
+  export function PostEditor({ content, onChange }: PostEditorProps) {
+    const editor = useEditor({
+      extensions: [
+        StarterKit.configure({
+          codeBlock: false,
+        }),
+        Underline,
+        Image.configure({ inline: true }),
+        Link.configure({
+          openOnClick: false,
+          HTMLAttributes: { class: 'text-blue-600 underline' },
+        }),
+        Placeholder.configure({
+          placeholder: 'Viết nội dung bài blog của bạn ở đây...',
+        }),
+        CodeBlockLowlight.configure({ lowlight }),
+      ],
+      content,
+      onUpdate: ({ editor }) => {
+        onChange(editor.getHTML());
+      },
+      editorProps: {
+        attributes: {
+          class: 'prose prose-lg max-w-none min-h-[400px] px-4 py-3 focus:outline-none',
+        },
+      },
+    });
+
+    if (!editor) return null;
+
+    return (
+      <div className="border rounded-lg overflow-hidden">
+        <EditorToolbar editor={editor} />
+        <EditorContent editor={editor} />
+      </div>
+    );
+  }
+
+  Task 3.2: Post API Service
+
+  // services/api/posts.api.ts
+  import apiClient from './client';
+  import { Post } from '@/types/post.types';
+  import { ApiResponse, PaginatedResponse } from '@/types/api.types';
+
+  interface CreatePostPayload {
+    title: string;
+    content: string;
+    excerpt: string;
+    categoryId: string;
+    tags: string[];
+    coverImage?: File;
+    status: 'draft' | 'published';
+  }
+
+  export const postsApi = {
+    // Danh sách bài viết (public)
+    getAll: (params?: {
+      page?: number;
+      limit?: number;
+      category?: string;
+      tag?: string;
+      search?: string;
+      sortBy?: 'latest' | 'popular' | 'trending';
+    }) => apiClient.get<PaginatedResponse<Post>>('/posts', { params }),
+
+    // Chi tiết bài viết (SSR-friendly)
+    getBySlug: (slug: string) =>
+      apiClient.get<ApiResponse<Post>>(`/posts/${slug}`),
+
+    // Tạo bài viết (multipart for cover image)
+    create: (payload: CreatePostPayload) => {
+      const formData = new FormData();
+      Object.entries(payload).forEach(([key, value]) => {
+        if (key === 'tags') {
+          formData.append(key, JSON.stringify(value));
+        } else if (key === 'coverImage' && value) {
+          formData.append(key, value);
+        } else {
+          formData.append(key, value as string);
+        }
+      });
+      return apiClient.post<ApiResponse<Post>>('/posts', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
+
+    // Cập nhật
+    update: (slug: string, payload: Partial<CreatePostPayload>) =>
+      apiClient.patch<ApiResponse<Post>>(`/posts/${slug}`, payload),
+
+    // Xóa
+    delete: (slug: string) =>
+      apiClient.delete(`/posts/${slug}`),
+
+    // Like/Unlike
+    toggleLike: (postId: string) =>
+      apiClient.post(`/posts/${postId}/like`),
+
+    // Bookmark
+    toggleBookmark: (postId: string) =>
+      apiClient.post(`/posts/${postId}/bookmark`),
+
+    // Bài viết của tôi
+    getMine: (params?: { status?: string; page?: number }) =>
+      apiClient.get<PaginatedResponse<Post>>('/posts/me', { params }),
+  };
+
+  Task 3.3: Homepage - Feed bài viết
+
+  // app/(main)/page.tsx
+  'use client';
+
+  import { useInfiniteQuery } from '@tanstack/react-query';
+  import { postsApi } from '@/services/api/posts.api';
+  import { PostCard } from '@/components/posts/PostCard';
+  import { CategoryFilter } from '@/components/posts/CategoryFilter';
+  import { InfiniteScroll } from '@/components/shared/InfiniteScroll';
+  import { Skeleton } from '@/components/ui/skeleton';
+
+  export default function HomePage() {
+    const {
+      data,
+      fetchNextPage,
+      hasNextPage,
+      isFetchingNextPage,
+      isLoading,
+    } = useInfiniteQuery({
+      queryKey: ['posts', 'feed'],
+      queryFn: ({ pageParam = 1 }) =>
+        postsApi.getAll({ page: pageParam, limit: 10, sortBy: 'latest' }),
+      getNextPageParam: (lastPage) => {
+        const { page, totalPages } = lastPage.data.meta;
+        return page < totalPages ? page + 1 : undefined;
+      },
+      initialPageParam: 1,
+    });
+
+    const posts = data?.pages.flatMap((page) => page.data.data) ?? [];
+
+    return (
+      <div className="space-y-6">
+        <h1 className="text-3xl font-bold">Bài viết mới nhất</h1>
+
+        <CategoryFilter />
+
+        {isLoading ? (
+          <div className="space-y-4">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-48 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : (
+          <InfiniteScroll
+            hasMore={!!hasNextPage}
+            isLoading={isFetchingNextPage}
+            onLoadMore={fetchNextPage}
+          >
+            <div className="space-y-4">
+              {posts.map((post) => (
+                <PostCard key={post.id} post={post} />
+              ))}
+            </div>
+          </InfiniteScroll>
+        )}
+      </div>
+    );
+  }
+
+  Task 3.4: PostCard Component
+
+  // components/posts/PostCard.tsx
+  import Link from 'next/link';
+  import { Post } from '@/types/post.types';
+  import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+  import { Badge } from '@/components/ui/badge';
+  import { Card, CardContent } from '@/components/ui/card';
+  import { Heart, MessageCircle, HelpCircle, Clock, Eye } from 'lucide-react';
+  import { formatDistanceToNow } from 'date-fns';
+  import { vi } from 'date-fns/locale';
+
+  interface PostCardProps {
+    post: Post;
+  }
+
+  export function PostCard({ post }: PostCardProps) {
+    return (
+      <Card className="hover:shadow-md transition-shadow">
+        <CardContent className="p-5">
+          <div className="flex gap-4">
+            {/* Cover Image */}
+            {post.coverImageUrl && (
+              <div className="hidden sm:block shrink-0">
+                <img
+                  src={post.coverImageUrl}
+                  alt={post.title}
+                  className="w-40 h-28 object-cover rounded-lg"
+                />
+              </div>
+            )}
+
+            <div className="flex-1 space-y-2">
+              {/* Author */}
+              <div className="flex items-center gap-2">
+                <Avatar className="h-6 w-6">
+                  <AvatarImage src={post.author.avatarUrl || ''} />
+                  <AvatarFallback className="text-xs">
+                    {post.author.displayName.charAt(0)}
+                  </AvatarFallback>
+                </Avatar>
+                <Link
+                  href={`/profile/${post.author.username}`}
+                  className="text-sm font-medium hover:underline"
+                >
+                  {post.author.displayName}
+                </Link>
+                <span className="text-xs text-muted-foreground">
+                  {formatDistanceToNow(new Date(post.createdAt), {
+                    addSuffix: true,
+                    locale: vi,
+                  })}
+                </span>
+              </div>
+
+              {/* Title */}
+              <Link href={`/posts/${post.slug}`}>
+                <h2 className="text-lg font-bold hover:text-primary transition-colors line-clamp-2">
+                  {post.title}
+                </h2>
+              </Link>
+
+              {/* Excerpt */}
+              <p className="text-sm text-muted-foreground line-clamp-2">
+                {post.excerpt}
+              </p>
+
+              {/* Tags + Stats */}
+              <div className="flex items-center justify-between pt-1">
+                <div className="flex gap-1.5">
+                  <Badge variant="secondary" className="text-xs">
+                    {post.category.name}
+                  </Badge>
+                  {post.tags.slice(0, 2).map((tag) => (
+                    <Badge key={tag.id} variant="outline" className="text-xs">
+                      {tag.name}
+                    </Badge>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <Heart className="w-3.5 h-3.5" /> {post.likeCount}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <MessageCircle className="w-3.5 h-3.5" /> {post.commentCount}
+                  </span>
+                  <span className="flex items-center gap-1 text-amber-600 font-medium">
+                    <HelpCircle className="w-3.5 h-3.5" /> {post.questionCount}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5" /> {post.readingTime} phút
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  Task 3.5: Trang chi tiết bài viết (SSR)
+
+  // app/(main)/posts/[slug]/page.tsx
+  import { postsApi } from '@/services/api/posts.api';
+  import { PostDetail } from '@/components/posts/PostDetail';
+  import { CommentSection } from '@/components/comments/CommentSection';
+  import { QuestionSection } from '@/components/questions/QuestionSection';
+  import { Separator } from '@/components/ui/separator';
+  import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+  import { notFound } from 'next/navigation';
+  import type { Metadata } from 'next';
+
+  // SSR: Fetch data on server
+  async function getPost(slug: string) {
+    try {
+      const { data } = await postsApi.getBySlug(slug);
+      return data.data;
+    } catch {
+      return null;
+    }
+  }
+
+  // Dynamic SEO metadata
+  export async function generateMetadata({
+    params,
+  }: {
+    params: { slug: string };
+  }): Promise<Metadata> {
+    const post = await getPost(params.slug);
+    if (!post) return {};
+
+    return {
+      title: `${post.title} | BlogPay`,
+      description: post.excerpt,
+      openGraph: {
+        title: post.title,
+        description: post.excerpt,
+        images: post.coverImageUrl ? [post.coverImageUrl] : [],
+      },
+    };
+  }
+
+  export default async function PostPage({
+    params,
+  }: {
+    params: { slug: string };
+  }) {
+    const post = await getPost(params.slug);
+    if (!post) notFound();
+
+    return (
+      <article className="max-w-3xl mx-auto space-y-8">
+        {/* Nội dung bài viết */}
+        <PostDetail post={post} />
+
+        <Separator />
+
+        {/* Tabs: Comments + Questions */}
+        <Tabs defaultValue="questions">
+          <TabsList className="w-full">
+            <TabsTrigger value="questions" className="flex-1">
+              💎 Câu hỏi ({post.questionCount})
+            </TabsTrigger>
+            <TabsTrigger value="comments" className="flex-1">
+              💬 Bình luận ({post.commentCount})
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="questions">
+            <QuestionSection postId={post.id} authorId={post.author.id} />
+          </TabsContent>
+
+          <TabsContent value="comments">
+            <CommentSection postId={post.id} />
+          </TabsContent>
+        </Tabs>
+      </article>
+    );
+  }
+
+  Task 3.6: Trang tạo bài viết mới
+
+  Deliverables Tuần 3:
+
+  - ✅ Homepage feed với infinite scroll
+  - ✅ PostCard component
+  - ✅ TipTap rich text editor
+  - ✅ Create / Edit / Delete post
+  - ✅ Post detail page (SSR + SEO)
+  - ✅ Category filter + Search
+  - ✅ Image upload to MinIO
+
+  ---
+  📌 PHASE 4: COMMENT + QUESTION SYSTEM (Tuần 4) ⭐ CORE
+
+  ▎ Đây là phần LÕI của ứng dụng - nơi tạo ra doanh thu
+
+  Task 4.1: Question API Service
+
+  // services/api/questions.api.ts
+  import apiClient from './client';
+  import { Question } from '@/types/question.types';
+  import { ApiResponse, PaginatedResponse } from '@/types/api.types';
+
+  interface CreateQuestionPayload {
+    postId: string;
+    content: string;
+    target: 'author' | 'ai';
+  }
+
+  export const questionsApi = {
+    // Lấy câu hỏi của một bài viết
+    getByPost: (postId: string, params?: { page?: number }) =>
+      apiClient.get<PaginatedResponse<Question>>(`/posts/${postId}/questions`, { params }),
+
+    // Đặt câu hỏi (trừ 1.000đ)
+    create: (payload: CreateQuestionPayload) =>
+      apiClient.post<ApiResponse<Question>>('/questions', payload),
+
+    // Tác giả trả lời câu hỏi
+    answer: (questionId: string, answer: string) =>
+      apiClient.post<ApiResponse<Question>>(`/questions/${questionId}/answer`, { answer }),
+
+    // Câu hỏi của tôi (đã đặt)
+    getMine: (params?: { page?: number; status?: string }) =>
+      apiClient.get<PaginatedResponse<Question>>('/questions/me', { params }),
+
+    // Câu hỏi cần trả lời (cho tác giả)
+    getPending: (params?: { page?: number }) =>
+      apiClient.get<PaginatedResponse<Question>>('/questions/pending', { params }),
+  };
+
+  Task 4.2: QuestionSection - Container
+
+  // components/questions/QuestionSection.tsx
+  'use client';
+
+  import { useQuery } from '@tanstack/react-query';
+  import { questionsApi } from '@/services/api/questions.api';
+  import { QuestionItem } from './QuestionItem';
+  import { QuestionForm } from './QuestionForm';
+  import { useAuthStore } from '@/stores/authStore';
+  import { EmptyState } from '@/components/shared/EmptyState';
+  import { HelpCircle } from 'lucide-react';
+
+  interface QuestionSectionProps {
+    postId: string;
+    authorId: string;
+  }
+
+  export function QuestionSection({ postId, authorId }: QuestionSectionProps) {
+    const { isAuthenticated, user } = useAuthStore();
+    const isAuthor = user?.id === authorId;
+
+    const { data, isLoading } = useQuery({
+      queryKey: ['questions', postId],
+      queryFn: () => questionsApi.getByPost(postId),
+    });
+
+    const questions = data?.data?.data ?? [];
+
+    return (
+      <div className="space-y-6">
+        {/* Form đặt câu hỏi (ẩn nếu là tác giả) */}
+        {isAuthenticated && !isAuthor && (
+          <QuestionForm postId={postId} />
+        )}
+
+        {/* Danh sách câu hỏi */}
+        {questions.length === 0 ? (
+          <EmptyState
+            icon={<HelpCircle className="w-12 h-12 text-muted-foreground" />}
+            title="Chưa có câu hỏi nào"
+            description="Hãy là người đầu tiên đặt câu hỏi cho tác giả!"
+          />
+        ) : (
+          <div className="space-y-4">
+            {questions.map((question) => (
+              <QuestionItem
+                key={question.id}
+                question={question}
+                isAuthor={isAuthor}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  Task 4.3: QuestionForm - Form đặt câu hỏi trả phí ⭐
+
+  // components/questions/QuestionForm.tsx
+  'use client';
+
+  import { useState } from 'react';
+  import { useForm } from 'react-hook-form';
+  import { zodResolver } from '@hookform/resolvers/zod';
+  import { z } from 'zod';
+  import { useMutation, useQueryClient } from '@tanstack/react-query';
+  import { questionsApi } from '@/services/api/questions.api';
+  import { useWalletStore } from '@/stores/walletStore';
+  import { Button } from '@/components/ui/button';
+  import { Textarea } from '@/components/ui/textarea';
+  import { QuestionTargetSelect } from './QuestionTargetSelect';
+  import { PaymentConfirmDialog } from './PaymentConfirmDialog';
+  import { InsufficientBalance } from '@/components/wallet/InsufficientBalance';
+  import { toast } from 'sonner';
+  import { QUESTION_FEE } from '@/lib/constants';
+
+  const questionSchema = z.object({
+    content: z
+      .string()
+      .min(10, 'Câu hỏi phải có ít nhất 10 ký tự')
+      .max(2000, 'Câu hỏi tối đa 2000 ký tự'),
+    target: z.enum(['author', 'ai']),
+  });
+
+  type QuestionFormData = z.infer<typeof questionSchema>;
+
+  interface QuestionFormProps {
+    postId: string;
+  }
+
+  export function QuestionForm({ postId }: QuestionFormProps) {
+    const [showConfirm, setShowConfirm] = useState(false);
+    const [showInsufficientBalance, setShowInsufficientBalance] = useState(false);
+    const { balance, deduct } = useWalletStore();
+    const queryClient = useQueryClient();
+
+    const form = useForm<QuestionFormData>({
+      resolver: zodResolver(questionSchema),
+      defaultValues: { content: '', target: 'author' },
+    });
+
+    const mutation = useMutation({
+      mutationFn: questionsApi.create,
+      onSuccess: () => {
+        deduct(QUESTION_FEE);
+        queryClient.invalidateQueries({ queryKey: ['questions', postId] });
+        queryClient.invalidateQueries({ queryKey: ['wallet'] });
+        form.reset();
+        toast.success(
+          form.getValues('target') === 'ai'
+            ? '🤖 AI đang xử lý câu hỏi của bạn...'
+            : '✅ Câu hỏi đã được gửi đến tác giả!'
+        );
+      },
+      onError: (error: any) => {
+        toast.error(error.response?.data?.message || 'Gửi câu hỏi thất bại');
+      },
+    });
+
+    const handleSubmit = (data: QuestionFormData) => {
+      // Kiểm tra số dư
+      if (balance < QUESTION_FEE) {
+        setShowInsufficientBalance(true);
+        return;
+      }
+      // Hiện dialog xác nhận thanh toán
+      setShowConfirm(true);
+    };
+
+    const handleConfirmPayment = () => {
+      setShowConfirm(false);
+      const data = form.getValues();
+      mutation.mutate({ postId, ...data });
+    };
+
+    return (
+      <>
+        <div className="rounded-lg border-2 border-amber-200 bg-amber-50/50 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-lg">💎</span>
+            <h3 className="font-semibold">Đặt câu hỏi trả phí</h3>
+            <span className="text-sm text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full font-medium">
+              {QUESTION_FEE.toLocaleString('vi-VN')}đ
+            </span>
+          </div>
+
+          <p className="text-sm text-muted-foreground mb-4">
+            Câu hỏi của bạn sẽ được{' '}
+            <strong>ghim nổi bật</strong> và đảm bảo được trả lời trong 48h.
+            Nếu không, bạn sẽ được <strong>hoàn tiền tự động</strong>.
+          </p>
+
+          <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
+            {/* Chọn hỏi Tác giả hay AI */}
+            <QuestionTargetSelect
+              value={form.watch('target')}
+              onChange={(val) => form.setValue('target', val)}
+            />
+
+            {/* Nội dung câu hỏi */}
+            <Textarea
+              placeholder="Viết câu hỏi của bạn ở đây..."
+              rows={4}
+              {...form.register('content')}
+              className="bg-white"
+            />
+            {form.formState.errors.content && (
+              <p className="text-sm text-red-500">
+                {form.formState.errors.content.message}
+              </p>
+            )}
+
+            {/* Nút gửi */}
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                Số dư ví: <strong>{balance.toLocaleString('vi-VN')}đ</strong>
+              </p>
+              <Button
+                type="submit"
+                disabled={mutation.isPending}
+                className="bg-amber-600 hover:bg-amber-700"
+              >
+                {mutation.isPending
+                  ? 'Đang gửi...'
+                  : `Gửi câu hỏi (${QUESTION_FEE.toLocaleString('vi-VN')}đ)`}
+              </Button>
+            </div>
+          </form>
+        </div>
+
+        {/* Dialog xác nhận thanh toán */}
+        <PaymentConfirmDialog
+          open={showConfirm}
+          onClose={() => setShowConfirm(false)}
+          onConfirm={handleConfirmPayment}
+          amount={QUESTION_FEE}
+          target={form.watch('target')}
+          isLoading={mutation.isPending}
+        />
+
+        {/* Dialog hết tiền */}
+        <InsufficientBalance
+          open={showInsufficientBalance}
+          onClose={() => setShowInsufficientBalance(false)}
+          requiredAmount={QUESTION_FEE}
+          currentBalance={balance}
+        />
+      </>
+    );
+  }
+
+  Task 4.4: QuestionTargetSelect
+
+  // components/questions/QuestionTargetSelect.tsx
+  'use client';
+
+  import { cn } from '@/lib/utils';
+  import { User, Bot } from 'lucide-react';
+
+  interface QuestionTargetSelectProps {
+    value: 'author' | 'ai';
+    onChange: (value: 'author' | 'ai') => void;
+  }
+
+  export function QuestionTargetSelect({ value, onChange }: QuestionTargetSelectProps) {
+    return (
+      <div className="grid grid-cols-2 gap-3">
+        {/* Hỏi Tác giả */}
+        <button
+          type="button"
+          onClick={() => onChange('author')}
+          className={cn(
+            'flex items-center gap-3 p-3 rounded-lg border-2 transition-all',
+            value === 'author'
+              ? 'border-blue-500 bg-blue-50 shadow-sm'
+              : 'border-gray-200 hover:border-gray-300'
+          )}
+        >
+          <div className={cn(
+            'p-2 rounded-full',
+            value === 'author' ? 'bg-blue-100' : 'bg-gray-100'
+          )}>
+            <User className={cn('w-5 h-5', value === 'author' ? 'text-blue-600' : 'text-gray-500')} />
+          </div>
+          <div className="text-left">
+            <p className="font-medium text-sm">Hỏi Tác giả</p>
+            <p className="text-xs text-muted-foreground">Trả lời trong 48h</p>
+          </div>
+        </button>
+
+        {/* Hỏi AI */}
+        <button
+          type="button"
+          onClick={() => onChange('ai')}
+          className={cn(
+            'flex items-center gap-3 p-3 rounded-lg border-2 transition-all',
+            value === 'ai'
+              ? 'border-purple-500 bg-purple-50 shadow-sm'
+              : 'border-gray-200 hover:border-gray-300'
+          )}
+        >
+          <div className={cn(
+            'p-2 rounded-full',
+            value === 'ai' ? 'bg-purple-100' : 'bg-gray-100'
+          )}>
+            <Bot className={cn('w-5 h-5', value === 'ai' ? 'text-purple-600' : 'text-gray-500')} />
+          </div>
+          <div className="text-left">
+            <p className="font-medium text-sm">Hỏi @AI</p>
+            <p className="text-xs text-muted-foreground">Trả lời ngay lập tức</p>
+          </div>
+        </button>
+      </div>
+    );
+  }
+
+  Task 4.5: QuestionItem - Hiển thị câu hỏi (Highlight)
+
+  // components/questions/QuestionItem.tsx
+  'use client';
+
+  import { useState } from 'react';
+  import { Question } from '@/types/question.types';
+  import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+  import { Badge } from '@/components/ui/badge';
+  import { Card } from '@/components/ui/card';
+  import { AuthorAnswerForm } from './AuthorAnswerForm';
+  import { AIAnswerDisplay } from './AIAnswerDisplay';
+  import { RefundCountdown } from './RefundCountdown';
+  import { formatDistanceToNow } from 'date-fns';
+  import { vi } from 'date-fns/locale';
+  import { Bot, User, CheckCircle, Clock, RotateCcw, Heart } from 'lucide-react';
+  import { cn } from '@/lib/utils';
+
+  interface QuestionItemProps {
+    question: Question;
+    isAuthor: boolean;
+  }
+
+  export function QuestionItem({ question, isAuthor }: QuestionItemProps) {
+    const [showAnswerForm, setShowAnswerForm] = useState(false);
+
+    const isAI = question.target === 'ai';
+    const isPending = question.status === 'pending';
+    const isAnswered = question.status === 'answered';
+    const isRefunded = question.status === 'refunded';
+
+    return (
+      <Card
+        className={cn(
+          'p-5 border-2',
+          isAI ? 'border-purple-200 bg-purple-50/30' : 'border-amber-200 bg-amber-50/30',
+          isAnswered && 'border-green-200 bg-green-50/30'
+        )}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Avatar className="h-8 w-8">
+              <AvatarImage src={question.asker.avatarUrl || ''} />
+              <AvatarFallback>{question.asker.displayName.charAt(0)}</AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="text-sm font-medium">{question.asker.displayName}</p>
+              <p className="text-xs text-muted-foreground">
+                {formatDistanceToNow(new Date(question.createdAt), { addSuffix: true, locale: vi })}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Target badge */}
+            <Badge variant={isAI ? 'default' : 'secondary'}
+                   className={cn(
+                     isAI ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                   )}>
+              {isAI ? <Bot className="w-3 h-3 mr-1" /> : <User className="w-3 h-3 mr-1" />}
+              {isAI ? '@AI' : 'Tác giả'}
+            </Badge>
+
+            {/* Status badge */}
+            {isAnswered && (
+              <Badge className="bg-green-100 text-green-700">
+                <CheckCircle className="w-3 h-3 mr-1" /> Đã trả lời
+              </Badge>
+            )}
+            {isPending && (
+              <Badge className="bg-yellow-100 text-yellow-700">
+                <Clock className="w-3 h-3 mr-1" /> Đang chờ
+              </Badge>
+            )}
+            {isRefunded && (
+              <Badge className="bg-gray-100 text-gray-700">
+                <RotateCcw className="w-3 h-3 mr-1" /> Đã hoàn tiền
+              </Badge>
+            )}
+          </div>
+        </div>
+
+        {/* Question content */}
+        <p className="text-base mb-4 leading-relaxed">{question.content}</p>
+
+        {/* Countdown hoàn tiền (nếu đang chờ) */}
+        {isPending && !isAI && (
+          <RefundCountdown deadline={question.refundDeadline} />
+        )}
+
+        {/* Answer */}
+        {isAnswered && question.answer && (
+          <div className={cn(
+            'mt-4 p-4 rounded-lg border',
+            isAI ? 'bg-purple-50 border-purple-100' : 'bg-blue-50 border-blue-100'
+          )}>
+            <div className="flex items-center gap-2 mb-2">
+              {isAI ? (
+                <Bot className="w-4 h-4 text-purple-600" />
+              ) : (
+                <User className="w-4 h-4 text-blue-600" />
+              )}
+              <span className="text-sm font-medium">
+                {isAI ? 'Trợ lý AI' : 'Tác giả'}
+              </span>
+            </div>
+            {isAI ? (
+              <AIAnswerDisplay content={question.answer} />
+            ) : (
+              <p className="text-sm leading-relaxed">{question.answer}</p>
+            )}
+          </div>
+        )}
+
+        {/* Author answer form */}
+        {isAuthor && isPending && !isAI && (
+          <div className="mt-4">
+            {showAnswerForm ? (
+              <AuthorAnswerForm
+                questionId={question.id}
+                onCancel={() => setShowAnswerForm(false)}
+              />
+            ) : (
+              <button
+                onClick={() => setShowAnswerForm(true)}
+                className="text-sm text-blue-600 hover:underline font-medium"
+              >
+                ✍️  Trả lời câu hỏi này
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Reactions */}
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+          <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-red-500 transition-colors">
+            <Heart className="w-3.5 h-3.5" /> Hữu ích
+          </button>
+        </div>
+      </Card>
+    );
+  }
+
+  Task 4.6: PaymentConfirmDialog
+
+  // components/questions/PaymentConfirmDialog.tsx
+  'use client';
+
+  import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+  } from '@/components/ui/dialog';
+  import { Button } from '@/components/ui/button';
+  import { Bot, User, Shield } from 'lucide-react';
+  import { formatCurrency } from '@/lib/formatters';
+
+  interface PaymentConfirmDialogProps {
+    open: boolean;
+    onClose: () => void;
+    onConfirm: () => void;
+    amount: number;
+    target: 'author' | 'ai';
+    isLoading: boolean;
+  }
+
+  export function PaymentConfirmDialog({
+    open, onClose, onConfirm, amount, target, isLoading,
+  }: PaymentConfirmDialogProps) {
+    return (
+      <Dialog open={open} onOpenChange={onClose}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              💎 Xác nhận đặt câu hỏi
+            </DialogTitle>
+            <DialogDescription>
+              Bạn sẽ được trừ {formatCurrency(amount)} từ ví để đặt câu hỏi.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-4">
+            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm">Người trả lời:</span>
+              <span className="flex items-center gap-1 font-medium text-sm">
+                {target === 'ai' ? (
+                  <><Bot className="w-4 h-4 text-purple-600" /> AI trả lời ngay</>
+                ) : (
+                  <><User className="w-4 h-4 text-blue-600" /> Tác giả (trong 48h)</>
+                )}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm">Phí câu hỏi:</span>
+              <span className="font-bold text-amber-600">{formatCurrency(amount)}</span>
+            </div>
+
+            {target === 'author' && (
+              <div className="flex items-start gap-2 p-3 bg-green-50 rounded-lg">
+                <Shield className="w-4 h-4 text-green-600 mt-0.5" />
+                <p className="text-xs text-green-700">
+                  <strong>Cam kết:</strong> Nếu tác giả không trả lời trong 48h,
+                  bạn sẽ được <strong>hoàn tiền tự động</strong> 100%.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={onClose} disabled={isLoading}>
+              Hủy
+            </Button>
+            <Button
+              onClick={onConfirm}
+              disabled={isLoading}
+              className="bg-amber-600 hover:bg-amber-700"
+            >
+              {isLoading ? 'Đang xử lý...' : `Thanh toán ${formatCurrency(amount)}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  Task 4.7: RefundCountdown
+
+  // components/questions/RefundCountdown.tsx
+  'use client';
+
+  import { useEffect, useState } from 'react';
+  import { differenceInSeconds } from 'date-fns';
+  import { Clock } from 'lucide-react';
+
+  interface RefundCountdownProps {
+    deadline: string;
+  }
+
+  export function RefundCountdown({ deadline }: RefundCountdownProps) {
+    const [timeLeft, setTimeLeft] = useState('');
+
+    useEffect(() => {
+      const interval = setInterval(() => {
+        const seconds = differenceInSeconds(new Date(deadline), new Date());
+        if (seconds <= 0) {
+          setTimeLeft('Đã hết hạn - đang hoàn tiền...');
+          clearInterval(interval);
+          return;
+        }
+        const hours = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        setTimeLeft(`${hours}h ${mins}m ${secs}s`);
+      }, 1000);
+
+      return () => clearInterval(interval);
+    }, [deadline]);
+
+    return (
+      <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-100 px-3 py-1.5 rounded-full w-fit">
+        <Clock className="w-3.5 h-3.5" />
+        <span>Hoàn tiền tự động sau: <strong>{timeLeft}</strong></span>
+      </div>
+    );
+  }
+
+  Task 4.8: Comment System (Free)
+
+  // components/comments/CommentSection.tsx
+  // components/comments/CommentForm.tsx
+  // components/comments/CommentItem.tsx
+  // components/comments/QuestionSuggestion.tsx
+
+  // QuestionSuggestion.tsx - Gợi ý chuyển sang Question khi detect câu hỏi
+  'use client';
+
+  import { AlertCircle } from 'lucide-react';
+
+  interface QuestionSuggestionProps {
+    onDismiss: () => void;
+    onSwitchToQuestion: () => void;
+  }
+
+  export function QuestionSuggestion({ onDismiss, onSwitchToQuestion }: QuestionSuggestionProps) {
+    return (
+      <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg animate-in slide-in-from-top-2">
+        <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm text-amber-800">
+            Có vẻ bạn đang muốn hỏi tác giả?{' '}
+            <button
+              onClick={onSwitchToQuestion}
+              className="font-bold underline hover:no-underline"
+            >
+              Dùng tính năng Question (1.000đ)
+            </button>{' '}
+            để được <strong>ưu tiên trả lời</strong> và{' '}
+            <strong>cam kết hoàn tiền trong 48h</strong>!
+          </p>
+        </div>
+        <button onClick={onDismiss} className="text-amber-400 hover:text-amber-600">
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  Task 4.9: TextSelectionPopup - Hỏi AI khi bôi đen text ⭐
+
+  // components/posts/TextSelectionPopup.tsx
+  'use client';
+
+  import { useEffect, useState, useRef } from 'react';
+  import { Bot } from 'lucide-react';
+  import { createPortal } from 'react-dom';
+
+  interface TextSelectionPopupProps {
+    containerRef: React.RefObject<HTMLElement>;
+    onAskAI: (selectedText: string) => void;
+  }
+
+  export function TextSelectionPopup({ containerRef, onAskAI }: TextSelectionPopupProps) {
+    const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+    const [selectedText, setSelectedText] = useState('');
+
+    useEffect(() => {
+      const handleMouseUp = () => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || !containerRef.current) {
+          setPosition(null);
+          return;
+        }
+
+        const text = selection.toString().trim();
+        if (text.length < 10) {
+          setPosition(null);
+          return;
+        }
+
+        // Kiểm tra selection nằm trong container
+        if (!containerRef.current.contains(selection.anchorNode)) {
+          setPosition(null);
+          return;
+        }
+
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+
+        setSelectedText(text);
+        setPosition({
+          top: rect.top + window.scrollY - 48,
+          left: rect.left + rect.width / 2,
+        });
+      };
+
+      const handleMouseDown = () => {
+        setPosition(null);
+      };
+
+      document.addEventListener('mouseup', handleMouseUp);
+      document.addEventListener('mousedown', handleMouseDown);
+
+      return () => {
+        document.removeEventListener('mouseup', handleMouseUp);
+        document.removeEventListener('mousedown', handleMouseDown);
+      };
+    }, [containerRef]);
+
+    if (!position) return null;
+
+    return createPortal(
+      <div
+        className="fixed z-50 -translate-x-1/2 animate-in fade-in-0 zoom-in-95"
+        style={{ top: position.top, left: position.left }}
+      >
+        <button
+          onClick={() => {
+            onAskAI(selectedText);
+            setPosition(null);
+          }}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg
+                     bg-purple-600 text-white text-sm font-medium shadow-lg
+                     hover:bg-purple-700 transition-colors"
+        >
+          <Bot className="w-4 h-4" />
+          Hỏi AI (1.000đ)
+        </button>
+      </div>,
+      document.body
+    );
+  }
+
+  Deliverables Tuần 4:
+
+  - ✅ Question form (chọn Author/AI, xác nhận thanh toán)
+  - ✅ Question list (highlight, status badges)
+  - ✅ Payment confirm dialog
+  - ✅ Refund countdown (48h)
+  - ✅ Author answer form
+  - ✅ AI answer display
+  - ✅ Comment section (free)
+  - ✅ Question suggestion popup (detect hỏi chùa)
+  - ✅ Text selection popup "Hỏi AI (1.000đ)"
+  - ✅ Insufficient balance dialog
+
+  ---
+  📌 PHASE 5: WALLET SYSTEM (Tuần 5)
+
+  Task 5.1: Wallet API Service
+
+  // services/api/wallet.api.ts
+  import apiClient from './client';
+  import { Wallet, Transaction } from '@/types/wallet.types';
+  import { ApiResponse, PaginatedResponse } from '@/types/api.types';
+
+  export const walletApi = {
+    // Lấy thông tin ví
+    getBalance: () =>
+      apiClient.get<ApiResponse<Wallet>>('/wallet'),
+
+    // Lịch sử giao dịch
+    getTransactions: (params?: {
+      page?: number;
+      limit?: number;
+      type?: string;
+    }) => apiClient.get<PaginatedResponse<Transaction>>('/wallet/transactions', { params }),
+
+    // Tạo link nạp tiền (VNPay/MoMo)
+    createDeposit: (payload: {
+      amount: number;
+      method: 'vnpay' | 'momo';
+    }) => apiClient.post<ApiResponse<{ paymentUrl: string; orderId: string }>>(
+      '/wallet/deposit', payload
+    ),
+
+    // Yêu cầu rút tiền
+    requestWithdraw: (payload: {
+      amount: number;
+      bankCode: string;
+      accountNumber: string;
+      accountName: string;
+    }) => apiClient.post<ApiResponse<Transaction>>('/wallet/withdraw', payload),
+
+    // Thống kê thu nhập (cho tác giả)
+    getEarningStats: (params?: { from?: string; to?: string }) =>
+      apiClient.get<ApiResponse<{
+        totalEarned: number;
+        thisMonth: number;
+        lastMonth: number;
+        questionCount: number;
+      }>>('/wallet/earnings', { params }),
+  };
+
+  Task 5.2: Wallet Overview Page
+
+  // app/(main)/wallet/page.tsx
+  'use client';
+
+  import { useQuery } from '@tanstack/react-query';
+  import { walletApi } from '@/services/api/wallet.api';
+  import { WalletOverview } from '@/components/wallet/WalletOverview';
+  import { TransactionList } from '@/components/wallet/TransactionList';
+  import { Button } from '@/components/ui/button';
+  import Link from 'next/link';
+  import { Plus, ArrowUpRight } from 'lucide-react';
+
+  export default function WalletPage() {
+    const { data: walletData, isLoading } = useQuery({
+      queryKey: ['wallet'],
+      queryFn: walletApi.getBalance,
+    });
+
+    const wallet = walletData?.data?.data;
+
+    return (
+      <div className="space-y-6 max-w-2xl mx-auto">
+        <h1 className="text-2xl font-bold">Ví của tôi</h1>
+
+        {/* Tổng quan */}
+        <WalletOverview wallet={wallet} isLoading={isLoading} />
+
+        {/* Actions */}
+        <div className="grid grid-cols-2 gap-3">
+          <Button asChild className="bg-green-600 hover:bg-green-700">
+            <Link href="/wallet/deposit">
+              <Plus className="w-4 h-4 mr-2" /> Nạp tiền
+            </Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/wallet/withdraw">
+              <ArrowUpRight className="w-4 h-4 mr-2" /> Rút tiền
+            </Link>
+          </Button>
+        </div>
+
+        {/* Lịch sử giao dịch */}
+        <div>
+          <h2 className="text-lg font-semibold mb-3">Lịch sử giao dịch</h2>
+          <TransactionList />
+        </div>
+      </div>
+    );
+  }
+
+  Task 5.3: WalletOverview Component
+
+  // components/wallet/WalletOverview.tsx
+  import { Wallet } from '@/types/wallet.types';
+  import { Card } from '@/components/ui/card';
+  import { Skeleton } from '@/components/ui/skeleton';
+  import { Wallet as WalletIcon, TrendingUp, TrendingDown } from 'lucide-react';
+  import { formatCurrency } from '@/lib/formatters';
+
+  interface WalletOverviewProps {
+    wallet: Wallet | undefined;
+    isLoading: boolean;
+  }
+
+  export function WalletOverview({ wallet, isLoading }: WalletOverviewProps) {
+    if (isLoading) {
+      return <Skeleton className="h-40 w-full rounded-xl" />;
+    }
+
+    return (
+      <Card className="p-6 bg-gradient-to-br from-amber-500 to-orange-600 text-white">
+        <div className="flex items-center gap-2 mb-4">
+          <WalletIcon className="w-5 h-5" />
+          <span className="text-sm opacity-90">Số dư hiện tại</span>
+        </div>
+
+        <p className="text-4xl font-bold mb-6">
+          {formatCurrency(wallet?.balance || 0)}
+        </p>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-green-200" />
+            <div>
+              <p className="text-xs opacity-75">Tổng thu</p>
+              <p className="text-sm font-semibold">
+                {formatCurrency(wallet?.totalEarned || 0)}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <TrendingDown className="w-4 h-4 text-red-200" />
+            <div>
+              <p className="text-xs opacity-75">Tổng chi</p>
+              <p className="text-sm font-semibold">
+                {formatCurrency(wallet?.totalSpent || 0)}
+              </p>
+            </div>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  Task 5.4: TransactionList + TransactionItem
+
+  // components/wallet/TransactionItem.tsx
+  import { Transaction } from '@/types/wallet.types';
+  import { formatCurrency } from '@/lib/formatters';
+  import { formatDistanceToNow } from 'date-fns';
+  import { vi } from 'date-fns/locale';
+  import {
+    ArrowDownLeft, ArrowUpRight, HelpCircle,
+    Bot, RotateCcw, CreditCard
+  } from 'lucide-react';
+  import { cn } from '@/lib/utils';
+
+  const typeConfig = {
+    deposit: { icon: ArrowDownLeft, color: 'text-green-600', bg: 'bg-green-50', label: 'Nạp tiền', sign: '+' },
+    withdraw: { icon: ArrowUpRight, color: 'text-red-600', bg: 'bg-red-50', label: 'Rút tiền', sign: '-' },
+    question_fee: { icon: HelpCircle, color: 'text-amber-600', bg: 'bg-amber-50', label: 'Đặt câu hỏi', sign: '-' },
+    question_earning: { icon: CreditCard, color: 'text-green-600', bg: 'bg-green-50', label: 'Thu nhập câu hỏi', sign: '+' },
+    ai_fee: { icon: Bot, color: 'text-purple-600', bg: 'bg-purple-50', label: 'Hỏi AI', sign: '-' },
+    refund: { icon: RotateCcw, color: 'text-blue-600', bg: 'bg-blue-50', label: 'Hoàn tiền', sign: '+' },
+  };
+
+  interface TransactionItemProps {
+    transaction: Transaction;
+  }
+
+  export function TransactionItem({ transaction }: TransactionItemProps) {
+    const config = typeConfig[transaction.type];
+    const Icon = config.icon;
+    const isPositive = config.sign === '+';
+
+    return (
+      <div className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg transition-colors">
+        <div className="flex items-center gap-3">
+          <div className={cn('p-2 rounded-full', config.bg)}>
+            <Icon className={cn('w-4 h-4', config.color)} />
+          </div>
+          <div>
+            <p className="text-sm font-medium">{config.label}</p>
+            <p className="text-xs text-muted-foreground">
+              {transaction.description}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {formatDistanceToNow(new Date(transaction.createdAt), {
+                addSuffix: true,
+                locale: vi,
+              })}
+            </p>
+          </div>
+        </div>
+
+        <div className="text-right">
+          <p className={cn(
+            'text-sm font-bold',
+            isPositive ? 'text-green-600' : 'text-red-600'
+          )}>
+            {config.sign}{formatCurrency(transaction.amount)}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Còn lại: {formatCurrency(transaction.balanceAfter)}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  Task 5.5: Deposit Page (Nạp tiền)
+
+  // app/(main)/wallet/deposit/page.tsx
+  'use client';
+
+  import { useState } from 'react';
+  import { useMutation } from '@tanstack/react-query';
+  import { walletApi } from '@/services/api/wallet.api';
+  import { Button } from '@/components/ui/button';
+  import { Card } from '@/components/ui/card';
+  import { toast } from 'sonner';
+  import { cn } from '@/lib/utils';
+  import { formatCurrency } from '@/lib/formatters';
+
+  const PRESET_AMOUNTS = [20000, 50000, 100000, 200000, 500000];
+
+  export default function DepositPage() {
+    const [amount, setAmount] = useState(50000);
+    const [method, setMethod] = useState<'vnpay' | 'momo'>('vnpay');
+
+    const mutation = useMutation({
+      mutationFn: walletApi.createDeposit,
+      onSuccess: ({ data }) => {
+        // Redirect to payment gateway
+        window.location.href = data.data.paymentUrl;
+      },
+      onError: () => {
+        toast.error('Tạo lệnh nạp tiền thất bại');
+      },
+    });
+
+    return (
+      <div className="max-w-md mx-auto space-y-6">
+        <h1 className="text-2xl font-bold">Nạp tiền vào ví</h1>
+
+        {/* Chọn số tiền */}
+        <Card className="p-5">
+          <h3 className="font-medium mb-3">Chọn số tiền nạp</h3>
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {PRESET_AMOUNTS.map((preset) => (
+              <button
+                key={preset}
+                onClick={() => setAmount(preset)}
+                className={cn(
+                  'p-3 rounded-lg border-2 text-sm font-medium transition-all',
+                  amount === preset
+                    ? 'border-amber-500 bg-amber-50 text-amber-700'
+                    : 'border-gray-200 hover:border-gray-300'
+                )}
+              >
+                {formatCurrency(preset)}
+              </button>
+            ))}
+          </div>
+
+          <p className="text-center text-2xl font-bold text-amber-600">
+            {formatCurrency(amount)}
+          </p>
+          <p className="text-center text-sm text-muted-foreground">
+            = {(amount / 1000).toLocaleString()} câu hỏi
+          </p>
+        </Card>
+
+        {/* Chọn phương thức */}
+        <Card className="p-5">
+          <h3 className="font-medium mb-3">Phương thức thanh toán</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setMethod('vnpay')}
+              className={cn(
+                'p-4 rounded-lg border-2 text-center transition-all',
+                method === 'vnpay'
+                  ? 'border-blue-500 bg-blue-50'
+                  : 'border-gray-200'
+              )}
+            >
+              <p className="font-medium">VNPay</p>
+              <p className="text-xs text-muted-foreground">Thẻ ATM / Visa</p>
+            </button>
+            <button
+              onClick={() => setMethod('momo')}
+              className={cn(
+                'p-4 rounded-lg border-2 text-center transition-all',
+                method === 'momo'
+                  ? 'border-pink-500 bg-pink-50'
+                  : 'border-gray-200'
+              )}
+            >
+              <p className="font-medium">MoMo</p>
+              <p className="text-xs text-muted-foreground">Ví MoMo</p>
+            </button>
+          </div>
+        </Card>
+
+        {/* Nút nạp */}
+        <Button
+          onClick={() => mutation.mutate({ amount, method })}
+          disabled={mutation.isPending}
+          className="w-full bg-amber-600 hover:bg-amber-700 h-12 text-base"
+        >
+          {mutation.isPending
+            ? 'Đang tạo lệnh...'
+            : `Nạp ${formatCurrency(amount)}`}
+        </Button>
+      </div>
+    );
+  }
+
+  Task 5.6: Withdraw Page (Rút tiền)
+
+  Task 5.7: InsufficientBalance Dialog
+
+  Deliverables Tuần 5:
+
+  - ✅ Wallet overview (số dư, tổng thu/chi)
+  - ✅ Transaction history list
+  - ✅ Deposit page (VNPay/MoMo integration)
+  - ✅ Withdraw page (nhập thông tin ngân hàng)
+  - ✅ Insufficient balance dialog (redirect nạp tiền)
+  - ✅ Wallet badge real-time update
+
+  ---
+  📌 PHASE 6: REAL-TIME + NOTIFICATIONS (Tuần 6)
+
+  Task 6.1: Socket.IO Client
+
+  // services/socket/socketClient.ts
+  import { io, Socket } from 'socket.io-client';
+  import { useAuthStore } from '@/stores/authStore';
+
+  let socket: Socket | null = null;
+
+  export function getSocket(): Socket {
+    if (!socket) {
+      socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3000', {
+        auth: {
+          token: useAuthStore.getState().accessToken,
+        },
+        autoConnect: false,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+      });
+    }
+    return socket;
+  }
+
+  export function disconnectSocket() {
+    if (socket) {
+      socket.disconnect();
+      socket = null;
+    }
+  }
+
+  Task 6.2: Socket Hook
+
+  // hooks/useSocket.ts
+  'use client';
+
+  import { useEffect, useRef } from 'react';
+  import { getSocket, disconnectSocket } from '@/services/socket/socketClient';
+  import { useAuthStore } from '@/stores/authStore';
+  import { useWalletStore } from '@/stores/walletStore';
+  import { useNotificationStore } from '@/stores/notificationStore';
+  import { useQueryClient } from '@tanstack/react-query';
+
+  export function useSocket() {
+    const { isAuthenticated, accessToken } = useAuthStore();
+    const { setBalance } = useWalletStore();
+    const { incrementUnread, addNotification } = useNotificationStore();
+    const queryClient = useQueryClient();
+    const initialized = useRef(false);
+
+    useEffect(() => {
+      if (!isAuthenticated || !accessToken || initialized.current) return;
+
+      const socket = getSocket();
+      socket.auth = { token: accessToken };
+      socket.connect();
+      initialized.current = true;
+
+      // ---- Events ----
+
+      // Wallet balance update (real-time)
+      socket.on('wallet:balance_updated', (data: { balance: number }) => {
+        setBalance(data.balance);
+      });
+
+      // New notification
+      socket.on('notification:new', (notification: any) => {
+        addNotification(notification);
+        incrementUnread();
+      });
+
+      // Question answered (real-time update)
+      socket.on('question:answered', (data: { questionId: string; postId: string }) => {
+        queryClient.invalidateQueries({ queryKey: ['questions', data.postId] });
+      });
+
+      // AI answer ready
+      socket.on('question:ai_answered', (data: { questionId: string; postId: string }) => {
+        queryClient.invalidateQueries({ queryKey: ['questions', data.postId] });
+      });
+
+      // New comment on my post
+      socket.on('comment:new', (data: { postId: string }) => {
+        queryClient.invalidateQueries({ queryKey: ['comments', data.postId] });
+      });
+
+      return () => {
+        socket.off('wallet:balance_updated');
+        socket.off('notification:new');
+        socket.off('question:answered');
+        socket.off('question:ai_answered');
+        socket.off('comment:new');
+        disconnectSocket();
+        initialized.current = false;
+      };
+    }, [isAuthenticated, accessToken]);
+  }
+
+  Task 6.3: Notification Components
+
+  // components/notifications/NotificationBell.tsx
+  'use client';
+
+  import { Bell } from 'lucide-react';
+  import { useNotificationStore } from '@/stores/notificationStore';
+  import {
+    Popover, PopoverContent, PopoverTrigger,
+  } from '@/components/ui/popover'; // or Sheet for mobile
+  import { NotificationList } from './NotificationList';
+
+  export function NotificationBell() {
+    const { unreadCount } = useNotificationStore();
+
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button className="relative p-2 rounded-full hover:bg-gray-100 transition-colors">
+            <Bell className="w-5 h-5" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 text-white
+                               text-[10px] font-bold rounded-full flex items-center justify-center
+                               animate-pulse">
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-96 p-0 max-h-[500px] overflow-y-auto" align="end">
+          <NotificationList />
+        </PopoverContent>
+      </Popover>
+    );
+  }
+
+  Task 6.4: Global Socket Provider
+
+  // components/providers/SocketProvider.tsx
+  'use client';
+
+  import { useSocket } from '@/hooks/useSocket';
+
+  export function SocketProvider({ children }: { children: React.ReactNode }) {
+    useSocket();
+    return <>{children}</>;
+  }
+
+  // Thêm vào app/layout.tsx hoặc app/(main)/layout.tsx
+
+  Deliverables Tuần 6:
+
+  - ✅ Socket.IO connection + reconnection
+  - ✅ Real-time wallet balance update
+  - ✅ Real-time notifications (bell + popup)
+  - ✅ Real-time question answered
+  - ✅ Real-time new comment
+  - ✅ Notification list page
+
+  ---
+  📌 PHASE 7: AUTHOR DASHBOARD (Tuần 7)
+
+  Task 7.1: Dashboard Overview
+
+  // app/(main)/dashboard/page.tsx
+  'use client';
+
+  import { useQuery } from '@tanstack/react-query';
+  import { walletApi } from '@/services/api/wallet.api';
+  import { questionsApi } from '@/services/api/questions.api';
+  import { StatsCards } from '@/components/dashboard/StatsCards';
+  import { EarningsChart } from '@/components/dashboard/EarningsChart';
+  import { PendingQuestions } from '@/components/dashboard/PendingQuestions';
+  import { TopPosts } from '@/components/dashboard/TopPosts';
+
+  export default function DashboardPage() {
+    const { data: earnings } = useQuery({
+      queryKey: ['earnings'],
+      queryFn: () => walletApi.getEarningStats(),
+    });
+
+    const { data: pendingQuestions } = useQuery({
+      queryKey: ['questions', 'pending'],
+      queryFn: () => questionsApi.getPending({ page: 1 }),
+    });
+
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+
+        {/* Stats */}
+        <StatsCards earnings={earnings?.data?.data} />
+
+        {/* Chart */}
+        <EarningsChart />
+
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Câu hỏi cần trả lời */}
+          <PendingQuestions questions={pendingQuestions?.data?.data ?? []} />
+
+          {/* Bài viết top */}
+          <TopPosts />
+        </div>
+      </div>
+    );
+  }
+
+  Task 7.2: StatsCards
+
+  // components/dashboard/StatsCards.tsx
+  import { Card } from '@/components/ui/card';
+  import { formatCurrency } from '@/lib/formatters';
+  import { TrendingUp, HelpCircle, Eye, FileText } from 'lucide-react';
+
+  export function StatsCards({ earnings }: { earnings: any }) {
+    const stats = [
+      {
+        label: 'Thu nhập tháng này',
+        value: formatCurrency(earnings?.thisMonth || 0),
+        icon: TrendingUp,
+        color: 'text-green-600',
+        bg: 'bg-green-50',
+      },
+      {
+        label: 'Tổng thu nhập',
+        value: formatCurrency(earnings?.totalEarned || 0),
+        icon: TrendingUp,
+        color: 'text-amber-600',
+        bg: 'bg-amber-50',
+      },
+      {
+        label: 'Câu hỏi đã nhận',
+        value: earnings?.questionCount || 0,
+        icon: HelpCircle,
+        color: 'text-purple-600',
+        bg: 'bg-purple-50',
+      },
+    ];
+
+    return (
+      <div className="grid sm:grid-cols-3 gap-4">
+        {stats.map((stat) => (
+          <Card key={stat.label} className="p-5">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm text-muted-foreground">{stat.label}</span>
+              <div className={cn('p-2 rounded-full', stat.bg)}>
+                <stat.icon className={cn('w-4 h-4', stat.color)} />
+              </div>
+            </div>
+            <p className="text-2xl font-bold">{stat.value}</p>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  Task 7.3: PendingQuestions (câu hỏi cần trả lời)
+
+  Task 7.4: EarningsChart (biểu đồ doanh thu - Recharts)
+
+  Task 7.5: Dashboard quản lý bài viết
+
+  Task 7.6: Dashboard quản lý câu hỏi
+
+  Deliverables Tuần 7:
+
+  - ✅ Stats cards (thu nhập, câu hỏi)
+  - ✅ Earnings chart (7 ngày / 30 ngày)
+  - ✅ Pending questions list (trả lời nhanh)
+  - ✅ My posts management
+  - ✅ My questions management
+
+  ---
+  📌 PHASE 8: PROFILE + ADMIN + POLISH (Tuần 8)
+
+  Task 8.1: Public Profile Page
+
+  Task 8.2: Profile Settings (edit avatar, bio, bank info)
+
+  Task 8.3: Admin Dashboard
+
+  /admin
+  ├── Tổng quan (users, posts, revenue)
+  ├── Quản lý users (ban/unban)
+  ├── Quản lý bài viết (approve/reject)
+  ├── Quản lý giao dịch (đối soát)
+  └── Duyệt rút tiền (approve/reject withdrawals)
+
+  Task 8.4: SEO Optimization
+
+  - Dynamic metadata cho mỗi post (generateMetadata)
+  - Open Graph images
+  - Sitemap generation
+  - robots.txt
+
+  Task 8.5: Performance Optimization
+
+  - Image optimization (next/image)
+  - Code splitting (dynamic imports)
+  - Skeleton loading states
+  - Prefetch links
+
+  Task 8.6: Responsive Design
+
+  - Mobile-first approach
+  - Bottom navigation bar (mobile)
+  - Sheet drawer for mobile menus
+  - Touch-friendly question/comment interactions
+
+  Task 8.7: Dark Mode
+
+  // Tailwind dark mode support
+  // Toggle in Navbar
+
+  Deliverables Tuần 8:
+
+  - ✅ Profile pages
+  - ✅ Admin panel
+  - ✅ SEO optimized
+  - ✅ Fully responsive
+  - ✅ Dark mode
+  - ✅ Loading states + Error states
+
+  ---
+  📌 PHASE 9: TESTING + DEPLOYMENT (Tuần 9)
+
+  Task 9.1: Testing Setup
+
+  npm install -D vitest @testing-library/react @testing-library/jest-dom
+  npm install -D @testing-library/user-event jsdom msw
+
+  Task 9.2: Critical Test Cases
+
+  tests/
+  ├── components/
+  │   ├── QuestionForm.test.tsx       # Test payment flow
+  │   ├── PaymentConfirmDialog.test.tsx
+  │   ├── WalletOverview.test.tsx
+  │   └── PostCard.test.tsx
+  │
+  ├── hooks/
+  │   ├── useAuth.test.ts
+  │   └── useWallet.test.ts
+  │
+  └── e2e/
+      ├── auth-flow.spec.ts           # Login → Dashboard
+      ├── question-flow.spec.ts       # Đặt câu hỏi → Trừ tiền → Hiển thị
+      └── deposit-flow.spec.ts        # Nạp tiền → Update balance
+
+  Task 9.3: Docker
+
+  # Dockerfile
+  FROM node:20-alpine AS builder
+  WORKDIR /app
+  COPY package*.json ./
+  RUN npm ci
+  COPY . .
+  RUN npm run build
+
+  FROM node:20-alpine AS runner
+  WORKDIR /app
+  ENV NODE_ENV=production
+  COPY --from=builder /app/.next/standalone ./
+  COPY --from=builder /app/.next/static ./.next/static
+  COPY --from=builder /app/public ./public
+  EXPOSE 3001
+  CMD ["node", "server.js"]
+
+  # docker-compose.yml (thêm vào file backend)
+    frontend:
+      build:
+        context: ./frontend
+        dockerfile: Dockerfile
+      ports:
+        - "3001:3001"
+      environment:
+        - NEXT_PUBLIC_API_URL=http://api:3000/api/v1
+        - NEXT_PUBLIC_SOCKET_URL=http://api:3000
+      depends_on:
+        - api
+      restart: unless-stopped
+
+  Deliverables Tuần 9:
+
+  - ✅ Unit tests cho critical components
+  - ✅ E2E tests cho core flows
+  - ✅ Docker containerized
+  - ✅ CI/CD pipeline
+  - ✅ Production deployment
+
+  ---
+  📅 TIMELINE TỔNG HỢP
+
+  ┌────────────────────────────────────────────────────────────────┐
+  │                   9 TUẦN BUILD FRONTEND MVP                     │
+  ├───────────┬────────────────────────────────────────────────────┤
+  │ Tuần 1    │ Project Setup + Axios + Stores + Types + Middleware│
+  │ Tuần 2    │ Auth (Login/Register) + Layout System + Navbar     │
+  │ Tuần 3    │ Posts (Feed + Editor + Detail + CRUD)              │
+  │ Tuần 4 ⭐ │ Questions (Form + Payment + List) + Comments       │
+  │ Tuần 5    │ Wallet (Overview + Deposit + Withdraw + History)   │
+  │ Tuần 6    │ Real-time (Socket.IO + Notifications)              │
+  │ Tuần 7    │ Author Dashboard (Stats + Earnings + Management)   │
+  │ Tuần 8    │ Profile + Admin + SEO + Responsive + Dark Mode     │
+  │ Tuần 9    │ Testing + Docker + Deploy + Bug fixes              │
+  ├───────────┼────────────────────────────────────────────────────┤
+  │ Tuần 10+  │ Beta testing + User feedback + Iteration           │
+  └───────────┴────────────────────────────────────────────────────┘
+
+  ---
+  ✅ CHECKLIST TRƯỚC KHI LAUNCH
+
+  [ ] Auth flow hoạt động đúng (login/register/refresh/logout)
+  [ ] Post CRUD + Editor hoạt động mượt
+  [ ] Question flow: Đặt câu hỏi → Trừ tiền → Hiển thị → Trả lời
+  [ ] AI answer hiển thị real-time khi ready
+  [ ] Wallet: Nạp tiền → VNPay/MoMo redirect → Callback update balance
+  [ ] Wallet: Rút tiền → Pending → Admin duyệt
+  [ ] Refund countdown hiện đúng, hoàn tiền tự động
+  [ ] Notifications real-time (Socket.IO)
+  [ ] Text selection popup "Hỏi AI" hoạt động
+  [ ] Question suggestion popup khi detect hỏi chùa
+  [ ] Responsive trên mobile/tablet
+  [ ] Dark mode
+  [ ] SEO metadata cho mỗi post
+  [ ] Loading states + Error states + Empty states
+  [ ] Rate limiting feedback (toast khi bị limit)
+  [ ] Insufficient balance → redirect nạp tiền
+  [ ] Admin panel: Duyệt rút tiền, quản lý users/posts
+  [ ] Performance: Lighthouse score > 90
+
+  ---
+  🚀 BẮT ĐẦU TỪ ĐÂU?
+
+  Gợi ý thứ tự ưu tiên:
+
+  1. Phase 1 + 2: Setup + Auth (nền tảng để test mọi thứ)
+  2. Phase 3: Posts (có content để test comment/question)
+  3. Phase 4 ⭐: Questions + Comments (CORE - phần tạo doanh thu)
+  4. Phase 5: Wallet (kết nối thanh toán)
+  5. Còn lại theo thứ tự
