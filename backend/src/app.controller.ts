@@ -7,7 +7,7 @@ export class AppController {
     return {
       status: 'ok',
       service: 'blog-website-backend',
-      phase: 'phase-2',
+      phase: 'phase-9',
       timestamp: new Date().toISOString(),
     };
   }

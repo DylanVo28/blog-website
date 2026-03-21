@@ -11,10 +11,15 @@ async function bootstrap(): Promise<void> {
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new AppValidationPipe());
 
+  const host = process.env.APP_HOST ?? '0.0.0.0';
   const port = Number(process.env.APP_PORT ?? 3000);
-  await app.listen(port);
+  await app.listen(port, host);
 
-  Logger.log(`Backend listening on http://localhost:${port}/api`, 'Bootstrap');
+  const publicHost = host === '0.0.0.0' ? 'localhost' : host;
+  Logger.log(
+    `Backend listening on http://${publicHost}:${port}/api`,
+    'Bootstrap',
+  );
 }
 
 void bootstrap();
