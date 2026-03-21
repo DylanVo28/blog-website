@@ -6,7 +6,9 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AppThrottlerGuard } from '../../common/guards/app-throttler.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AnswerQuestionDto } from './dto/answer-question.dto';
 import { CreateQuestionDto } from './dto/create-question.dto';
@@ -17,7 +19,13 @@ export class QuestionsController {
   constructor(private readonly questionsService: QuestionsService) {}
 
   @Post('posts/:postId/questions')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AppThrottlerGuard)
+  @Throttle({
+    default: {
+      limit: 10,
+      ttl: 60000,
+    },
+  })
   create(
     @Param('postId') postId: string,
     @CurrentUser('sub') askerId: string,

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AppThrottlerGuard } from '../../common/guards/app-throttler.guard';
 import { AiModule } from '../ai/ai.module';
 import { PostEntity } from '../posts/entities/post.entity';
 import { UserEntity } from '../users/entities/user.entity';
@@ -23,7 +24,7 @@ import { QuestionsService } from './questions.service';
     ]),
   ],
   controllers: [QuestionsController],
-  providers: [QuestionsService],
+  providers: [QuestionsService, AppThrottlerGuard],
   exports: [QuestionsService, TypeOrmModule],
 })
 export class QuestionsModule {}

@@ -11,6 +11,12 @@ import { CommentEntity } from './entities/comment.entity';
 
 @Injectable()
 export class CommentsService {
+  private readonly questionPatterns = [
+    /\?/,
+    /\b(lam sao|nhu the nao|tai sao|cho hoi|giup minh|giai thich)\b/i,
+    /\b(how|why|what|can you|could you|please explain)\b/i,
+  ];
+
   constructor(
     @InjectRepository(CommentEntity)
     private readonly commentsRepository: Repository<CommentEntity>,
@@ -22,15 +28,28 @@ export class CommentsService {
     await this.ensurePostExists(postId);
     await this.validateParent(dto.parentId, postId);
 
-    const comment = this.commentsRepository.create({
-      postId,
-      userId,
-      parentId: dto.parentId ?? null,
-      content: dto.content,
-      isHidden: false,
-    });
+    const comment = await this.commentsRepository.save(
+      this.commentsRepository.create({
+        postId,
+        userId,
+        parentId: dto.parentId ?? null,
+        content: dto.content,
+        isHidden: false,
+      }),
+    );
 
-    return this.commentsRepository.save(comment);
+    const suggestion = this.detectQuestion(dto.content)
+      ? {
+          show: true,
+          message:
+            'Co ve ban dang muon hoi tac gia? Dung tinh nang Question (1.000d) de duoc uu tien tra loi!',
+        }
+      : null;
+
+    return {
+      comment,
+      suggestion,
+    };
   }
 
   async listByPost(postId: string) {
@@ -82,6 +101,14 @@ export class CommentsService {
       id: commentId,
       removed: true,
     };
+  }
+
+  private detectQuestion(text: string): boolean {
+    const matchCount = this.questionPatterns.filter((pattern) =>
+      pattern.test(text),
+    ).length;
+
+    return matchCount >= 2;
   }
 
   private async ensurePostExists(postId: string) {

@@ -8,7 +8,9 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AppThrottlerGuard } from '../../common/guards/app-throttler.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { CommentsService } from './comments.service';
@@ -18,7 +20,13 @@ export class CommentsController {
   constructor(private readonly commentsService: CommentsService) {}
 
   @Post('posts/:postId/comments')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AppThrottlerGuard)
+  @Throttle({
+    default: {
+      limit: 10,
+      ttl: 60000,
+    },
+  })
   create(
     @Param('postId') postId: string,
     @CurrentUser('sub') userId: string,
