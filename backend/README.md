@@ -51,3 +51,22 @@ npm run start:dev
 - `docker compose up --build -d` sẽ build image mới và tự apply migrations từ `dist/database/migrations/*.js`.
 - Trong compose, API dùng host nội bộ `postgres` và `redis`; khi chạy local ngoài Docker có thể giữ `localhost` trong `.env`.
 - Tiền được lưu bằng `BIGINT` theo đơn vị đồng và mọi giao dịch nên tiếp tục đi qua transaction log.
+
+## SMTP / Email
+
+Backend đã có `MailService` dùng SMTP qua `nodemailer`. Để bật email forgot/reset password, hãy cấu hình các biến sau trong `backend/.env`:
+
+```bash
+FRONTEND_URL=http://localhost:3001
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your-user
+SMTP_PASS=your-password
+SMTP_FROM_NAME=Inkline
+SMTP_FROM_EMAIL=no-reply@example.com
+SMTP_REQUIRE_TLS=false
+SMTP_IGNORE_TLS=false
+```
+
+Nếu chưa cấu hình SMTP, backend sẽ bỏ qua việc gửi mail và vẫn trả dev token khi chạy ngoài production để bạn test flow reset password.

@@ -20,6 +20,7 @@ import { aiConfig } from './config/ai.config';
 import { buildTypeOrmOptions, databaseConfig } from './config/database.config';
 import { AiAnswerProcessor } from './jobs/ai-answer.processor';
 import { jwtConfig } from './config/jwt.config';
+import { mailConfig } from './config/mail.config';
 import { JobsModule } from './jobs/jobs.module';
 import { paymentConfig } from './config/payment.config';
 import { PaymentProcessor } from './jobs/payment.processor';
@@ -33,7 +34,14 @@ import { RefundProcessor } from './jobs/refund.processor';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
-      load: [databaseConfig, redisConfig, jwtConfig, paymentConfig, aiConfig],
+      load: [
+        databaseConfig,
+        redisConfig,
+        jwtConfig,
+        paymentConfig,
+        aiConfig,
+        mailConfig,
+      ],
     }),
     TypeOrmModule.forRootAsync({
       useFactory: () => buildTypeOrmOptions(),

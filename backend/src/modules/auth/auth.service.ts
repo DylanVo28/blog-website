@@ -13,6 +13,7 @@ import { DataSource, LessThan, MoreThan, Repository } from 'typeorm';
 import { AppRole } from '../../common/constants';
 import { hashPassword, verifyPassword } from '../../common/utils/password.util';
 import { generateToken, hashToken } from '../../common/utils/token.util';
+import { MailService } from '../mail/mail.service';
 import { UserEntity } from '../users/entities/user.entity';
 import { WalletEntity } from '../wallet/entities/wallet.entity';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -40,6 +41,7 @@ export class AuthService {
     private readonly dataSource: DataSource,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
     @InjectRepository(UserEntity)
     private readonly usersRepository: Repository<UserEntity>,
     @InjectRepository(PasswordResetTokenEntity)
@@ -240,6 +242,13 @@ export class AuthService {
     });
 
     const resetUrl = this.buildResetPasswordUrl(resetToken);
+    await this.mailService.sendPasswordResetEmail({
+      to: user.email,
+      userName: user.displayName || user.email,
+      resetUrl,
+      otpCode,
+      expiresInMinutes: AuthService.PASSWORD_RESET_TOKEN_TTL_MINUTES,
+    });
 
     return {
       ...genericResponse,
@@ -316,6 +325,13 @@ export class AuthService {
           usedAt: passwordChangedAt,
         },
       );
+    });
+
+    await this.mailService.sendPasswordChangedNotification({
+      to: user.email,
+      userName: user.displayName || user.email,
+      changedAt: passwordChangedAt,
+      ipAddress: null,
     });
 
     return {
