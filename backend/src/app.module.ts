@@ -18,8 +18,11 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { AppController } from './app.controller';
 import { aiConfig } from './config/ai.config';
 import { buildTypeOrmOptions, databaseConfig } from './config/database.config';
+import { AiAnswerProcessor } from './jobs/ai-answer.processor';
 import { jwtConfig } from './config/jwt.config';
+import { JobsModule } from './jobs/jobs.module';
 import { paymentConfig } from './config/payment.config';
+import { PaymentProcessor } from './jobs/payment.processor';
 import { redisConfig } from './config/redis.config';
 import { EmbeddingProcessor } from './jobs/embedding.processor';
 import { NotificationProcessor } from './jobs/notification.processor';
@@ -41,6 +44,7 @@ import { RefundProcessor } from './jobs/refund.processor';
         limit: 60,
       },
     ]),
+    JobsModule,
     AuthModule,
     UsersModule,
     PostsModule,
@@ -56,7 +60,9 @@ import { RefundProcessor } from './jobs/refund.processor';
   providers: [
     RefundProcessor,
     EmbeddingProcessor,
+    AiAnswerProcessor,
     NotificationProcessor,
+    PaymentProcessor,
     {
       provide: APP_FILTER,
       useClass: HttpExceptionFilter,

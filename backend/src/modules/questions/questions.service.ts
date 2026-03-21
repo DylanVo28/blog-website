@@ -9,7 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { DEFAULT_QUESTION_FEE } from '../../common/constants';
 import { toNumber } from '../../common/utils/number.util';
-import { AiService } from '../ai/ai.service';
+import { JobQueueService } from '../../jobs/job-queue.service';
 import { PostEntity } from '../posts/entities/post.entity';
 import { TransactionEntity } from '../wallet/entities/transaction.entity';
 import { WalletEntity } from '../wallet/entities/wallet.entity';
@@ -24,7 +24,7 @@ export class QuestionsService {
 
   constructor(
     private readonly dataSource: DataSource,
-    private readonly aiService: AiService,
+    private readonly jobQueueService: JobQueueService,
     private readonly walletService: WalletService,
     @InjectRepository(QuestionEntity)
     private readonly questionsRepository: Repository<QuestionEntity>,
@@ -150,15 +150,18 @@ export class QuestionsService {
 
     if (dto.target === 'ai') {
       try {
-        return this.aiService.answerQuestion(
-          question.id,
+        await this.jobQueueService.enqueueAiAnswer({
+          questionId: question.id,
           postId,
-          dto.content,
-          post.authorId,
-        );
+          content: dto.content,
+          authorId: post.authorId,
+          askerId,
+        });
+
+        return this.findQuestionOrFail(question.id);
       } catch (error) {
         this.logger.error(
-          `AI auto-answer failed for question ${question.id}`,
+          `AI answer job enqueue failed for question ${question.id}`,
           error instanceof Error ? error.message : undefined,
         );
 
@@ -172,6 +175,23 @@ export class QuestionsService {
           );
         }
       }
+    }
+
+    if (dto.target === 'author' && post.authorId !== askerId) {
+      void this.jobQueueService.enqueueNotification({
+        type: 'question_created',
+        recipientId: post.authorId,
+        payload: {
+          questionId: question.id,
+          postId,
+          target: dto.target,
+        },
+      }).catch((error) => {
+        this.logger.warn(
+          `Unable to enqueue question_created notification for question ${question.id}.`,
+          error instanceof Error ? error.message : undefined,
+        );
+      });
     }
 
     return this.findQuestionOrFail(question.id);
@@ -300,7 +320,27 @@ export class QuestionsService {
     question.answeredAt = new Date();
     question.status = 'answered';
 
-    return this.questionsRepository.save(question);
+    const savedQuestion = await this.questionsRepository.save(question);
+
+    if (savedQuestion.askerId !== answeredBy) {
+      void this.jobQueueService.enqueueNotification({
+        type: 'question_answered',
+        recipientId: savedQuestion.askerId,
+        payload: {
+          questionId: savedQuestion.id,
+          target: savedQuestion.target,
+          postId: savedQuestion.postId,
+          answeredBy,
+        },
+      }).catch((error) => {
+        this.logger.warn(
+          `Unable to enqueue question_answered notification for question ${savedQuestion.id}.`,
+          error instanceof Error ? error.message : undefined,
+        );
+      });
+    }
+
+    return savedQuestion;
   }
 
   async listMyQuestions(userId: string) {

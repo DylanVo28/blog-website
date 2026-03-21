@@ -1,12 +1,13 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { AppRole } from '../../common/constants';
-import { AiService } from '../ai/ai.service';
+import { JobQueueService } from '../../jobs/job-queue.service';
 import { CategoryEntity } from './entities/category.entity';
 import { PostEntity } from './entities/post.entity';
 import { PostTagEntity } from './entities/post-tag.entity';
@@ -17,8 +18,10 @@ import { UpdatePostDto } from './dto/update-post.dto';
 
 @Injectable()
 export class PostsService {
+  private readonly logger = new Logger(PostsService.name);
+
   constructor(
-    private readonly aiService: AiService,
+    private readonly jobQueueService: JobQueueService,
     @InjectRepository(PostEntity)
     private readonly postsRepository: Repository<PostEntity>,
     @InjectRepository(CategoryEntity)
@@ -188,7 +191,7 @@ export class PostsService {
     }
 
     if (shouldReindexPublishedPost) {
-      await this.aiService.indexPost(post.id);
+      this.queuePostEmbedding(post.id);
     }
 
     return this.findById(post.id);
@@ -217,7 +220,7 @@ export class PostsService {
     post.status = 'published';
     post.publishedAt = new Date();
     await this.postsRepository.save(post);
-    await this.aiService.indexPost(post.id);
+    this.queuePostEmbedding(post.id);
 
     return this.attachTags(post);
   }
@@ -375,5 +378,14 @@ export class PostsService {
     }
 
     return post;
+  }
+
+  private queuePostEmbedding(postId: string) {
+    void this.jobQueueService.enqueuePostEmbedding(postId).catch((error) => {
+      this.logger.warn(
+        `Unable to enqueue post embedding job for post ${postId}.`,
+        error instanceof Error ? error.message : undefined,
+      );
+    });
   }
 }

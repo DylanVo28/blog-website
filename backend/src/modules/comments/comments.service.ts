@@ -1,16 +1,19 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { JobQueueService } from '../../jobs/job-queue.service';
 import { PostEntity } from '../posts/entities/post.entity';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { CommentEntity } from './entities/comment.entity';
 
 @Injectable()
 export class CommentsService {
+  private readonly logger = new Logger(CommentsService.name);
   private readonly questionPatterns = [
     /\?/,
     /\b(lam sao|nhu the nao|tai sao|cho hoi|giup minh|giai thich)\b/i,
@@ -18,6 +21,7 @@ export class CommentsService {
   ];
 
   constructor(
+    private readonly jobQueueService: JobQueueService,
     @InjectRepository(CommentEntity)
     private readonly commentsRepository: Repository<CommentEntity>,
     @InjectRepository(PostEntity)
@@ -25,7 +29,7 @@ export class CommentsService {
   ) {}
 
   async create(postId: string, userId: string, dto: CreateCommentDto) {
-    await this.ensurePostExists(postId);
+    const post = await this.ensurePostExists(postId);
     await this.validateParent(dto.parentId, postId);
 
     const comment = await this.commentsRepository.save(
@@ -45,6 +49,18 @@ export class CommentsService {
             'Co ve ban dang muon hoi tac gia? Dung tinh nang Question (1.000d) de duoc uu tien tra loi!',
         }
       : null;
+
+    if (post.authorId !== userId) {
+      this.queueNotification({
+        type: 'comment_created',
+        recipientId: post.authorId,
+        payload: {
+          commentId: comment.id,
+          postId,
+          userId,
+        },
+      });
+    }
 
     return {
       comment,
@@ -111,7 +127,20 @@ export class CommentsService {
     return matchCount >= 2;
   }
 
-  private async ensurePostExists(postId: string) {
+  private queueNotification(input: {
+    type: string;
+    recipientId: string;
+    payload: Record<string, unknown>;
+  }) {
+    void this.jobQueueService.enqueueNotification(input).catch((error) => {
+      this.logger.warn(
+        `Unable to enqueue comment notification for recipient ${input.recipientId}.`,
+        error instanceof Error ? error.message : undefined,
+      );
+    });
+  }
+
+  private async ensurePostExists(postId: string): Promise<PostEntity> {
     const post = await this.postsRepository.findOne({
       where: {
         id: postId,
@@ -121,6 +150,8 @@ export class CommentsService {
     if (!post) {
       throw new NotFoundException('Post not found.');
     }
+
+    return post;
   }
 
   private async validateParent(parentId: string | undefined, postId: string) {

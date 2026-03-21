@@ -34,6 +34,13 @@ export class PaymentService {
     return this.processDepositCallback('momo', dto);
   }
 
+  async processQueuedCallback(
+    provider: 'vnpay' | 'momo',
+    dto: PaymentCallbackDto,
+  ) {
+    return this.processDepositCallback(provider, dto);
+  }
+
   handleVnpayReturn(query: Record<string, unknown>) {
     return {
       provider: 'vnpay',

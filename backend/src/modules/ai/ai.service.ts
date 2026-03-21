@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { JobQueueService } from '../../jobs/job-queue.service';
 import { PostEntity } from '../posts/entities/post.entity';
 import { QuestionEntity } from '../questions/entities/question.entity';
 import { AiQuestionDto } from './dto/ai-question.dto';
@@ -46,6 +47,7 @@ export class AiService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
+    private readonly jobQueueService: JobQueueService,
     private readonly chunkingService: ChunkingService,
     private readonly embeddingService: EmbeddingService,
     private readonly retrievalService: RetrievalService,
@@ -96,6 +98,10 @@ export class AiService {
 
     if (!question) {
       throw new NotFoundException('Question not found for AI answer.');
+    }
+
+    if (question.status !== 'pending') {
+      return question;
     }
 
     const result = await this.ask({
@@ -187,10 +193,21 @@ export class AiService {
     );
 
     let indexedChunks = 0;
+    let embeddingQueued = false;
+    let embeddingJobId: string | null = null;
     if (content.trim()) {
-      const indexed = await this.indexAuthorDocument(document.id);
-      document = indexed.document;
-      indexedChunks = indexed.chunkCount;
+      try {
+        const job = await this.jobQueueService.enqueueAuthorDocumentEmbedding(
+          document.id,
+        );
+        embeddingQueued = true;
+        embeddingJobId = job.id ?? null;
+      } catch (error) {
+        this.logger.warn(
+          `Unable to enqueue author document embedding job for document ${document.id}.`,
+          error instanceof Error ? error.message : undefined,
+        );
+      }
     }
 
     return {
@@ -198,6 +215,8 @@ export class AiService {
       chunks,
       chunkCount: chunks.length,
       indexedChunks,
+      embeddingQueued,
+      embeddingJobId,
     };
   }
 
