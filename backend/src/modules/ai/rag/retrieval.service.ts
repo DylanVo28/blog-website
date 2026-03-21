@@ -1,14 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { PostEntity } from '../../posts/entities/post.entity';
 import { AuthorDocumentEntity } from '../entities/author-document.entity';
 import { ChunkingService } from './chunking.service';
+import { EmbeddingService } from './embedding.service';
 
 interface RetrievalInput {
   postId?: string;
   authorId?: string;
   question: string;
+  topK?: number;
+  vector?: number[];
 }
 
 export interface RetrievalContext extends Record<string, unknown> {
@@ -18,12 +21,15 @@ export interface RetrievalContext extends Record<string, unknown> {
   postId?: string;
   documentId?: string;
   title?: string;
+  chunkIndex?: number;
 }
 
 @Injectable()
 export class RetrievalService {
   constructor(
+    private readonly dataSource: DataSource,
     private readonly chunkingService: ChunkingService,
+    private readonly embeddingService: EmbeddingService,
     @InjectRepository(PostEntity)
     private readonly postsRepository: Repository<PostEntity>,
     @InjectRepository(AuthorDocumentEntity)
@@ -31,6 +37,101 @@ export class RetrievalService {
   ) {}
 
   async searchRelevantContext(input: RetrievalInput): Promise<RetrievalContext[]> {
+    const topK = input.topK ?? 5;
+    const questionVector =
+      input.vector ?? (await this.embeddingService.embed(input.question)).vector;
+    const vectorContexts = await this.search({
+      vector: questionVector,
+      postId: input.postId,
+      authorId: input.authorId,
+      topK,
+    });
+
+    if (vectorContexts.length >= topK) {
+      return vectorContexts;
+    }
+
+    const fallbackContexts = await this.searchFallbackContext(input);
+
+    return this.mergeContexts(vectorContexts, fallbackContexts, topK);
+  }
+
+  async search(params: {
+    vector: number[];
+    postId?: string;
+    authorId?: string;
+    topK: number;
+  }): Promise<RetrievalContext[]> {
+    if (!params.postId && !params.authorId) {
+      return [];
+    }
+
+    const vectorLiteral = this.embeddingService.toVectorLiteral(params.vector);
+    const rows = await this.dataSource.query(
+      `
+        SELECT *
+        FROM (
+          (
+            SELECT
+              'post' AS source,
+              pe.chunk_text AS "chunkText",
+              pe.chunk_index AS "chunkIndex",
+              pe.post_id AS "postId",
+              NULL::uuid AS "documentId",
+              COALESCE(pe.metadata ->> 'title', 'Post chunk') AS title,
+              1 - (pe.embedding <=> $1::vector) AS similarity
+            FROM post_embeddings pe
+            WHERE $2::uuid IS NOT NULL
+              AND pe.post_id = $2::uuid
+          )
+          UNION ALL
+          (
+            SELECT
+              'document' AS source,
+              de.chunk_text AS "chunkText",
+              de.chunk_index AS "chunkIndex",
+              ad.post_id AS "postId",
+              de.document_id AS "documentId",
+              COALESCE(ad.file_name, 'Author document') AS title,
+              1 - (de.embedding <=> $1::vector) AS similarity
+            FROM document_embeddings de
+            INNER JOIN author_documents ad ON ad.id = de.document_id
+            WHERE $3::uuid IS NOT NULL
+              AND de.author_id = $3::uuid
+              AND ($2::uuid IS NULL OR ad.post_id = $2::uuid OR ad.post_id IS NULL)
+          )
+        ) ranked
+        ORDER BY similarity DESC NULLS LAST
+        LIMIT $4
+      `,
+      [vectorLiteral, params.postId ?? null, params.authorId ?? null, params.topK],
+    );
+
+    return rows.map(
+      (row: {
+        source: string;
+        chunkText: string;
+        chunkIndex: number | string | null;
+        postId: string | null;
+        documentId: string | null;
+        title: string | null;
+        similarity: number | string | null;
+      }) => ({
+        source: row.source,
+        score: Number(Number(row.similarity ?? 0).toFixed(3)),
+        excerpt: row.chunkText.slice(0, 1200),
+        postId: row.postId ?? undefined,
+        documentId: row.documentId ?? undefined,
+        title: row.title ?? undefined,
+        chunkIndex:
+          row.chunkIndex === null ? undefined : Number(row.chunkIndex),
+      }),
+    );
+  }
+
+  private async searchFallbackContext(
+    input: RetrievalInput,
+  ): Promise<RetrievalContext[]> {
     const questionTerms = this.tokenize(input.question);
     const contexts: RetrievalContext[] = [];
 
@@ -47,7 +148,7 @@ export class RetrievalService {
           ...this.createContextsFromText({
             text: postText,
             questionTerms,
-            source: 'posts',
+            source: 'post',
             postId: post.id,
             title: post.title,
             includeLeadingChunksFallback: true,
@@ -81,7 +182,7 @@ export class RetrievalService {
           ...this.createContextsFromText({
             text: document.contentPlain ?? '',
             questionTerms,
-            source: 'author_documents',
+            source: 'document',
             postId: document.postId ?? undefined,
             documentId: document.id,
             title: document.fileName ?? 'Author document',
@@ -93,11 +194,43 @@ export class RetrievalService {
 
     return contexts
       .sort((left, right) => right.score - left.score)
-      .slice(0, 5)
+      .slice(0, input.topK ?? 5)
       .map((context) => ({
         ...context,
         excerpt: context.excerpt.slice(0, 1200),
       }));
+  }
+
+  private mergeContexts(
+    primary: RetrievalContext[],
+    fallback: RetrievalContext[],
+    topK: number,
+  ): RetrievalContext[] {
+    const merged: RetrievalContext[] = [];
+    const seen = new Set<string>();
+
+    for (const context of [...primary, ...fallback]) {
+      const key = [
+        context.source,
+        context.postId ?? '',
+        context.documentId ?? '',
+        context.chunkIndex ?? '',
+        context.excerpt,
+      ].join(':');
+
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      merged.push(context);
+
+      if (merged.length >= topK) {
+        break;
+      }
+    }
+
+    return merged;
   }
 
   private buildPostText(post: PostEntity): string {
@@ -154,6 +287,7 @@ export class RetrievalService {
       postId: input.postId,
       documentId: input.documentId,
       title: input.title,
+      chunkIndex: item.index,
     }));
   }
 

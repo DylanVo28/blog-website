@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   HttpException,
   HttpStatus,
@@ -9,12 +8,16 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
+import { PostEntity } from '../posts/entities/post.entity';
+import { QuestionEntity } from '../questions/entities/question.entity';
 import { AiQuestionDto } from './dto/ai-question.dto';
 import { AuthorDocumentEntity } from './entities/author-document.entity';
+import { DocumentEmbeddingEntity } from './entities/document-embedding.entity';
+import { PostEmbeddingEntity } from './entities/post-embedding.entity';
 import { ChunkingService } from './rag/chunking.service';
 import { EmbeddingService } from './rag/embedding.service';
-import { RetrievalService } from './rag/retrieval.service';
+import { RetrievalContext, RetrievalService } from './rag/retrieval.service';
 
 interface AnthropicMessageResponse {
   id: string;
@@ -41,16 +44,25 @@ export class AiService {
   private readonly logger = new Logger(AiService.name);
 
   constructor(
+    private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly chunkingService: ChunkingService,
     private readonly embeddingService: EmbeddingService,
     private readonly retrievalService: RetrievalService,
+    @InjectRepository(PostEntity)
+    private readonly postsRepository: Repository<PostEntity>,
+    @InjectRepository(QuestionEntity)
+    private readonly questionsRepository: Repository<QuestionEntity>,
     @InjectRepository(AuthorDocumentEntity)
     private readonly authorDocumentsRepository: Repository<AuthorDocumentEntity>,
   ) {}
 
   async ask(dto: AiQuestionDto) {
-    const contexts = await this.retrievalService.searchRelevantContext(dto);
+    const questionEmbedding = await this.embeddingService.embed(dto.question);
+    const contexts = await this.retrievalService.searchRelevantContext({
+      ...dto,
+      vector: questionEmbedding.vector,
+    });
     const anthropicResponse = await this.createAnthropicMessage(dto, contexts);
     const answer = this.extractTextContent(anthropicResponse.content);
 
@@ -61,25 +73,185 @@ export class AiService {
       stopReason: anthropicResponse.stop_reason,
       usage: anthropicResponse.usage ?? null,
       contexts,
-      embeddingPreview: this.embeddingService.generateEmbedding(dto.question),
+      embeddingPreview: {
+        provider: questionEmbedding.provider,
+        model: questionEmbedding.model,
+        dimensions: questionEmbedding.dimensions,
+        vectorPreview: questionEmbedding.vectorPreview,
+      },
     };
   }
 
-  async uploadAuthorDocument(authorId: string, fileName: string, content = '') {
+  async answerQuestion(
+    questionId: string,
+    postId: string,
+    content: string,
+    authorId: string,
+  ) {
+    const question = await this.questionsRepository.findOne({
+      where: {
+        id: questionId,
+      },
+    });
+
+    if (!question) {
+      throw new NotFoundException('Question not found for AI answer.');
+    }
+
+    const result = await this.ask({
+      question: content,
+      postId,
+      authorId,
+    });
+
+    question.answer = result.answer;
+    question.answeredBy = null;
+    question.answeredAt = new Date();
+    question.status = 'answered';
+
+    return this.questionsRepository.save(question);
+  }
+
+  async indexPost(postId: string) {
+    const post = await this.postsRepository.findOne({
+      where: {
+        id: postId,
+      },
+    });
+
+    if (!post) {
+      throw new NotFoundException('Post not found for indexing.');
+    }
+
+    const postText = this.buildPostText(post);
+    const chunks = this.chunkingService.chunk(postText, 700);
+    const embeddings = await this.embeddingService.embedMany(chunks);
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(PostEmbeddingEntity, {
+        postId,
+      });
+
+      for (const [index, embedding] of embeddings.entries()) {
+        await manager.query(
+          `
+            INSERT INTO post_embeddings (
+              post_id,
+              chunk_index,
+              chunk_text,
+              embedding,
+              metadata
+            )
+            VALUES ($1, $2, $3, $4::vector, $5::jsonb)
+          `,
+          [
+            postId,
+            index,
+            chunks[index],
+            embedding.vectorLiteral,
+            JSON.stringify({
+              title: post.title,
+              authorId: post.authorId,
+              chunkIndex: index,
+              source: 'post',
+            }),
+          ],
+        );
+      }
+    });
+
+    return {
+      postId,
+      chunkCount: chunks.length,
+      embeddingDimensions:
+        embeddings[0]?.dimensions ??
+        (this.configService.get<number>('ai.embeddingDimensions') ?? 768),
+    };
+  }
+
+  async uploadAuthorDocument(
+    authorId: string,
+    fileName: string,
+    content = '',
+    postId?: string,
+  ) {
     const chunks = this.chunkingService.chunk(content);
-    const document = await this.authorDocumentsRepository.save(
+    let document = await this.authorDocumentsRepository.save(
       this.authorDocumentsRepository.create({
         authorId,
+        postId: postId ?? null,
         fileName,
         contentPlain: content || null,
-        isProcessed: Boolean(content),
+        isProcessed: false,
       }),
     );
+
+    let indexedChunks = 0;
+    if (content.trim()) {
+      const indexed = await this.indexAuthorDocument(document.id);
+      document = indexed.document;
+      indexedChunks = indexed.chunkCount;
+    }
 
     return {
       ...document,
       chunks,
       chunkCount: chunks.length,
+      indexedChunks,
+    };
+  }
+
+  async indexAuthorDocument(documentId: string) {
+    const document = await this.authorDocumentsRepository.findOne({
+      where: {
+        id: documentId,
+      },
+    });
+
+    if (!document) {
+      throw new NotFoundException('Author document not found for indexing.');
+    }
+
+    const chunks = this.chunkingService.chunk(document.contentPlain ?? '', 700);
+    const embeddings = await this.embeddingService.embedMany(chunks);
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(DocumentEmbeddingEntity, {
+        documentId,
+      });
+
+      for (const [index, embedding] of embeddings.entries()) {
+        await manager.query(
+          `
+            INSERT INTO document_embeddings (
+              document_id,
+              author_id,
+              chunk_index,
+              chunk_text,
+              embedding
+            )
+            VALUES ($1, $2, $3, $4, $5::vector)
+          `,
+          [
+            document.id,
+            document.authorId,
+            index,
+            chunks[index],
+            embedding.vectorLiteral,
+          ],
+        );
+      }
+    });
+
+    document.isProcessed = chunks.length > 0;
+    const savedDocument = await this.authorDocumentsRepository.save(document);
+
+    return {
+      document: savedDocument,
+      chunkCount: chunks.length,
+      embeddingDimensions:
+        embeddings[0]?.dimensions ??
+        (this.configService.get<number>('ai.embeddingDimensions') ?? 768),
     };
   }
 
@@ -122,7 +294,7 @@ export class AiService {
 
   private async createAnthropicMessage(
     dto: AiQuestionDto,
-    contexts: Array<Record<string, unknown>>,
+    contexts: RetrievalContext[],
   ): Promise<AnthropicMessageResponse> {
     const apiKey = this.configService.get<string>('ai.apiKey');
 
@@ -240,7 +412,7 @@ export class AiService {
   }
 
   private buildSystemPrompt(
-    contexts: Array<Record<string, unknown>>,
+    contexts: RetrievalContext[],
   ): string {
     const lines = [
       'You are the paid AI assistant for a monetized blog platform.',
@@ -250,9 +422,19 @@ export class AiService {
     ];
 
     if (contexts.length > 0) {
-      lines.push('Retrieved context summary:');
+      lines.push('Retrieved context chunks:');
       for (const [index, context] of contexts.entries()) {
-        lines.push(`${index + 1}. ${JSON.stringify(context)}`);
+        lines.push(
+          [
+            `[${index + 1}] source=${context.source} score=${context.score}`,
+            context.title ? `title=${context.title}` : null,
+            context.postId ? `postId=${context.postId}` : null,
+            context.documentId ? `documentId=${context.documentId}` : null,
+            context.excerpt,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        );
       }
     }
 
@@ -261,7 +443,7 @@ export class AiService {
 
   private buildUserPrompt(
     dto: AiQuestionDto,
-    contexts: Array<Record<string, unknown>>,
+    contexts: RetrievalContext[],
   ): string {
     const contextHints: string[] = [];
 
@@ -284,6 +466,33 @@ export class AiService {
       'Request context:',
       contextHints.join('\n'),
     ].join('\n');
+  }
+
+  private buildPostText(post: PostEntity): string {
+    const contentPlain =
+      post.contentPlain?.trim() || this.extractTextFromRichContent(post.content);
+
+    return [post.title, post.excerpt, contentPlain]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join('\n\n');
+  }
+
+  private extractTextFromRichContent(value: unknown): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.extractTextFromRichContent(item)).join(' ');
+    }
+
+    if (value && typeof value === 'object') {
+      return Object.values(value as Record<string, unknown>)
+        .map((item) => this.extractTextFromRichContent(item))
+        .join(' ');
+    }
+
+    return '';
   }
 
   private extractTextContent(

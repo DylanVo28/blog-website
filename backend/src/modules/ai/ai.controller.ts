@@ -5,7 +5,6 @@ import {
   Get,
   Param,
   Post,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -28,8 +27,9 @@ export class AiController {
     @CurrentUser('sub') authorId: string,
     @Body('fileName') fileName: string,
     @Body('content') content = '',
+    @Body('postId') postId?: string,
   ) {
-    return this.aiService.uploadAuthorDocument(authorId, fileName, content);
+    return this.aiService.uploadAuthorDocument(authorId, fileName, content, postId);
   }
 
   @Get('authors/documents')

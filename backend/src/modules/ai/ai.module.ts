@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PostEntity } from '../posts/entities/post.entity';
+import { QuestionEntity } from '../questions/entities/question.entity';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 import { AuthorDocumentEntity } from './entities/author-document.entity';
+import { DocumentEmbeddingEntity } from './entities/document-embedding.entity';
 import { PostEmbeddingEntity } from './entities/post-embedding.entity';
 import { ChunkingService } from './rag/chunking.service';
 import { EmbeddingService } from './rag/embedding.service';
@@ -13,7 +15,9 @@ import { RetrievalService } from './rag/retrieval.service';
   imports: [
     TypeOrmModule.forFeature([
       PostEntity,
+      QuestionEntity,
       PostEmbeddingEntity,
+      DocumentEmbeddingEntity,
       AuthorDocumentEntity,
     ]),
   ],

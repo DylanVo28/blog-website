@@ -150,19 +150,12 @@ export class QuestionsService {
 
     if (dto.target === 'ai') {
       try {
-        const aiResult = await this.aiService.ask({
-          question: dto.content,
+        return this.aiService.answerQuestion(
+          question.id,
           postId,
-          authorId: post.authorId,
-        });
-
-        await this.questionsRepository.update(question.id, {
-          answer: aiResult.answer,
-          status: 'answered',
-          answeredAt: new Date(),
-        });
-
-        return this.findQuestionOrFail(question.id);
+          dto.content,
+          post.authorId,
+        );
       } catch (error) {
         this.logger.error(
           `AI auto-answer failed for question ${question.id}`,

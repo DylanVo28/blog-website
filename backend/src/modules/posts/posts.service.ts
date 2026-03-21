@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { AppRole } from '../../common/constants';
+import { AiService } from '../ai/ai.service';
 import { CategoryEntity } from './entities/category.entity';
 import { PostEntity } from './entities/post.entity';
 import { PostTagEntity } from './entities/post-tag.entity';
@@ -17,6 +18,7 @@ import { UpdatePostDto } from './dto/update-post.dto';
 @Injectable()
 export class PostsService {
   constructor(
+    private readonly aiService: AiService,
     @InjectRepository(PostEntity)
     private readonly postsRepository: Repository<PostEntity>,
     @InjectRepository(CategoryEntity)
@@ -140,6 +142,14 @@ export class PostsService {
   ) {
     const post = await this.findPostOrFail(id);
     this.assertCanManagePost(post, actorId, role);
+    const shouldReindexPublishedPost =
+      post.status === 'published' &&
+      [
+        dto.title,
+        dto.content,
+        dto.contentPlain,
+        dto.excerpt,
+      ].some((value) => value !== undefined);
 
     if (dto.categoryId !== undefined) {
       await this.validateCategory(dto.categoryId);
@@ -177,6 +187,10 @@ export class PostsService {
       await this.syncTags(post.id, dto.tagIds);
     }
 
+    if (shouldReindexPublishedPost) {
+      await this.aiService.indexPost(post.id);
+    }
+
     return this.findById(post.id);
   }
 
@@ -203,6 +217,7 @@ export class PostsService {
     post.status = 'published';
     post.publishedAt = new Date();
     await this.postsRepository.save(post);
+    await this.aiService.indexPost(post.id);
 
     return this.attachTags(post);
   }
