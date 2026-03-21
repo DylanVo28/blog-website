@@ -50,7 +50,7 @@ export class AiService {
   ) {}
 
   async ask(dto: AiQuestionDto) {
-    const contexts = this.retrievalService.searchRelevantContext(dto);
+    const contexts = await this.retrievalService.searchRelevantContext(dto);
     const anthropicResponse = await this.createAnthropicMessage(dto, contexts);
     const answer = this.extractTextContent(anthropicResponse.content);
 
