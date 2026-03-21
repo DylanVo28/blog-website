@@ -1,0 +1,1033 @@
+
+  ---
+  🛠️  TECH STACK
+
+  Backend:        NestJS (Node.js + TypeScript)
+  Database:       PostgreSQL + pgvector extension
+  Cache:          Redis
+  Auth:           JWT + Refresh Token
+  Payment:        VNPay / MoMo SDK
+  AI:             Google Gemini API (hoặc OpenAI)
+  Embedding:      text-embedding-004 (Google)
+  Queue:          BullMQ (Redis-based)
+  Storage:        AWS S3 / MinIO (ảnh, file PDF)
+  Deployment:     Docker + Docker Compose
+
+  ---
+  🗄️  PHASE 1: DATABASE SCHEMA DESIGN (Tuần 1)
+
+  Nguyên tắc quan trọng:
+
+  - Tiền → dùng DECIMAL hoặc BIGINT (đơn vị đồng), KHÔNG BAO GIỜ dùng FLOAT
+  - Mọi thao tác liên quan tiền → Database Transaction + Row Lock
+  - Mọi giao dịch đều phải ghi log vào bảng transactions
+
+  Danh sách Tables:
+
+  -- ============================================
+  -- 1. USERS
+  -- ============================================
+  CREATE TABLE users (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email           VARCHAR(255) UNIQUE NOT NULL,
+      password_hash   VARCHAR(255) NOT NULL,
+      display_name    VARCHAR(100) NOT NULL,
+      avatar_url      VARCHAR(500),
+      bio             TEXT,
+      role            VARCHAR(20) DEFAULT 'reader',  -- 'reader' | 'author' | 'admin'
+      is_verified     BOOLEAN DEFAULT FALSE,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  -- ============================================
+  -- 2. WALLETS (Ví nội bộ)
+  -- ============================================
+  CREATE TABLE wallets (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID UNIQUE NOT NULL REFERENCES users(id),
+      balance         BIGINT DEFAULT 0 CHECK (balance >= 0),  -- đơn vị: đồng
+      total_earned    BIGINT DEFAULT 0,  -- tổng tiền đã kiếm được
+      total_spent     BIGINT DEFAULT 0,  -- tổng tiền đã chi
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  -- Ví hệ thống (admin wallet) cũng là 1 row trong bảng này
+
+  -- ============================================
+  -- 3. TRANSACTIONS (Lịch sử giao dịch - KHÔNG BAO GIỜ XÓA)
+  -- ============================================
+  CREATE TYPE transaction_type AS ENUM (
+      'deposit',              -- nạp tiền
+      'withdrawal',           -- rút tiền
+      'question_to_author',   -- hỏi tác giả
+      'question_to_ai',       -- hỏi AI
+      'refund',               -- hoàn tiền (48h timeout)
+      'withdrawal_fee',       -- phí rút tiền
+      'bonus'                 -- thưởng (seed 5.000đ cho user mới)
+  );
+
+  CREATE TYPE transaction_status AS ENUM (
+      'pending',
+      'completed',
+      'failed',
+      'refunded'
+  );
+
+  CREATE TABLE transactions (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      sender_id       UUID REFERENCES users(id),      -- NULL nếu là deposit
+      receiver_id     UUID REFERENCES users(id),       -- NULL nếu là withdrawal
+      amount          BIGINT NOT NULL CHECK (amount > 0),
+      type            transaction_type NOT NULL,
+      status          transaction_status DEFAULT 'pending',
+      reference_id    UUID,           -- link đến question_id hoặc deposit_id
+      reference_type  VARCHAR(50),    -- 'question' | 'deposit' | 'withdrawal'
+      metadata        JSONB,          -- dữ liệu bổ sung
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_transactions_sender ON transactions(sender_id);
+  CREATE INDEX idx_transactions_receiver ON transactions(receiver_id);
+  CREATE INDEX idx_transactions_status ON transactions(status);
+  CREATE INDEX idx_transactions_created ON transactions(created_at);
+
+  -- ============================================
+  -- 4. POSTS (Bài viết)
+  -- ============================================
+  CREATE TABLE posts (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      author_id       UUID NOT NULL REFERENCES users(id),
+      title           VARCHAR(500) NOT NULL,
+      slug            VARCHAR(600) UNIQUE NOT NULL,
+      content         JSONB NOT NULL,         -- Block JSON từ Editor.js / TipTap
+      content_plain   TEXT,                   -- Plain text để full-text search
+      excerpt         VARCHAR(500),           -- Tóm tắt
+      cover_image     VARCHAR(500),
+      category_id     UUID REFERENCES categories(id),
+      status          VARCHAR(20) DEFAULT 'draft',  -- 'draft' | 'published' | 'archived'
+      view_count      BIGINT DEFAULT 0,
+      published_at    TIMESTAMPTZ,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_posts_author ON posts(author_id);
+  CREATE INDEX idx_posts_status ON posts(status);
+  CREATE INDEX idx_posts_published ON posts(published_at DESC);
+
+  -- ============================================
+  -- 5. CATEGORIES
+  -- ============================================
+  CREATE TABLE categories (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name            VARCHAR(100) NOT NULL,
+      slug            VARCHAR(120) UNIQUE NOT NULL,
+      description     TEXT,
+      created_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  -- ============================================
+  -- 6. TAGS & POST_TAGS
+  -- ============================================
+  CREATE TABLE tags (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name            VARCHAR(50) UNIQUE NOT NULL,
+      slug            VARCHAR(60) UNIQUE NOT NULL
+  );
+
+  CREATE TABLE post_tags (
+      post_id         UUID REFERENCES posts(id) ON DELETE CASCADE,
+      tag_id          UUID REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (post_id, tag_id)
+  );
+
+  -- ============================================
+  -- 7. COMMENTS (Bình luận miễn phí)
+  -- ============================================
+  CREATE TABLE comments (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id         UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      user_id         UUID NOT NULL REFERENCES users(id),
+      parent_id       UUID REFERENCES comments(id),   -- reply comment
+      content         TEXT NOT NULL,
+      is_hidden       BOOLEAN DEFAULT FALSE,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_comments_post ON comments(post_id);
+
+  -- ============================================
+  -- 8. QUESTIONS (Câu hỏi có phí - CORE FEATURE)
+  -- ============================================
+  CREATE TYPE question_target AS ENUM ('author', 'ai');
+  CREATE TYPE question_status AS ENUM (
+      'pending',      -- chờ trả lời
+      'answered',     -- đã trả lời
+      'refunded',     -- đã hoàn tiền (quá 48h)
+      'expired'       -- hết hạn
+  );
+
+  CREATE TABLE questions (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id         UUID NOT NULL REFERENCES posts(id),
+      asker_id        UUID NOT NULL REFERENCES users(id),
+      target          question_target NOT NULL,   -- 'author' hoặc 'ai'
+      content         TEXT NOT NULL,
+      answer          TEXT,                        -- câu trả lời
+      answered_by     UUID REFERENCES users(id),  -- NULL nếu AI trả lời
+      fee             BIGINT NOT NULL DEFAULT 1000,
+      transaction_id  UUID REFERENCES transactions(id),
+      status          question_status DEFAULT 'pending',
+      is_highlighted  BOOLEAN DEFAULT TRUE,       -- hiển thị nổi bật
+      deadline_at     TIMESTAMPTZ,                -- thời hạn 48h
+      answered_at     TIMESTAMPTZ,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_questions_post ON questions(post_id);
+  CREATE INDEX idx_questions_status ON questions(status);
+  CREATE INDEX idx_questions_deadline ON questions(deadline_at)
+      WHERE status = 'pending';
+
+  -- ============================================
+  -- 9. DEPOSITS (Lịch sử nạp tiền)
+  -- ============================================
+  CREATE TABLE deposits (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id),
+      amount          BIGINT NOT NULL CHECK (amount >= 50000), -- tối thiểu 50.000đ
+      payment_method  VARCHAR(50),    -- 'vnpay' | 'momo'
+      payment_ref     VARCHAR(255),   -- mã giao dịch từ cổng thanh toán
+      status          VARCHAR(20) DEFAULT 'pending', -- 'pending'|'completed'|'failed'
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      completed_at    TIMESTAMPTZ
+  );
+
+  -- ============================================
+  -- 10. WITHDRAWALS (Lịch sử rút tiền)
+  -- ============================================
+  CREATE TABLE withdrawals (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id),
+      amount          BIGINT NOT NULL CHECK (amount >= 100000), -- tối thiểu 100.000đ
+      fee_amount      BIGINT DEFAULT 0,       -- phí rút (5-10%)
+      bank_name       VARCHAR(100),
+      bank_account    VARCHAR(50),
+      bank_holder     VARCHAR(100),
+      status          VARCHAR(20) DEFAULT 'pending',
+      approved_by     UUID REFERENCES users(id),
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      completed_at    TIMESTAMPTZ
+  );
+
+  -- ============================================
+  -- 11. POST_EMBEDDINGS (RAG AI - Vector Storage)
+  -- ============================================
+  CREATE EXTENSION IF NOT EXISTS vector;
+
+  CREATE TABLE post_embeddings (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id         UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      chunk_index     INT NOT NULL,           -- thứ tự đoạn
+      chunk_text      TEXT NOT NULL,           -- nội dung đoạn văn
+      embedding       vector(768) NOT NULL,   -- vector 768 chiều (Google embedding)
+      metadata        JSONB,
+      created_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_embeddings_post ON post_embeddings(post_id);
+
+  -- HNSW index cho tìm kiếm vector nhanh
+  CREATE INDEX idx_embeddings_vector ON post_embeddings
+      USING hnsw (embedding vector_cosine_ops);
+
+  -- ============================================
+  -- 12. AUTHOR_DOCUMENTS (Tài liệu ẩn cho RAG)
+  -- ============================================
+  CREATE TABLE author_documents (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      author_id       UUID NOT NULL REFERENCES users(id),
+      post_id         UUID REFERENCES posts(id),  -- NULL = tài liệu chung của tác giả
+      file_url        VARCHAR(500),
+      file_name       VARCHAR(255),
+      content_plain   TEXT,           -- text đã extract từ PDF
+      is_processed    BOOLEAN DEFAULT FALSE,
+      created_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  -- Embeddings cho tài liệu ẩn
+  CREATE TABLE document_embeddings (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      document_id     UUID NOT NULL REFERENCES author_documents(id) ON DELETE CASCADE,
+      author_id       UUID NOT NULL REFERENCES users(id),
+      chunk_index     INT NOT NULL,
+      chunk_text      TEXT NOT NULL,
+      embedding       vector(768) NOT NULL,
+      created_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_doc_embeddings_author ON document_embeddings(author_id);
+  CREATE INDEX idx_doc_embeddings_vector ON document_embeddings
+      USING hnsw (embedding vector_cosine_ops);
+
+  -- ============================================
+  -- 13. REACTIONS (Like/Heart cho câu hỏi hay)
+  -- ============================================
+  CREATE TABLE reactions (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id),
+      target_id       UUID NOT NULL,          -- question_id hoặc comment_id
+      target_type     VARCHAR(20) NOT NULL,   -- 'question' | 'comment'
+      type            VARCHAR(20) DEFAULT 'like',
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, target_id, target_type)
+  );
+
+  ---
+  ⚙️  PHASE 2: NESTJS PROJECT STRUCTURE (Tuần 1-2)
+
+  src/
+  ├── main.ts
+  ├── app.module.ts
+  │
+  ├── common/                         # Shared utilities
+  │   ├── decorators/
+  │   │   ├── current-user.decorator.ts
+  │   │   └── roles.decorator.ts
+  │   ├── guards/
+  │   │   ├── jwt-auth.guard.ts
+  │   │   └── roles.guard.ts
+  │   ├── filters/
+  │   │   └── http-exception.filter.ts
+  │   ├── interceptors/
+  │   │   └── transform.interceptor.ts
+  │   ├── pipes/
+  │   │   └── validation.pipe.ts
+  │   └── constants/
+  │       └── index.ts
+  │
+  ├── config/                         # Configuration
+  │   ├── database.config.ts
+  │   ├── redis.config.ts
+  │   ├── jwt.config.ts
+  │   ├── payment.config.ts
+  │   └── ai.config.ts
+  │
+  ├── modules/
+  │   │
+  │   ├── auth/                       # 🔐 Authentication
+  │   │   ├── auth.module.ts
+  │   │   ├── auth.controller.ts
+  │   │   ├── auth.service.ts
+  │   │   ├── strategies/
+  │   │   │   ├── jwt.strategy.ts
+  │   │   │   └── jwt-refresh.strategy.ts
+  │   │   └── dto/
+  │   │       ├── register.dto.ts
+  │   │       ├── login.dto.ts
+  │   │       └── refresh-token.dto.ts
+  │   │
+  │   ├── users/                      # 👤 User Management
+  │   │   ├── users.module.ts
+  │   │   ├── users.controller.ts
+  │   │   ├── users.service.ts
+  │   │   ├── entities/
+  │   │   │   └── user.entity.ts
+  │   │   └── dto/
+  │   │       ├── update-profile.dto.ts
+  │   │       └── user-response.dto.ts
+  │   │
+  │   ├── posts/                      # 📝 Blog Posts
+  │   │   ├── posts.module.ts
+  │   │   ├── posts.controller.ts
+  │   │   ├── posts.service.ts
+  │   │   ├── entities/
+  │   │   │   ├── post.entity.ts
+  │   │   │   ├── category.entity.ts
+  │   │   │   └── tag.entity.ts
+  │   │   └── dto/
+  │   │       ├── create-post.dto.ts
+  │   │       ├── update-post.dto.ts
+  │   │       └── post-query.dto.ts
+  │   │
+  │   ├── comments/                   # 💬 Free Comments
+  │   │   ├── comments.module.ts
+  │   │   ├── comments.controller.ts
+  │   │   ├── comments.service.ts
+  │   │   ├── entities/
+  │   │   │   └── comment.entity.ts
+  │   │   └── dto/
+  │   │       └── create-comment.dto.ts
+  │   │
+  │   ├── questions/                  # ❓ Paid Questions (CORE)
+  │   │   ├── questions.module.ts
+  │   │   ├── questions.controller.ts
+  │   │   ├── questions.service.ts
+  │   │   ├── entities/
+  │   │   │   └── question.entity.ts
+  │   │   └── dto/
+  │   │       ├── create-question.dto.ts
+  │   │       └── answer-question.dto.ts
+  │   │
+  │   ├── wallet/                     # 💰 Wallet & Transactions (CORE)
+  │   │   ├── wallet.module.ts
+  │   │   ├── wallet.controller.ts
+  │   │   ├── wallet.service.ts
+  │   │   ├── entities/
+  │   │   │   ├── wallet.entity.ts
+  │   │   │   └── transaction.entity.ts
+  │   │   └── dto/
+  │   │       ├── deposit.dto.ts
+  │   │       └── withdraw.dto.ts
+  │   │
+  │   ├── payment/                    # 💳 Payment Gateway Integration
+  │   │   ├── payment.module.ts
+  │   │   ├── payment.controller.ts  # webhook endpoints
+  │   │   ├── payment.service.ts
+  │   │   ├── providers/
+  │   │   │   ├── vnpay.provider.ts
+  │   │   │   └── momo.provider.ts
+  │   │   └── dto/
+  │   │       └── payment-callback.dto.ts
+  │   │
+  │   ├── ai/                         # 🤖 AI RAG Pipeline                                                                                                                  ─
+  │   │   ├── ai.module.ts
+  │   │   ├── ai.controller.ts
+  │   │   ├── ai.service.ts
+  │   │   ├── rag/
+  │   │   │   ├── chunking.service.ts     # Băm nhỏ text
+  │   │   │   ├── embedding.service.ts    # Tạo vector
+  │   │   │   └── retrieval.service.ts    # Tìm kiếm vector
+  │   │   ├── entities/
+  │   │   │   ├── post-embedding.entity.ts
+  │   │   │   └── author-document.entity.ts
+  │   │   └── dto/
+  │   │       └── ai-question.dto.ts
+  │   │
+  │   ├── upload/                     # 📁 File Upload (S3)
+  │   │   ├── upload.module.ts
+  │   │   ├── upload.controller.ts
+  │   │   └── upload.service.ts
+  │   │
+  │   └── admin/                      # 🛡️  Admin Dashboard
+  │       ├── admin.module.ts
+  │       ├── admin.controller.ts
+  │       └── admin.service.ts
+  │
+  ├── jobs/                           # ⏰ Background Jobs (BullMQ)
+  │   ├── refund.processor.ts         # Job hoàn tiền 48h
+  │   ├── embedding.processor.ts      # Job tạo vector khi đăng bài
+  │   └── notification.processor.ts   # Job gửi thông báo
+  │
+  └── database/
+      ├── migrations/                 # TypeORM migrations
+      └── seeds/                      # Seed data
+
+  ---
+  🔄 PHASE 3: API ENDPOINTS CHI TIẾT (Tuần 2-3)
+                                                                                                                                                                           ─
+  🔐 Auth Module
+
+  POST   /api/auth/register          - Đăng ký
+  POST   /api/auth/login             - Đăng nhập → JWT + Refresh Token
+  POST   /api/auth/refresh           - Refresh token
+  POST   /api/auth/logout            - Đăng xuất
+  POST   /api/auth/forgot-password   - Quên mật khẩu
+  POST   /api/auth/reset-password    - Reset mật khẩu
+
+  👤 Users Module
+
+  GET    /api/users/me               - Profile hiện tại
+  PATCH  /api/users/me               - Cập nhật profile
+  GET    /api/users/:id              - Xem profile công khai
+  GET    /api/users/:id/posts        - Danh sách bài viết của user
+  GET    /api/users/:id/stats        - Thống kê (bài viết, câu hỏi, thu nhập)
+
+  📝 Posts Module
+
+  POST   /api/posts                  - Tạo bài viết (FREE)
+  GET    /api/posts                  - Danh sách bài (pagination, filter, search)
+  GET    /api/posts/:slug            - Chi tiết bài viết
+  PATCH  /api/posts/:id              - Sửa bài viết (chỉ author)
+  DELETE /api/posts/:id              - Xóa bài viết (chỉ author/admin)
+  POST   /api/posts/:id/publish      - Publish bài viết
+  GET    /api/posts/feed             - Feed cá nhân hóa
+
+  💬 Comments Module (FREE)
+
+  POST   /api/posts/:postId/comments          - Tạo comment (FREE)
+  GET    /api/posts/:postId/comments          - Danh sách comment
+  PATCH  /api/comments/:id                    - Sửa comment
+  DELETE /api/comments/:id                    - Xóa comment
+
+  ❓ Questions Module (1.000đ) ⭐ CORE                                                                                                                                      ──
+
+  POST   /api/posts/:postId/questions         - Đặt câu hỏi (trừ 1.000đ)
+  GET    /api/posts/:postId/questions          - Danh sách câu hỏi
+  POST   /api/questions/:id/answer             - Tác giả trả lời
+  GET    /api/questions/my-questions            - Câu hỏi tôi đã đặt
+  GET    /api/questions/pending                 - Câu hỏi chờ tôi trả lời (author)
+
+  💰 Wallet Module ⭐ CORE                                                                                                                                                  ──
+
+  GET    /api/wallet                           - Xem số dư ví
+  GET    /api/wallet/transactions              - Lịch sử giao dịch
+  POST   /api/wallet/deposit                   - Tạo lệnh nạp tiền
+  POST   /api/wallet/withdraw                  - Tạo lệnh rút tiền
+  GET    /api/wallet/earnings                  - Thống kê thu nhập
+
+  💳 Payment Module (Webhook)                                                                                                                                               ─
+
+  POST   /api/payment/vnpay/callback           - VNPay IPN callback
+  POST   /api/payment/momo/callback            - MoMo callback
+  GET    /api/payment/vnpay/return             - VNPay return URL
+
+  🤖 AI Module                                                                                                                                                              ─
+
+  POST   /api/ai/ask                           - AI trả lời (internal, gọi từ questions)
+  POST   /api/authors/documents                - Upload tài liệu ẩn
+  GET    /api/authors/documents                - Danh sách tài liệu
+  DELETE /api/authors/documents/:id            - Xóa tài liệu
+
+  🛡️  Admin Module
+
+  GET    /api/admin/dashboard                  - Thống kê tổng
+  GET    /api/admin/transactions               - Tất cả giao dịch
+  GET    /api/admin/withdrawals                - Duyệt rút tiền
+  PATCH  /api/admin/withdrawals/:id/approve    - Approve rút tiền
+  PATCH  /api/admin/withdrawals/:id/reject     - Reject rút tiền
+  GET    /api/admin/users                      - Quản lý users
+  POST   /api/admin/users/:id/ban             - Ban user
+
+  ---
+  💰 PHASE 4: WALLET ENGINE - LOGIC CHI TIẾT (Tuần 3-4)
+                                                                                                                                                                           ─
+  Flow 1: User đặt Question cho Tác giả
+
+  ┌─────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+  │  User    │────▶│  API     │────▶│  Wallet  │────▶│  DB      │
+  │  bấm    │     │  Server  │     │  Service │     │ Transaction│
+  │  "Hỏi"  │     │          │     │          │     │          │
+  └─────────┘     └──────────┘     └──────────┘     └──────────┘
+
+  // questions.service.ts - PSEUDO CODE
+  async createQuestion(userId: string, postId: string, dto: CreateQuestionDto) {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction('SERIALIZABLE');
+
+    try {
+      // 1. Lock ví user
+      const userWallet = await queryRunner.query(
+        `SELECT * FROM wallets WHERE user_id = $1 FOR UPDATE`,
+        [userId]
+      );
+
+      // 2. Kiểm tra số dư
+      if (userWallet.balance < 1000) {
+        throw new BadRequestException('Số dư không đủ. Vui lòng nạp thêm.');
+      }
+
+      // 3. Xác định target
+      const post = await this.postsRepo.findOne({ where: { id: postId } });
+      const isAI = dto.target === 'ai';  // hoặc detect @AI trong content
+
+      // 4. Trừ tiền user
+      await queryRunner.query(
+        `UPDATE wallets SET balance = balance - 1000,
+         total_spent = total_spent + 1000,
+         updated_at = NOW()
+         WHERE user_id = $1`,
+        [userId]
+      );
+
+      // 5. Cộng tiền receiver
+      const receiverId = isAI ? SYSTEM_ADMIN_ID : post.authorId;
+      await queryRunner.query(
+        `UPDATE wallets SET balance = balance + 1000,
+         total_earned = total_earned + 1000,
+         updated_at = NOW()
+         WHERE user_id = $1`,
+        [receiverId]
+      );
+
+      // 6. Ghi transaction log
+      const transaction = await queryRunner.query(
+        `INSERT INTO transactions
+         (sender_id, receiver_id, amount, type, status, reference_type)
+         VALUES ($1, $2, 1000, $3, 'completed', 'question')
+         RETURNING id`,
+        [userId, receiverId, isAI ? 'question_to_ai' : 'question_to_author']
+      );
+
+      // 7. Tạo question record
+      const question = await queryRunner.query(
+        `INSERT INTO questions
+         (post_id, asker_id, target, content, fee, transaction_id,
+          status, deadline_at)
+         VALUES ($1, $2, $3, $4, 1000, $5, 'pending', NOW() + INTERVAL '48 hours')
+         RETURNING *`,
+        [postId, userId, dto.target, dto.content, transaction.id]
+      );
+
+      // 8. COMMIT
+      await queryRunner.commitTransaction();
+
+      // 9. Side effects (NGOÀI transaction)
+      if (isAI) {
+        // Đẩy vào queue để AI trả lời
+        await this.aiQueue.add('answer-question', {
+          questionId: question.id,
+          postId,
+          content: dto.content,
+          authorId: post.authorId,
+        });
+      } else {
+        // Gửi notification cho tác giả
+        await this.notificationQueue.add('new-question', {
+          authorId: post.authorId,
+          questionId: question.id,
+        });
+      }
+
+      return question;
+
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  Flow 2: Job Hoàn tiền tự động (48h Refund)
+
+  // jobs/refund.processor.ts
+  @Processor('refund')
+  export class RefundProcessor {
+
+    @Cron('*/5 * * * *')  // Chạy mỗi 5 phút
+    async processExpiredQuestions() {
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+
+      // Tìm tất cả question quá 48h chưa trả lời
+      const expired = await queryRunner.query(`
+        SELECT q.*, t.sender_id
+        FROM questions q
+        JOIN transactions t ON q.transaction_id = t.id
+        WHERE q.status = 'pending'
+          AND q.target = 'author'
+          AND q.deadline_at < NOW()
+        FOR UPDATE SKIP LOCKED
+        LIMIT 100
+      `);
+
+      for (const question of expired) {
+        await queryRunner.startTransaction();
+        try {
+          // Hoàn tiền về user
+          await queryRunner.query(
+            `UPDATE wallets SET balance = balance + $1 WHERE user_id = $2`,
+            [question.fee, question.sender_id]
+          );
+          // Trừ tiền ở ví tác giả
+          await queryRunner.query(
+            `UPDATE wallets SET balance = balance - $1,
+             total_earned = total_earned - $1
+             WHERE user_id = $2`,
+            [question.fee, question.answered_by ?? question.receiver_id]
+          );
+          // Update status
+          await queryRunner.query(
+            `UPDATE questions SET status = 'refunded', updated_at = NOW()
+             WHERE id = $1`,
+            [question.id]
+          );
+          // Ghi transaction hoàn tiền
+          await queryRunner.query(
+            `INSERT INTO transactions
+             (sender_id, receiver_id, amount, type, status, reference_id, reference_type)
+             VALUES ($1, $2, $3, 'refund', 'completed', $4, 'question')`,
+            [SYSTEM_ADMIN_ID, question.sender_id, question.fee, question.id]
+          );
+
+          await queryRunner.commitTransaction();
+        } catch (e) {
+          await queryRunner.rollbackTransaction();
+        }
+      }
+      await queryRunner.release();
+    }
+  }
+
+  ---
+  🧠 PHASE 5: RAG AI PIPELINE (Tuần 5-6)
+                                                                                                                                                                           ─
+  Luồng xử lý khi tác giả đăng bài:
+
+  Tác giả đăng bài
+         │
+         ▼
+  ┌──────────────┐
+  │  Post saved  │
+  │  to DB       │
+  └──────┬───────┘
+         │ (Event)
+         ▼
+  ┌──────────────┐
+  │  BullMQ Job: │
+  │  embedding   │
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │  Chunking    │────▶│  Embedding   │────▶│  Save to     │
+  │  Service     │     │  API Call    │     │  pgvector    │
+  │  (500 chars  │     │  (Google)    │     │              │
+  │   per chunk) │     │              │     │              │
+  └──────────────┘     └──────────────┘     └──────────────┘
+
+  Luồng xử lý khi user hỏi @AI:
+
+  User hỏi @AI
+         │
+         ▼
+  ┌──────────────┐
+  │  Wallet trừ  │
+  │  1.000đ      │
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐     ┌──────────────┐
+  │  Embed câu   │────▶│  Similarity  │
+  │  hỏi thành   │     │  Search      │
+  │  Vector      │     │  pgvector    │
+  └──────────────┘     └──────┬───────┘
+                              │ Top 5 chunks
+                              ▼
+                       ┌──────────────┐
+                       │  Build       │
+                       │  Prompt      │
+                       └──────┬───────┘
+                              │
+                              ▼
+                       ┌──────────────┐
+                       │  Call LLM    │
+                       │  (Gemini)    │
+                       └──────┬───────┘
+                              │
+                              ▼
+                       ┌──────────────┐
+                       │  Save answer │
+                       │  to question │
+                       └──────────────┘
+
+  // ai/ai.service.ts
+  async answerQuestion(questionId: string, postId: string,
+                        content: string, authorId: string) {
+
+    // 1. Embed câu hỏi
+    const questionVector = await this.embeddingService.embed(content);
+
+    // 2. Tìm kiếm vector tương tự trong bài viết + tài liệu ẩn
+    const relevantChunks = await this.retrievalService.search({
+      vector: questionVector,
+      postId,
+      authorId,
+      topK: 5,
+    });
+
+    // 3. Build prompt
+    const systemPrompt = `
+      Bạn là trợ lý AI đại diện cho tác giả của bài viết này.
+      Trả lời câu hỏi DỰA TRÊN các đoạn tài liệu được cung cấp.
+      Nếu không tìm thấy thông tin liên quan, hãy nói rõ.
+      Giọng điệu: thân thiện, chuyên nghiệp, như một chuyên gia.
+
+      === TÀI LIỆU THAM KHẢO ===
+      ${relevantChunks.map((c, i) => `[${i+1}] ${c.chunkText}`).join('\n\n')}
+      === HẾT TÀI LIỆU ===
+    `;
+
+    // 4. Gọi LLM
+    const answer = await this.geminiService.generate({
+      systemPrompt,
+      userMessage: content,
+      temperature: 0.7,
+      maxTokens: 1500,
+    });
+
+    // 5. Lưu câu trả lời
+    await this.questionsRepo.update(questionId, {
+      answer: answer.text,
+      status: 'answered',
+      answeredAt: new Date(),
+    });
+
+    return answer;
+  }
+
+  // ai/rag/retrieval.service.ts
+  async search(params: { vector: number[], postId: string,
+                          authorId: string, topK: number }) {
+
+    // Tìm trong cả post_embeddings VÀ document_embeddings
+    const results = await this.dataSource.query(`
+      (
+        SELECT chunk_text,
+               1 - (embedding <=> $1::vector) AS similarity,
+               'post' AS source
+        FROM post_embeddings
+        WHERE post_id = $2
+      )
+      UNION ALL
+      (
+        SELECT chunk_text,
+               1 - (embedding <=> $1::vector) AS similarity,
+               'document' AS source
+        FROM document_embeddings
+        WHERE author_id = $3
+      )
+      ORDER BY similarity DESC
+      LIMIT $4
+    `, [JSON.stringify(params.vector), params.postId,
+        params.authorId, params.topK]);
+
+    return results;
+  }
+
+  ---
+  🔒 PHASE 6: SECURITY & MIDDLEWARE (Tuần 6-7)
+                                                                                                                                                                           ─
+  Rate Limiting
+
+  // Chống spam question/comment
+  @UseGuards(ThrottlerGuard)
+  @Throttle(10, 60)  // 10 requests / 60 giây
+  @Post('questions')
+  async createQuestion() { ... }
+
+  Validation & Sanitization
+
+  // dto/create-question.dto.ts
+  export class CreateQuestionDto {
+    @IsNotEmpty()
+    @IsString()
+    @MinLength(10, { message: 'Câu hỏi phải có ít nhất 10 ký tự' })
+    @MaxLength(2000)
+    content: string;
+
+    @IsEnum(['author', 'ai'])
+    target: 'author' | 'ai';
+  }
+
+  AI Comment Filter (Chống "hỏi chùa" trong comment thường)
+
+  // comments/comments.service.ts
+  async createComment(dto: CreateCommentDto) {
+    // Detect nếu comment có dạng câu hỏi
+    const isLikelyQuestion = this.detectQuestion(dto.content);
+
+    if (isLikelyQuestion) {
+      // Không chặn, chỉ trả về suggestion
+      return {
+        comment: savedComment,
+        suggestion: {
+          show: true,
+          message: 'Có vẻ bạn đang muốn hỏi tác giả? ' +
+                   'Dùng tính năng Question (1.000đ) để được ưu tiên trả lời!'
+        }
+      };
+    }
+
+    return { comment: savedComment, suggestion: null };
+  }
+
+  private detectQuestion(text: string): boolean {
+    const questionPatterns = [
+      /\?/g,
+      /làm sao|như thế nào|tại sao|cho hỏi|giúp mình|giải thích/gi,
+      /how|why|what|can you|please explain/gi,
+    ];
+    const matchCount = questionPatterns.filter(p => p.test(text)).length;
+    return matchCount >= 2;
+  }
+
+  ---
+  ⏰ PHASE 7: BACKGROUND JOBS (BullMQ) (Tuần 7)
+
+  // Danh sách queues cần thiết
+
+  // 1. embedding-queue: Tạo vector khi đăng bài / upload tài liệu
+  //    Trigger: Sau khi post được publish hoặc document được upload
+  //    Priority: LOW (không cần real-time)
+
+  // 2. ai-answer-queue: AI trả lời câu hỏi @AI
+  //    Trigger: Sau khi tạo question với target = 'ai'
+  //    Priority: HIGH (user đang chờ)
+
+  // 3. refund-queue: Hoàn tiền câu hỏi quá 48h
+  //    Trigger: Cron job mỗi 5 phút
+  //    Priority: MEDIUM
+
+  // 4. notification-queue: Gửi thông báo
+  //    Trigger: Khi có question mới, answer mới, comment mới
+  //    Priority: LOW
+
+  // 5. payment-queue: Xử lý callback từ cổng thanh toán
+  //    Trigger: Webhook từ VNPay/MoMo
+  //    Priority: CRITICAL
+
+  ---
+  🧪 PHASE 8: TESTING STRATEGY (Tuần 7-8)
+
+  tests/
+  ├── unit/
+  │   ├── wallet.service.spec.ts          # Test logic trừ/cộng tiền
+  │   ├── questions.service.spec.ts       # Test flow đặt câu hỏi
+  │   ├── refund.processor.spec.ts        # Test hoàn tiền
+  │   └── ai.service.spec.ts             # Test RAG pipeline
+  │
+  ├── integration/
+  │   ├── wallet-transaction.spec.ts      # Test concurrent transactions
+  │   ├── question-flow.spec.ts           # Test full flow: hỏi → trừ tiền → trả lời
+  │   └── payment-webhook.spec.ts         # Test payment callbacks
+  │
+  └── e2e/
+      ├── auth.e2e-spec.ts
+      ├── posts.e2e-spec.ts
+      └── questions.e2e-spec.ts
+
+  Critical Test Cases:
+
+  // ⚠️  Test Race Condition - 2 request trừ tiền cùng lúc
+  describe('Wallet - Concurrent Transactions', () => {
+    it('should not allow double spending', async () => {
+      // User có 1.000đ, gửi 2 request đặt câu hỏi ĐỒNG THỜI
+      const [result1, result2] = await Promise.allSettled([
+        service.createQuestion(userId, postId, dto1),
+        service.createQuestion(userId, postId, dto2),
+      ]);
+
+      // 1 thành công, 1 thất bại
+      const succeeded = [result1, result2].filter(r => r.status === 'fulfilled');
+      const failed = [result1, result2].filter(r => r.status === 'rejected');
+
+      expect(succeeded).toHaveLength(1);
+      expect(failed).toHaveLength(1);
+
+      // Số dư phải = 0, không được âm
+      const wallet = await walletRepo.findOne({ where: { userId } });
+      expect(wallet.balance).toBe(0);
+    });
+  });
+
+  ---
+  🐳 PHASE 9: DOCKER & DEPLOYMENT (Tuần 8)
+                                                                                                                                                                           ─
+  docker-compose.yml
+
+  version: '3.8'
+
+  services:
+    api:
+      build: .
+      ports:
+        - "3000:3000"
+      environment:
+        - DATABASE_URL=postgresql://blog:secret@postgres:5432/blog_db
+        - REDIS_URL=redis://redis:6379
+        - JWT_SECRET=${JWT_SECRET}
+        - GEMINI_API_KEY=${GEMINI_API_KEY}
+        - VNPAY_SECRET=${VNPAY_SECRET}
+      depends_on:
+        - postgres
+        - redis
+      restart: unless-stopped
+
+    postgres:
+      image: pgvector/pgvector:pg16
+      ports:
+        - "5432:5432"
+      environment:
+        POSTGRES_DB: blog_db
+        POSTGRES_USER: blog
+        POSTGRES_PASSWORD: secret
+      volumes:
+        - pgdata:/var/lib/postgresql/data
+
+    redis:
+      image: redis:7-alpine
+      ports:
+        - "6379:6379"
+      volumes:
+        - redisdata:/data
+
+    minio:
+      image: minio/minio
+      ports:
+        - "9000:9000"
+        - "9001:9001"
+      environment:
+        MINIO_ROOT_USER: minioadmin
+        MINIO_ROOT_PASSWORD: minioadmin
+      command: server /data --console-address ":9001"
+      volumes:
+        - miniodata:/data
+
+  volumes:
+    pgdata:
+    redisdata:
+    miniodata:
+
+  ---
+  📅 TIMELINE TỔNG HỢP
+
+  ┌─────────────────────────────────────────────────────────┐
+  │                    8 TUẦN BUILD MVP                      │
+  ├──────────┬──────────────────────────────────────────────┤
+  │ Tuần 1   │ DB Schema + Project Setup + Docker           │
+  │ Tuần 2   │ Auth + Users + Posts CRUD                    │
+  │ Tuần 3   │ Wallet Engine + Transaction Logic            │
+  │ Tuần 4   │ Questions (Core) + Payment Gateway           │
+  │ Tuần 5   │ RAG Pipeline (Chunking + Embedding)          │
+  │ Tuần 6   │ AI Answer + Comments + Reactions             │
+  │ Tuần 7   │ Background Jobs + Security + Testing         │
+  │ Tuần 8   │ Admin Dashboard + Deploy + Bug fixes         │
+  ├──────────┼──────────────────────────────────────────────┤
+  │ Tuần 9+  │ Beta testing + Seed content + Go-to-market   │
+  └──────────┴──────────────────────────────────────────────┘
+
+  ---
+  ✅ CHECKLIST TRƯỚC KHI LAUNCH
+                                                                                                                                                                           ─
+  [ ] Wallet engine xử lý đúng khi concurrent requests
+  [ ] Refund tự động chạy đúng sau 48h
+  [ ] AI trả lời dựa trên dữ liệu bài viết (không trả lời chung chung)
+  [ ] Payment webhook verify signature đúng
+  [ ] Rate limiting chống spam
+  [ ] Input validation + SQL injection prevention
+  [ ] Transaction logs đầy đủ để đối soát
+  [ ] Admin có thể duyệt/reject rút tiền
+  [ ] Backup database tự động
+  [ ] Monitoring & alerting (khi wallet balance < 0 → alert ngay)
+
+  ---
+  Đây là full backend plan từ database schema → API design → core logic → deployment. Bạn muốn tôi bắt tay vào code module nào trước? Gợi ý:
+
+  1. Bắt đầu từ Phase 1: Setup project NestJS + Docker + DB migrations
+  2. Nhảy thẳng vào Wallet Engine: Vì đây là phần core nhất, sai là mất tiền
+  3. Build RAG AI trước: Để test xem AI trả lời có đủ chất lượng không
+
+✻ Sautéed for 2m 35s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)
