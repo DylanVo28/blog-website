@@ -8,6 +8,7 @@ export const primaryNavigation = [
 
 export const secondaryNavigation = [
   { href: "/posts/new", label: "Tạo bài viết" },
+  { href: "/dashboard/posts", label: "Quản lý bài viết" },
   { href: "/profile/settings", label: "Cài đặt hồ sơ" },
   { href: "/admin", label: "Admin" },
 ];

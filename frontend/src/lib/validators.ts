@@ -22,6 +22,11 @@ export const usernameSchema = z
   .max(30, "Username tối đa 30 ký tự.")
   .regex(/^[a-zA-Z0-9._-]+$/, "Username chỉ gồm chữ, số, dấu chấm hoặc gạch dưới.");
 
+export const optionalUsernameSchema = z
+  .union([usernameSchema, z.literal("")])
+  .optional()
+  .transform((value) => (value ? value : undefined));
+
 export const loginSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
@@ -31,7 +36,7 @@ export const registerSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
   displayName: displayNameSchema,
-  username: usernameSchema.optional(),
+  username: optionalUsernameSchema,
 });
 
 export const commentSchema = z.object({

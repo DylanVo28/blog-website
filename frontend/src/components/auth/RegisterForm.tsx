@@ -26,7 +26,7 @@ const registerFormSchema = registerSchema
     path: ["confirmPassword"],
   });
 
-type RegisterFormValues = z.infer<typeof registerFormSchema>;
+type RegisterFormValues = z.input<typeof registerFormSchema>;
 
 export function RegisterForm() {
   const router = useRouter();
@@ -40,7 +40,6 @@ export function RegisterForm() {
       email: "",
       password: "",
       confirmPassword: "",
-      username: "",
     },
   });
 
@@ -71,13 +70,17 @@ export function RegisterForm() {
 
   return (
     <form
-      onSubmit={form.handleSubmit((values) =>
-        mutation.mutate({
-          displayName: values.displayName,
-          email: values.email,
-          password: values.password,
-          username: values.username,
-        }),
+      onSubmit={form.handleSubmit(
+        (values) =>
+          mutation.mutate({
+            displayName: values.displayName,
+            email: values.email,
+            password: values.password,
+            username: values.username,
+          }),
+        () => {
+          toast.error("Vui lòng kiểm tra lại thông tin đăng ký.");
+        },
       )}
       className="space-y-4"
     >

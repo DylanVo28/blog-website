@@ -129,3 +129,101 @@ textarea {
   background-position: center;
   background-size: 24px 24px;
 }
+
+.tiptap-editor,
+.tiptap-renderer {
+  color: var(--foreground);
+  line-height: 1.85;
+}
+
+.tiptap-editor {
+  min-height: 420px;
+  padding: 1.25rem 1.25rem 1.5rem;
+  outline: none;
+}
+
+.tiptap-renderer {
+  min-height: 100px;
+}
+
+.tiptap-editor p,
+.tiptap-renderer p,
+.tiptap-editor ul,
+.tiptap-renderer ul,
+.tiptap-editor ol,
+.tiptap-renderer ol,
+.tiptap-editor blockquote,
+.tiptap-renderer blockquote,
+.tiptap-editor pre,
+.tiptap-renderer pre,
+.tiptap-editor h1,
+.tiptap-renderer h1,
+.tiptap-editor h2,
+.tiptap-renderer h2,
+.tiptap-editor h3,
+.tiptap-renderer h3 {
+  margin-block: 1rem;
+}
+
+.tiptap-editor h1,
+.tiptap-renderer h1,
+.tiptap-editor h2,
+.tiptap-renderer h2,
+.tiptap-editor h3,
+.tiptap-renderer h3 {
+  font-family: var(--font-newsreader), serif;
+  line-height: 1.2;
+  color: var(--foreground);
+}
+
+.tiptap-editor h1,
+.tiptap-renderer h1 {
+  font-size: 2.35rem;
+}
+
+.tiptap-editor h2,
+.tiptap-renderer h2 {
+  font-size: 1.85rem;
+}
+
+.tiptap-editor h3,
+.tiptap-renderer h3 {
+  font-size: 1.35rem;
+}
+
+.tiptap-editor ul,
+.tiptap-renderer ul,
+.tiptap-editor ol,
+.tiptap-renderer ol {
+  padding-left: 1.5rem;
+}
+
+.tiptap-editor blockquote,
+.tiptap-renderer blockquote {
+  border-left: 3px solid color-mix(in oklab, var(--primary) 45%, white);
+  padding-left: 1rem;
+  color: var(--muted-foreground);
+}
+
+.tiptap-editor pre,
+.tiptap-renderer pre {
+  overflow-x: auto;
+  border-radius: 1.25rem;
+  background: rgb(29 32 43 / 0.96);
+  padding: 1rem 1.1rem;
+  color: rgb(245 247 255);
+}
+
+.tiptap-editor img,
+.tiptap-renderer img {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 1.25rem;
+}
+
+.tiptap-link {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.2em;
+}
