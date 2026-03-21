@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Gauge, Layers3, ShieldCheck, WalletCards } from "lucide-react";
+import { Gauge, Layers3, ShieldCheck, UserRound, WalletCards } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 import { secondaryNavigation } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +29,15 @@ const checkpoints = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { user, isAuthenticated } = useAuth();
+
+  const quickLinks = secondaryNavigation.filter((item) => {
+    if (item.href === "/admin") {
+      return user?.role === "admin";
+    }
+
+    return isAuthenticated || item.href === "/posts/new";
+  });
 
   return (
     <aside className="hidden xl:block xl:w-[320px] xl:shrink-0">
@@ -35,19 +45,34 @@ export function Sidebar() {
         <Card className="paper-grid">
           <CardHeader>
             <Badge variant="success" className="w-fit">
-              Phase 1 Ready
+              Phase 2 Ready
             </Badge>
             <CardTitle className="flex items-center gap-2 text-[1.9rem]">
               <Gauge className="size-5 text-primary" />
-              Nền tảng giao diện
+              Auth + layout shell
             </CardTitle>
             <CardDescription>
-              Các route placeholder bên dưới giúp mình kiểm tra navigation và middleware
-              ngay từ bây giờ.
+              Sidebar giờ phản ánh được trạng thái auth cơ bản và gom các lối tắt quan
+              trọng cho phase kế tiếp.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2">
-            {secondaryNavigation.map((item) => (
+          <CardContent className="space-y-3">
+            {isAuthenticated && user ? (
+              <div className="rounded-[1.5rem] border border-border/70 bg-white/75 px-4 py-4">
+                <div className="mb-3 flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                  <UserRound className="size-5" />
+                </div>
+                <p className="text-sm font-semibold text-foreground">{user.displayName}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{user.email}</p>
+              </div>
+            ) : (
+              <div className="rounded-[1.5rem] border border-dashed border-border/80 bg-white/70 px-4 py-4 text-sm leading-6 text-muted-foreground">
+                Đăng nhập để xem wallet badge, user menu và các route protected hoạt động
+                đầy đủ theo phase 2.
+              </div>
+            )}
+
+            {quickLinks.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}

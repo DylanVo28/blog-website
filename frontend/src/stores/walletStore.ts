@@ -10,6 +10,7 @@ interface WalletState {
   addFunds: (amount: number) => void;
   setTransactions: (transactions: Transaction[]) => void;
   setLoading: (loading: boolean) => void;
+  reset: () => void;
 }
 
 export const useWalletStore = create<WalletState>((set) => ({
@@ -27,4 +28,10 @@ export const useWalletStore = create<WalletState>((set) => ({
     })),
   setTransactions: (transactions) => set({ transactions }),
   setLoading: (isLoading) => set({ isLoading }),
+  reset: () =>
+    set({
+      balance: 0,
+      isLoading: false,
+      transactions: [],
+    }),
 }));

@@ -5,6 +5,7 @@ import axios, {
 } from "axios";
 import { API_URL } from "@/lib/constants";
 import { useAuthStore } from "@/stores/authStore";
+import type { ApiResponse } from "@/types/api.types";
 import type { ApiErrorResponse } from "@/types/api.types";
 import type { AuthTokens } from "@/types/auth.types";
 
@@ -29,10 +30,10 @@ let refreshPromise: Promise<AuthTokens> | null = null;
 async function refreshAccessToken(refreshToken: string) {
   if (!refreshPromise) {
     refreshPromise = axios
-      .post<AuthTokens>(buildApiUrl("/auth/refresh"), {
+      .post<ApiResponse<AuthTokens>>(buildApiUrl("/auth/refresh"), {
         refreshToken,
       })
-      .then((response) => response.data)
+      .then((response) => response.data.data)
       .finally(() => {
         refreshPromise = null;
       });

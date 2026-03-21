@@ -20,3 +20,19 @@ export interface RegisterPayload {
   displayName: string;
   username?: string;
 }
+
+export interface ForgotPasswordPayload {
+  email: string;
+}
+
+export interface ForgotPasswordResult {
+  success: boolean;
+  message: string;
+  resetToken?: string;
+  expiresAt?: string;
+}
+
+export interface ResetPasswordPayload {
+  token: string;
+  password: string;
+}

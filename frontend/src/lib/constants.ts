@@ -17,11 +17,12 @@ export const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 export const PROTECTED_ROUTES = [
   "/dashboard",
   "/wallet",
+  "/notifications",
   "/posts/new",
   "/profile/settings",
 ];
 
-export const AUTH_ROUTES = ["/login", "/register"];
+export const AUTH_ROUTES = ["/login", "/register", "/forgot-password"];
 export const ADMIN_ROUTES = ["/admin"];
 
 export const DEFAULT_QUERY_STALE_TIME = 60 * 1000;
