@@ -9,6 +9,15 @@ export const passwordSchema = z
   .string()
   .min(8, "Mật khẩu tối thiểu 8 ký tự.");
 
+export const strongPasswordSchema = z
+  .string()
+  .min(8, "Mật khẩu tối thiểu 8 ký tự.")
+  .max(50, "Mật khẩu tối đa 50 ký tự.")
+  .regex(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/,
+    "Mật khẩu phải có chữ hoa, chữ thường, số và ký tự đặc biệt.",
+  );
+
 export const displayNameSchema = z
   .string()
   .trim()
@@ -31,6 +40,21 @@ export const loginSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
 });
+
+export const forgotPasswordSchema = z.object({
+  email: emailSchema.transform((value) => value.toLowerCase()),
+});
+
+export const resetPasswordSchema = z
+  .object({
+    token: z.string().trim().min(1, "Token không được để trống."),
+    newPassword: strongPasswordSchema,
+    confirmPassword: z.string().trim().min(1, "Vui lòng xác nhận mật khẩu."),
+  })
+  .refine((value) => value.newPassword === value.confirmPassword, {
+    message: "Mật khẩu xác nhận không khớp.",
+    path: ["confirmPassword"],
+  });
 
 export const registerSchema = z.object({
   email: emailSchema,

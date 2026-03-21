@@ -8,6 +8,7 @@ import { WalletEntity } from '../wallet/entities/wallet.entity';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { PasswordResetTokenEntity } from './entities/password-reset-token.entity';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -15,7 +16,11 @@ import { JwtStrategy } from './strategies/jwt.strategy';
   imports: [
     UsersModule,
     PassportModule,
-    TypeOrmModule.forFeature([UserEntity, WalletEntity]),
+    TypeOrmModule.forFeature([
+      UserEntity,
+      WalletEntity,
+      PasswordResetTokenEntity,
+    ]),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({

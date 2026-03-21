@@ -6,10 +6,10 @@ export default function ForgotPasswordPage() {
   return (
     <AuthShell
       badge="Khôi phục"
-      title="Lấy lại quyền truy cập mà không phải tạo tài khoản mới."
-      description="Trang này gọi trực tiếp endpoint quên mật khẩu từ backend. Khi chạy local, bạn sẽ thấy reset token trả về để kiểm thử nhanh."
-      helperTitle="Auth flow đang đi đúng hướng"
-      helperDescription="Forgot password đã được nối API thật, nên phase reset password hoặc email service có thể cắm tiếp mà không đụng lại layout."
+      title="Lấy lại quyền truy cập bằng link khôi phục gửi đến email của bạn."
+      description="Mình sẽ gọi trực tiếp forgot-password flow ở backend, áp dụng rate limit và tạo token reset riêng cho từng yêu cầu."
+      helperTitle="Forgot + Reset đã nối liền mạch"
+      helperDescription="Sau bước này, người dùng có thể đi thẳng sang trang reset-password với token đã được backend verify trước khi đổi mật khẩu."
       footer={
         <p>
           Nhớ lại mật khẩu rồi?{" "}

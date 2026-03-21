@@ -21,7 +21,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: CurrentUserData): Promise<CurrentUserData> {
+  async validate(
+    payload: CurrentUserData & { iat?: number },
+  ): Promise<CurrentUserData> {
     const user = await this.usersRepository.findOne({
       where: {
         id: payload.sub,
@@ -29,6 +31,14 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
 
     if (!user || user.bannedAt) {
+      throw new UnauthorizedException('This access token is no longer valid.');
+    }
+
+    if (
+      payload.iat &&
+      user.passwordChangedAt &&
+      Math.floor(user.passwordChangedAt.getTime() / 1000) > payload.iat
+    ) {
       throw new UnauthorizedException('This access token is no longer valid.');
     }
 

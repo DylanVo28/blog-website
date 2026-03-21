@@ -2,28 +2,25 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
+import { CheckCircle2, Loader2, Mail } from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { z } from "zod";
 import { getApiErrorMessage } from "@/lib/api";
 import { formatDateTime } from "@/lib/formatters";
-import { emailSchema } from "@/lib/validators";
+import { forgotPasswordSchema } from "@/lib/validators";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
+import { useCountdown } from "@/hooks/useCountdown";
 import { authApi } from "@/services/api/auth.api";
-import type { ForgotPasswordResult } from "@/types/auth.types";
-
-const forgotPasswordSchema = z.object({
-  email: emailSchema,
-});
-
-type ForgotPasswordValues = z.infer<typeof forgotPasswordSchema>;
+import type { ForgotPasswordPayload, ForgotPasswordResult } from "@/types/auth.types";
 
 export function ForgotPasswordForm() {
+  const { isRunning, seconds, start } = useCountdown(60);
   const [result, setResult] = useState<ForgotPasswordResult | null>(null);
+  const [sentEmail, setSentEmail] = useState("");
 
-  const form = useForm<ForgotPasswordValues>({
+  const form = useForm<ForgotPasswordPayload>({
     resolver: zodResolver(forgotPasswordSchema),
     defaultValues: {
       email: "",
@@ -31,12 +28,14 @@ export function ForgotPasswordForm() {
   });
 
   const mutation = useMutation({
-    mutationFn: async ({ email }: ForgotPasswordValues) => {
-      const response = await authApi.forgotPassword(email);
+    mutationFn: async (payload: ForgotPasswordPayload) => {
+      const response = await authApi.forgotPassword(payload);
       return response.data.data;
     },
     onSuccess: (data) => {
       setResult(data);
+      setSentEmail(form.getValues("email"));
+      start();
       toast.success(data.message);
     },
     onError: (error) => {
@@ -46,53 +45,120 @@ export function ForgotPasswordForm() {
 
   return (
     <div className="space-y-5">
-      <form
-        onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
-        className="space-y-4"
-      >
-        <div className="space-y-2">
-          <label className="text-sm font-semibold text-foreground" htmlFor="forgot-email">
-            Email tài khoản
-          </label>
-          <Input
-            id="forgot-email"
-            type="email"
-            placeholder="you@example.com"
-            autoComplete="email"
-            {...form.register("email")}
-          />
-          {form.formState.errors.email ? (
-            <p className="text-sm text-destructive">
-              {form.formState.errors.email.message}
-            </p>
+      {result ? (
+        <div className="space-y-5">
+          <div className="rounded-[1.6rem] border border-emerald-200 bg-emerald-50/80 p-5 text-emerald-950">
+            <div className="flex items-start gap-3">
+              <div className="flex size-11 items-center justify-center rounded-2xl bg-white">
+                <CheckCircle2 className="size-5 text-emerald-600" />
+              </div>
+              <div className="space-y-1">
+                <p className="font-semibold">Yêu cầu khôi phục đã được ghi nhận</p>
+                <p className="text-sm leading-6 text-emerald-900/80">
+                  Nếu tài khoản tồn tại, hệ thống sẽ gửi hướng dẫn đặt lại mật khẩu đến{" "}
+                  <span className="font-semibold">{sentEmail}</span>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[1.5rem] border border-border/70 bg-muted/35 p-4">
+            <p className="text-sm font-semibold text-foreground">Bạn sẽ nhận được gì?</p>
+            <ul className="mt-3 space-y-2 text-sm leading-6 text-muted-foreground">
+              <li>Link đặt lại mật khẩu chỉ dùng được một lần.</li>
+              <li>Mã OTP đi kèm nếu mailer được cấu hình ở backend.</li>
+              <li>Token khôi phục có hiệu lực trong thời gian ngắn để giảm rủi ro.</li>
+            </ul>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            disabled={mutation.isPending || isRunning}
+            onClick={() => mutation.mutate({ email: sentEmail })}
+          >
+            {mutation.isPending ? (
+              <>
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                Đang gửi lại...
+              </>
+            ) : isRunning ? (
+              `Gửi lại sau ${seconds}s`
+            ) : (
+              "Gửi lại email khôi phục"
+            )}
+          </Button>
+
+          {result.resetToken ? (
+            <div className="rounded-[1.6rem] border border-primary/20 bg-primary/6 p-4">
+              <div className="flex items-center gap-2">
+                <Mail className="size-4 text-primary" />
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
+                  Thông tin dev khi chưa có email service
+                </p>
+              </div>
+              <p className="mt-3 break-all font-mono text-sm text-foreground">
+                Token: {result.resetToken}
+              </p>
+              {result.resetUrl ? (
+                <p className="mt-3 break-all text-sm text-muted-foreground">
+                  Link: {result.resetUrl}
+                </p>
+              ) : null}
+              {result.otpCode ? (
+                <p className="mt-3 text-sm text-muted-foreground">OTP: {result.otpCode}</p>
+              ) : null}
+              {result.expiresAt ? (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Hết hạn lúc {formatDateTime(result.expiresAt)}
+                </p>
+              ) : null}
+            </div>
           ) : null}
         </div>
+      ) : (
+        <>
+          <form
+            onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
+            className="space-y-4"
+          >
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-foreground" htmlFor="forgot-email">
+                Email tài khoản
+              </label>
+              <Input
+                id="forgot-email"
+                type="email"
+                placeholder="you@example.com"
+                autoComplete="email"
+                {...form.register("email")}
+              />
+              {form.formState.errors.email ? (
+                <p className="text-sm text-destructive">
+                  {form.formState.errors.email.message}
+                </p>
+              ) : null}
+            </div>
 
-        <Button type="submit" className="w-full" disabled={mutation.isPending}>
-          {mutation.isPending ? "Đang tạo reset token..." : "Gửi yêu cầu khôi phục"}
-        </Button>
-      </form>
+            <Button type="submit" className="w-full" disabled={mutation.isPending}>
+              {mutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Đang gửi hướng dẫn...
+                </>
+              ) : (
+                "Gửi yêu cầu khôi phục"
+              )}
+            </Button>
+          </form>
 
-      <div className="rounded-[1.4rem] border border-dashed border-border/80 bg-muted/50 px-4 py-3 text-sm leading-6 text-muted-foreground">
-        Khi chạy local, backend hiện trả về reset token trong response để tiện test thủ
-        công mà chưa cần email service.
-      </div>
-
-      {result?.resetToken ? (
-        <div className="rounded-[1.6rem] border border-primary/20 bg-primary/6 p-4">
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
-            Reset Token Dev
-          </p>
-          <p className="mt-3 break-all font-mono text-sm text-foreground">
-            {result.resetToken}
-          </p>
-          {result.expiresAt ? (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Hết hạn lúc {formatDateTime(result.expiresAt)}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+          <div className="rounded-[1.4rem] border border-dashed border-border/80 bg-muted/50 px-4 py-3 text-sm leading-6 text-muted-foreground">
+            Khi chạy local mà chưa cấu hình email service, backend sẽ trả kèm token và
+            reset URL để mình test toàn bộ flow ngay trên frontend.
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -2,10 +2,13 @@ import apiClient from "@/services/api/client";
 import type { ApiResponse } from "@/types/api.types";
 import type {
   AuthSession,
+  ForgotPasswordPayload,
   ForgotPasswordResult,
   LoginPayload,
   RegisterPayload,
   ResetPasswordPayload,
+  VerifyResetPasswordPayload,
+  VerifyResetPasswordResult,
 } from "@/types/auth.types";
 import type { UserProfile } from "@/types/user.types";
 
@@ -31,11 +34,15 @@ export const authApi = {
   getMe: () =>
     apiClient.get<ApiResponse<UserProfile>>("/users/me"),
 
-  forgotPassword: (email: string) =>
-    apiClient.post<ApiResponse<ForgotPasswordResult>>("/auth/forgot-password", {
-      email,
-    }),
+  forgotPassword: (payload: ForgotPasswordPayload) =>
+    apiClient.post<ApiResponse<ForgotPasswordResult>>("/auth/password/forgot", payload),
+
+  verifyResetToken: (payload: VerifyResetPasswordPayload) =>
+    apiClient.post<ApiResponse<VerifyResetPasswordResult>>(
+      "/auth/password/verify-token",
+      payload,
+    ),
 
   resetPassword: (payload: ResetPasswordPayload) =>
-    apiClient.post<ApiResponse<LogoutResult>>("/auth/reset-password", payload),
+    apiClient.post<ApiResponse<LogoutResult>>("/auth/password/reset", payload),
 };

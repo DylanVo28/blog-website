@@ -1,23 +1,11 @@
 import { Body, Controller, Post } from '@nestjs/common';
-import { IsEmail, IsString, MinLength } from 'class-validator';
 import { AuthService } from './auth.service';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
-
-class ForgotPasswordDto {
-  @IsEmail()
-  email!: string;
-}
-
-class ResetPasswordDto {
-  @IsString()
-  token!: string;
-
-  @IsString()
-  @MinLength(8)
-  password!: string;
-}
+import { VerifyResetTokenDto } from './dto/verify-reset-token.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -45,11 +33,26 @@ export class AuthController {
 
   @Post('forgot-password')
   forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.authService.forgotPassword(dto.email);
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('password/forgot')
+  forgotPasswordV2(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('password/verify-token')
+  verifyResetToken(@Body() dto: VerifyResetTokenDto) {
+    return this.authService.verifyResetToken(dto);
   }
 
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.authService.resetPassword(dto.token, dto.password);
+    return this.authService.resetPassword(dto);
+  }
+
+  @Post('password/reset')
+  resetPasswordV2(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 }

@@ -33,6 +33,9 @@ export class UserEntity {
   @Column({ name: 'reset_password_expires_at', type: 'timestamptz', nullable: true })
   resetPasswordExpiresAt!: Date | null;
 
+  @Column({ name: 'password_changed_at', type: 'timestamptz', nullable: true })
+  passwordChangedAt!: Date | null;
+
   @Column({ name: 'banned_at', type: 'timestamptz', nullable: true })
   bannedAt!: Date | null;
 

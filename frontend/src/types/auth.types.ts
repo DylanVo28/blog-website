@@ -29,10 +29,24 @@ export interface ForgotPasswordResult {
   success: boolean;
   message: string;
   resetToken?: string;
+  resetUrl?: string;
+  otpCode?: string;
   expiresAt?: string;
+}
+
+export interface VerifyResetPasswordPayload {
+  token: string;
+  otpCode?: string;
+}
+
+export interface VerifyResetPasswordResult {
+  success: boolean;
+  valid: boolean;
+  email: string;
 }
 
 export interface ResetPasswordPayload {
   token: string;
-  password: string;
+  newPassword: string;
+  confirmPassword: string;
 }
