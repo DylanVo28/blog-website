@@ -24,16 +24,21 @@ export class TransactionEntity {
   @Column({ type: 'bigint' })
   amount!: string;
 
-  @Column()
+  @Column({ type: 'varchar', length: 30 })
   type!: TransactionType;
 
-  @Column({ default: 'pending' })
+  @Column({ type: 'varchar', length: 20, default: 'pending' })
   status!: TransactionStatus;
 
   @Column({ name: 'reference_id', type: 'uuid', nullable: true })
   referenceId!: string | null;
 
-  @Column({ name: 'reference_type', length: 50, nullable: true })
+  @Column({
+    name: 'reference_type',
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+  })
   referenceType!: string | null;
 
   @Column({ type: 'jsonb', nullable: true })

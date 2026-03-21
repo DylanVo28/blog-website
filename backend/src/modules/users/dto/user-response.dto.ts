@@ -8,5 +8,7 @@ export class UserResponseDto {
   bio!: string | null;
   role!: AppRole;
   isVerified!: boolean;
+  isBanned!: boolean;
+  bannedAt!: Date | null;
   createdAt!: Date;
 }

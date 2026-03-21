@@ -11,10 +11,10 @@ export class AuthorDocumentEntity {
   @Column({ name: 'post_id', type: 'uuid', nullable: true })
   postId!: string | null;
 
-  @Column({ name: 'file_url', length: 500, nullable: true })
+  @Column({ name: 'file_url', type: 'varchar', length: 500, nullable: true })
   fileUrl!: string | null;
 
-  @Column({ name: 'file_name', length: 255, nullable: true })
+  @Column({ name: 'file_name', type: 'varchar', length: 255, nullable: true })
   fileName!: string | null;
 
   @Column({ name: 'content_plain', type: 'text', nullable: true })

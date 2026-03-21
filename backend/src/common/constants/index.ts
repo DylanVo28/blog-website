@@ -39,6 +39,20 @@ export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 export const PAYMENT_METHODS = ['vnpay', 'momo'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
+export const DEPOSIT_STATUSES = ['pending', 'completed', 'failed'] as const;
+export type DepositStatus = (typeof DEPOSIT_STATUSES)[number];
+
+export const WITHDRAWAL_STATUSES = [
+  'pending',
+  'approved',
+  'rejected',
+  'completed',
+] as const;
+export type WithdrawalStatus = (typeof WITHDRAWAL_STATUSES)[number];
+
 export const DEFAULT_QUESTION_FEE = 1000;
 export const DEFAULT_PAGE = 1;
 export const DEFAULT_LIMIT = 10;
+export const PLATFORM_SYSTEM_EMAIL = 'system@blog-platform.local';
+export const PLATFORM_SYSTEM_DISPLAY_NAME = 'Blog Platform System';
+export const PLATFORM_SYSTEM_PASSWORD_HASH = 'system-account-disabled';

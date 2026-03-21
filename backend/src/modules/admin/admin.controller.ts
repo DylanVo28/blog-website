@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -6,11 +7,19 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { AdminService } from './admin.service';
+
+class BanUserDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -58,7 +67,8 @@ export class AdminController {
   banUser(
     @Param('id') userId: string,
     @CurrentUser('sub') adminId: string,
+    @Body() dto: BanUserDto,
   ) {
-    return this.adminService.banUser(userId, adminId);
+    return this.adminService.banUser(userId, adminId, dto.reason);
   }
 }

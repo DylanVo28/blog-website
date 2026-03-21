@@ -30,6 +30,7 @@ export class PostsController {
   }
 
   @Get('feed')
+  @UseGuards(JwtAuthGuard)
   getFeed(@CurrentUser('sub') userId?: string) {
     return this.postsService.getFeed(userId);
   }
@@ -48,10 +49,11 @@ export class PostsController {
   @UseGuards(JwtAuthGuard)
   update(
     @Param('id') id: string,
-    @CurrentUser('sub') authorId: string,
+    @CurrentUser('sub') actorId: string,
+    @CurrentUser('role') role: 'reader' | 'author' | 'admin',
     @Body() dto: UpdatePostDto,
   ) {
-    return this.postsService.update(id, authorId, dto);
+    return this.postsService.update(id, actorId, role, dto);
   }
 
   @Delete(':id')
@@ -59,8 +61,9 @@ export class PostsController {
   remove(
     @Param('id') id: string,
     @CurrentUser('sub') actorId: string,
+    @CurrentUser('role') role: 'reader' | 'author' | 'admin',
   ) {
-    return this.postsService.remove(id, actorId);
+    return this.postsService.remove(id, actorId, role);
   }
 
   @Post(':id/publish')

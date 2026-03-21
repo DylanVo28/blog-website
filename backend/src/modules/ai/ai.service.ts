@@ -4,10 +4,14 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { AiQuestionDto } from './dto/ai-question.dto';
+import { AuthorDocumentEntity } from './entities/author-document.entity';
 import { ChunkingService } from './rag/chunking.service';
 import { EmbeddingService } from './rag/embedding.service';
 import { RetrievalService } from './rag/retrieval.service';
@@ -41,6 +45,8 @@ export class AiService {
     private readonly chunkingService: ChunkingService,
     private readonly embeddingService: EmbeddingService,
     private readonly retrievalService: RetrievalService,
+    @InjectRepository(AuthorDocumentEntity)
+    private readonly authorDocumentsRepository: Repository<AuthorDocumentEntity>,
   ) {}
 
   async ask(dto: AiQuestionDto) {
@@ -59,29 +65,58 @@ export class AiService {
     };
   }
 
-  uploadAuthorDocument(authorId: string, fileName: string, content = '') {
+  async uploadAuthorDocument(authorId: string, fileName: string, content = '') {
+    const chunks = this.chunkingService.chunk(content);
+    const document = await this.authorDocumentsRepository.save(
+      this.authorDocumentsRepository.create({
+        authorId,
+        fileName,
+        contentPlain: content || null,
+        isProcessed: Boolean(content),
+      }),
+    );
+
     return {
-      id: randomUUID(),
-      authorId,
-      fileName,
-      chunks: this.chunkingService.chunk(content),
-      isProcessed: false,
+      ...document,
+      chunks,
+      chunkCount: chunks.length,
     };
   }
 
-  listAuthorDocuments(authorId: string) {
+  async listAuthorDocuments(authorId: string) {
+    const items = await this.authorDocumentsRepository.find({
+      where: {
+        authorId,
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+
     return {
       authorId,
-      items: [],
+      items,
     };
   }
 
-  deleteAuthorDocument(authorId: string, documentId: string) {
+  async deleteAuthorDocument(authorId: string, documentId: string) {
+    const document = await this.authorDocumentsRepository.findOne({
+      where: {
+        id: documentId,
+        authorId,
+      },
+    });
+
+    if (!document) {
+      throw new NotFoundException('Author document not found.');
+    }
+
+    await this.authorDocumentsRepository.remove(document);
+
     return {
       authorId,
       documentId,
-      deleted: false,
-      message: 'Document deletion scaffolded for Phase 3.',
+      deleted: true,
     };
   }
 
@@ -105,9 +140,9 @@ export class AiService {
     const temperature =
       this.configService.get<number>('ai.temperature') ?? 0.2;
     const timeoutMs = this.configService.get<number>('ai.timeoutMs') ?? 30000;
-    const endpoint = this.buildMessagesEndpoint(
-      this.configService.get<string>('ai.baseUrl') ?? 'https://api.anthropic.com',
-    );
+    const baseUrl =
+      this.configService.get<string>('ai.baseUrl') ?? 'https://api.anthropic.com';
+    const endpoint = this.buildMessagesEndpoint(baseUrl);
 
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), timeoutMs);
@@ -115,11 +150,11 @@ export class AiService {
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': apiVersion,
-        },
+        headers: this.buildAuthHeaders({
+          apiKey,
+          apiVersion,
+          baseUrl,
+        }),
         body: JSON.stringify({
           model,
           max_tokens: maxTokens,
@@ -182,6 +217,26 @@ export class AiService {
     return normalized.endsWith('/v1')
       ? `${normalized}/messages`
       : `${normalized}/v1/messages`;
+  }
+
+  private buildAuthHeaders(input: {
+    apiKey: string;
+    apiVersion: string;
+    baseUrl: string;
+  }): Record<string, string> {
+    const normalizedBaseUrl = input.baseUrl.replace(/\/+$/, '');
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'anthropic-version': input.apiVersion,
+    };
+
+    if (normalizedBaseUrl === 'https://api.anthropic.com') {
+      headers['x-api-key'] = input.apiKey;
+      return headers;
+    }
+
+    headers.Authorization = `Bearer ${input.apiKey}`;
+    return headers;
   }
 
   private buildSystemPrompt(

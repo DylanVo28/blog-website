@@ -17,21 +17,17 @@ export class UsersController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  getMe(
-    @CurrentUser('sub') userId: string,
-    @CurrentUser('email') email: string,
-  ) {
-    return this.usersService.getCurrentUser(userId, email);
+  getMe(@CurrentUser('sub') userId: string) {
+    return this.usersService.getCurrentUser(userId);
   }
 
   @Patch('me')
   @UseGuards(JwtAuthGuard)
   updateMe(
     @CurrentUser('sub') userId: string,
-    @CurrentUser('email') email: string,
     @Body() dto: UpdateProfileDto,
   ) {
-    return this.usersService.updateCurrentUser(userId, dto, email);
+    return this.usersService.updateCurrentUser(userId, dto);
   }
 
   @Get(':id/posts')

@@ -1,56 +1,132 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { toNumber } from '../../common/utils/number.util';
+import { PostEntity } from '../posts/entities/post.entity';
+import { QuestionEntity } from '../questions/entities/question.entity';
+import { WalletEntity } from '../wallet/entities/wallet.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UserResponseDto } from './dto/user-response.dto';
+import { UserEntity } from './entities/user.entity';
 
 @Injectable()
 export class UsersService {
-  getCurrentUser(userId: string, email = 'current-user@example.com'): UserResponseDto {
-    return this.toUserResponse(userId, email);
+  constructor(
+    @InjectRepository(UserEntity)
+    private readonly usersRepository: Repository<UserEntity>,
+    @InjectRepository(PostEntity)
+    private readonly postsRepository: Repository<PostEntity>,
+    @InjectRepository(QuestionEntity)
+    private readonly questionsRepository: Repository<QuestionEntity>,
+    @InjectRepository(WalletEntity)
+    private readonly walletsRepository: Repository<WalletEntity>,
+  ) {}
+
+  async getCurrentUser(userId: string): Promise<UserResponseDto> {
+    const user = await this.findUserOrFail(userId);
+    return this.toUserResponse(user);
   }
 
-  updateCurrentUser(
+  async updateCurrentUser(
     userId: string,
     dto: UpdateProfileDto,
-    email = 'current-user@example.com',
   ) {
-    return {
-      ...this.toUserResponse(userId, email),
-      ...dto,
-      updatedAt: new Date().toISOString(),
-    };
+    const user = await this.findUserOrFail(userId);
+
+    if (dto.displayName !== undefined) {
+      user.displayName = dto.displayName;
+    }
+
+    if (dto.avatarUrl !== undefined) {
+      user.avatarUrl = dto.avatarUrl;
+    }
+
+    if (dto.bio !== undefined) {
+      user.bio = dto.bio;
+    }
+
+    const updatedUser = await this.usersRepository.save(user);
+    return this.toUserResponse(updatedUser);
   }
 
-  findPublicProfile(userId: string): UserResponseDto {
-    return this.toUserResponse(userId, `user-${userId.slice(0, 6)}@example.com`);
+  async findPublicProfile(userId: string): Promise<UserResponseDto> {
+    const user = await this.findUserOrFail(userId);
+    return this.toUserResponse(user);
   }
 
-  listUserPosts(userId: string) {
+  async listUserPosts(userId: string) {
+    await this.findUserOrFail(userId);
+    const posts = await this.postsRepository.find({
+      where: {
+        authorId: userId,
+        status: 'published',
+      },
+      order: {
+        publishedAt: 'DESC',
+        createdAt: 'DESC',
+      },
+    });
+
     return {
       userId,
-      items: [],
-      message: 'Posts listing scaffolded for Phase 3.',
+      items: posts,
     };
   }
 
-  getUserStats(userId: string) {
+  async getUserStats(userId: string) {
+    await this.findUserOrFail(userId);
+    const [postsCount, questionsCount, wallet] = await Promise.all([
+      this.postsRepository.count({
+        where: {
+          authorId: userId,
+        },
+      }),
+      this.questionsRepository.count({
+        where: {
+          askerId: userId,
+        },
+      }),
+      this.walletsRepository.findOne({
+        where: {
+          userId,
+        },
+      }),
+    ]);
+
     return {
       userId,
-      postsCount: 0,
-      questionsCount: 0,
-      earnings: 0,
+      postsCount,
+      questionsCount,
+      earnings: toNumber(wallet?.totalEarned),
     };
   }
 
-  private toUserResponse(userId: string, email: string): UserResponseDto {
+  private async findUserOrFail(userId: string): Promise<UserEntity> {
+    const user = await this.usersRepository.findOne({
+      where: {
+        id: userId,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found.');
+    }
+
+    return user;
+  }
+
+  private toUserResponse(user: UserEntity): UserResponseDto {
     return {
-      id: userId,
-      email,
-      displayName: 'Phase 2 User',
-      avatarUrl: null,
-      bio: 'NestJS scaffold for the blog platform.',
-      role: 'reader',
-      isVerified: false,
-      createdAt: new Date(),
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      bio: user.bio,
+      role: user.role,
+      isVerified: user.isVerified,
+      isBanned: Boolean(user.bannedAt),
+      bannedAt: user.bannedAt,
+      createdAt: user.createdAt,
     };
   }
 }

@@ -27,16 +27,16 @@ export class PostEntity {
   @Column({ name: 'content_plain', type: 'text', nullable: true })
   contentPlain!: string | null;
 
-  @Column({ length: 500, nullable: true })
+  @Column({ type: 'varchar', length: 500, nullable: true })
   excerpt!: string | null;
 
-  @Column({ name: 'cover_image', length: 500, nullable: true })
+  @Column({ name: 'cover_image', type: 'varchar', length: 500, nullable: true })
   coverImage!: string | null;
 
   @Column({ name: 'category_id', type: 'uuid', nullable: true })
   categoryId!: string | null;
 
-  @Column({ length: 20, default: 'draft' })
+  @Column({ type: 'varchar', length: 20, default: 'draft' })
   status!: PostStatus;
 
   @Column({ name: 'view_count', type: 'bigint', default: 0 })

@@ -18,7 +18,7 @@ export class QuestionEntity {
   @Column({ name: 'asker_id', type: 'uuid' })
   askerId!: string;
 
-  @Column({ length: 20 })
+  @Column({ type: 'varchar', length: 20 })
   target!: QuestionTarget;
 
   @Column({ type: 'text' })
@@ -36,7 +36,7 @@ export class QuestionEntity {
   @Column({ name: 'transaction_id', type: 'uuid', nullable: true })
   transactionId!: string | null;
 
-  @Column({ length: 20, default: 'pending' })
+  @Column({ type: 'varchar', length: 20, default: 'pending' })
   status!: QuestionStatus;
 
   @Column({ name: 'is_highlighted', default: true })
