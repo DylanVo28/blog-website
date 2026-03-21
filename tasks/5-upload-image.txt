@@ -1,0 +1,1552 @@
+ 🖼️  THIẾT KẾ HỆ THỐNG UPLOAD HÌNH ẢNH CHO BLOG POST
+
+  Tôi sẽ đọc cấu trúc project hiện tại trước để thiết kế phù hợp.
+
+  Để tôi xem qua cấu trúc project hiện tại:
+
+  Let me examine the project structure first:
+
+  ---
+  📋 PHÂN TÍCH VẤN ĐỀ HIỆN TẠI
+
+  Dựa trên tasks/main.txt, hệ thống đã có:
+  - Backend: NestJS + TypeORM + PostgreSQL
+  - Storage: MinIO (S3-compatible) đã có trong docker-compose
+  - Posts: CRUD API đã có nhưng chưa xử lý upload hình ảnh
+
+  Vấn đề: API POST /posts hiện tại chỉ nhận JSON body (title, content, category...), không xử lý được multipart/form-data → frontend không gửi được hình.
+
+  ---
+  🏗️  KIẾN TRÚC TỔNG QUAN
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                        FRONTEND (React/Next.js)                      │
+  │                                                                      │
+  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐ │
+  │  │  Chọn hình   │────▶│  Preview     │────▶│  Submit Form         │ │
+  │  │  (drag/drop  │     │  (thumbnail) │     │  (multipart/form-data│ │
+  │  │   or click)  │     │              │     │   images + JSON)     │ │
+  │  └──────────────┘     └──────────────┘     └──────────┬───────────┘ │
+  └───────────────────────────────────────────────────────┼─────────────┘
+                                                          │
+                                                POST /api/posts
+                                           Content-Type: multipart/form-data
+                                                          │
+  ┌───────────────────────────────────────────────────────┼─────────────┐
+  │                        BACKEND (NestJS)                │             │
+  │                                                        ▼             │
+  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐ │
+  │  │  Multer      │────▶│  Upload      │────▶│  Posts Service       │ │
+  │  │  Middleware   │     │  Service     │     │  (save post +        │ │
+  │  │  (parse file)│     │  (→ MinIO)   │     │   image URLs to DB)  │ │
+  │  └──────────────┘     └──────┬───────┘     └──────────────────────┘ │
+  │                              │                                       │
+  │                              ▼                                       │
+  │                     ┌──────────────┐                                 │
+  │                     │    MinIO     │                                 │
+  │                     │  (S3 bucket) │                                 │
+  │                     │  blog-images │                                 │
+  │                     └──────────────┘                                 │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ---
+  📊 PHƯƠNG ÁN THIẾT KẾ: 2 STRATEGIES
+
+  Strategy A: Upload cùng lúc với tạo Post (Đơn giản - Recommend cho MVP)
+
+  Frontend gửi 1 request duy nhất:
+  POST /api/posts  (multipart/form-data)
+  ├── field: title = "Bài viết hay"
+  ├── field: content = "Nội dung..."
+  ├── field: categoryId = "uuid..."
+  ├── file: images[0] = photo1.jpg
+  ├── file: images[1] = photo2.jpg
+  └── file: thumbnail = cover.jpg
+
+  Strategy B: Upload riêng trước, tạo Post sau (Phức tạp hơn - Tốt cho UX)
+
+  Step 1: POST /api/uploads/images  →  trả về [imageUrl1, imageUrl2]
+  Step 2: POST /api/posts (JSON)    →  body chứa imageUrls từ step 1
+
+  → Tôi recommend Strategy A cho MVP vì đơn giản, ít request, đủ dùng.
+
+  ---
+  🗄️  DATABASE SCHEMA
+
+  Thêm bảng post_images
+
+  -- Migration: AddPostImages
+
+  -- Bảng lưu hình ảnh của post
+  CREATE TABLE post_images (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+
+      -- Thông tin file
+      original_name VARCHAR(255) NOT NULL,       -- tên file gốc user upload
+      file_name VARCHAR(255) NOT NULL,           -- tên file trên MinIO (UUID-based)
+      mime_type VARCHAR(50) NOT NULL,            -- image/jpeg, image/png, image/webp
+      file_size INTEGER NOT NULL,                -- bytes
+
+      -- URLs
+      url VARCHAR(500) NOT NULL,                 -- URL public để hiển thị
+      thumbnail_url VARCHAR(500),                -- URL thumbnail (resized)
+
+      -- Metadata
+      width INTEGER,                             -- pixel width
+      height INTEGER,                            -- pixel height
+      is_thumbnail BOOLEAN DEFAULT FALSE,        -- đánh dấu ảnh bìa của post
+      sort_order INTEGER DEFAULT 0,              -- thứ tự hiển thị
+
+      created_at TIMESTAMP DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_post_images_post_id ON post_images(post_id);
+  CREATE INDEX idx_post_images_is_thumbnail ON post_images(post_id, is_thumbnail);
+
+  -- Thêm cột thumbnail_url vào bảng posts (quick access)
+  ALTER TABLE posts ADD COLUMN thumbnail_url VARCHAR(500);
+
+  Entity Diagram
+
+  ┌──────────────────┐         ┌──────────────────────┐
+  │      posts       │         │    post_images        │
+  ├──────────────────┤         ├──────────────────────┤
+  │ id (PK)          │────┐    │ id (PK)              │
+  │ title            │    │    │ post_id (FK) ────────┘
+  │ content          │    │    │ original_name        │
+  │ thumbnail_url    │◄───┘    │ file_name            │
+  │ ...              │  1 : N  │ mime_type            │
+  └──────────────────┘         │ file_size            │
+                               │ url                  │
+                               │ thumbnail_url        │
+                               │ is_thumbnail         │
+                               │ sort_order           │
+                               └──────────────────────┘
+
+  ---
+  ⚙️  BACKEND IMPLEMENTATION (NestJS)
+
+  1. Cài đặt dependencies
+
+  npm install @nestjs/platform-express multer
+  npm install minio
+  npm install sharp          # resize/optimize hình
+  npm install --save-dev @types/multer @types/sharp
+
+  2. MinIO Configuration
+
+  // src/config/minio.config.ts
+
+  import { registerAs } from '@nestjs/config';
+
+  export default registerAs('minio', () => ({
+    endPoint: process.env.MINIO_ENDPOINT || 'localhost',
+    port: parseInt(process.env.MINIO_PORT, 10) || 9000,
+    useSSL: process.env.MINIO_USE_SSL === 'true',
+    accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
+    secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
+    bucketName: process.env.MINIO_BUCKET || 'blog-images',
+    publicUrl: process.env.MINIO_PUBLIC_URL || 'http://localhost:9000',
+  }));
+
+  # .env
+  MINIO_ENDPOINT=localhost
+  MINIO_PORT=9000
+  MINIO_USE_SSL=false
+  MINIO_ACCESS_KEY=minioadmin
+  MINIO_SECRET_KEY=minioadmin
+  MINIO_BUCKET=blog-images
+  MINIO_PUBLIC_URL=http://localhost:9000
+
+  3. Upload Module
+
+  // src/upload/upload.module.ts
+
+  import { Module } from '@nestjs/common';
+  import { ConfigModule } from '@nestjs/config';
+  import { UploadService } from './upload.service';
+  import { UploadController } from './upload.controller';
+  import minioConfig from '../config/minio.config';
+
+  @Module({
+    imports: [ConfigModule.forFeature(minioConfig)],
+    controllers: [UploadController],
+    providers: [UploadService],
+    exports: [UploadService], // Export để PostsModule dùng được
+  })
+  export class UploadModule {}
+
+  4. Upload Service (Core Logic)
+
+  // src/upload/upload.service.ts
+
+  import { Injectable, OnModuleInit, BadRequestException } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+  import * as Minio from 'minio';
+  import * as sharp from 'sharp';
+  import { v4 as uuidv4 } from 'uuid';
+  import * as path from 'path';
+
+  // Kết quả trả về sau khi upload
+  export interface UploadResult {
+    originalName: string;
+    fileName: string;
+    mimeType: string;
+    fileSize: number;
+    url: string;
+    thumbnailUrl: string;
+    width: number;
+    height: number;
+  }
+
+  // Config cho phép upload
+  const ALLOWED_MIME_TYPES = [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+  ];
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+  const THUMBNAIL_WIDTH = 400;
+  const THUMBNAIL_HEIGHT = 300;
+
+  @Injectable()
+  export class UploadService implements OnModuleInit {
+    private minioClient: Minio.Client;
+    private bucketName: string;
+    private publicUrl: string;
+
+    constructor(private configService: ConfigService) {
+      this.minioClient = new Minio.Client({
+        endPoint: this.configService.get<string>('minio.endPoint'),
+        port: this.configService.get<number>('minio.port'),
+        useSSL: this.configService.get<boolean>('minio.useSSL'),
+        accessKey: this.configService.get<string>('minio.accessKey'),
+        secretKey: this.configService.get<string>('minio.secretKey'),
+      });
+      this.bucketName = this.configService.get<string>('minio.bucketName');
+      this.publicUrl = this.configService.get<string>('minio.publicUrl');
+    }
+
+    /**
+     * Khởi tạo bucket khi module start
+     */
+    async onModuleInit() {
+      const bucketExists = await this.minioClient.bucketExists(this.bucketName);
+      if (!bucketExists) {
+        await this.minioClient.makeBucket(this.bucketName);
+
+        // Set bucket policy = public read (để frontend đọc được hình)
+        const publicPolicy = {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { AWS: ['*'] },
+              Action: ['s3:GetObject'],
+              Resource: [`arn:aws:s3:::${this.bucketName}/*`],
+            },
+          ],
+        };
+        await this.minioClient.setBucketPolicy(
+          this.bucketName,
+          JSON.stringify(publicPolicy),
+        );
+      }
+    }
+
+    /**
+     * Validate file trước khi upload
+     */
+    validateFile(file: Express.Multer.File): void {
+      if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+        throw new BadRequestException(
+          `File type "${file.mimetype}" không được hỗ trợ. ` +
+          `Chỉ chấp nhận: ${ALLOWED_MIME_TYPES.join(', ')}`,
+        );
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
+        throw new BadRequestException(
+          `File quá lớn (${(file.size / 1024 / 1024).toFixed(1)}MB). ` +
+          `Tối đa: ${MAX_FILE_SIZE / 1024 / 1024}MB`,
+        );
+      }
+    }
+
+    /**
+     * Upload 1 file lên MinIO + tạo thumbnail
+     */
+    async uploadImage(file: Express.Multer.File): Promise<UploadResult> {
+      this.validateFile(file);
+
+      // Generate unique filename
+      const ext = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${uuidv4()}${ext}`;
+      const thumbnailName = `thumb_${uniqueName}`;
+
+      // Đọc metadata hình (width, height)
+      const imageMetadata = await sharp(file.buffer).metadata();
+
+      // ─── Upload ảnh gốc (optimize bằng sharp) ───
+      const optimizedBuffer = await sharp(file.buffer)
+        .resize(1920, 1080, {
+          fit: 'inside',           // Giữ tỷ lệ, max 1920x1080
+          withoutEnlargement: true, // Không phóng to ảnh nhỏ
+        })
+        .jpeg({ quality: 85 })     // Convert sang JPEG quality 85%
+        .toBuffer();
+
+      await this.minioClient.putObject(
+        this.bucketName,
+        `posts/${uniqueName}`,
+        optimizedBuffer,
+        optimizedBuffer.length,
+        { 'Content-Type': 'image/jpeg' },
+      );
+
+      // ─── Tạo + upload thumbnail ───
+      const thumbnailBuffer = await sharp(file.buffer)
+        .resize(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, {
+          fit: 'cover',   // Crop cho vừa khung
+          position: 'center',
+        })
+        .jpeg({ quality: 75 })
+        .toBuffer();
+
+      await this.minioClient.putObject(
+        this.bucketName,
+        `posts/thumbnails/${thumbnailName}`,
+        thumbnailBuffer,
+        thumbnailBuffer.length,
+        { 'Content-Type': 'image/jpeg' },
+      );
+
+      return {
+        originalName: file.originalname,
+        fileName: uniqueName,
+        mimeType: file.mimetype,
+        fileSize: optimizedBuffer.length,
+        url: `${this.publicUrl}/${this.bucketName}/posts/${uniqueName}`,
+        thumbnailUrl: `${this.publicUrl}/${this.bucketName}/posts/thumbnails/${thumbnailName}`,
+        width: imageMetadata.width,
+        height: imageMetadata.height,
+      };
+    }
+
+    /**
+     * Upload nhiều file cùng lúc
+     */
+    async uploadMultipleImages(
+      files: Express.Multer.File[],
+    ): Promise<UploadResult[]> {
+      // Upload parallel cho nhanh
+      const results = await Promise.all(
+        files.map((file) => this.uploadImage(file)),
+      );
+      return results;
+    }
+
+    /**
+     * Xóa file trên MinIO (khi xóa post hoặc xóa ảnh)
+     */
+    async deleteImage(fileName: string): Promise<void> {
+      await this.minioClient.removeObject(
+        this.bucketName,
+        `posts/${fileName}`,
+      );
+      // Xóa cả thumbnail
+      await this.minioClient.removeObject(
+        this.bucketName,
+        `posts/thumbnails/thumb_${fileName}`,
+      ).catch(() => {}); // Ignore nếu thumbnail không tồn tại
+    }
+  }
+
+  5. Post Images Entity
+
+  // src/posts/entities/post-image.entity.ts
+
+  import {
+    Entity,
+    PrimaryGeneratedColumn,
+    Column,
+    ManyToOne,
+    JoinColumn,
+    CreateDateColumn,
+  } from 'typeorm';
+  import { Post } from './post.entity';
+
+  @Entity('post_images')
+  export class PostImage {
+    @PrimaryGeneratedColumn('uuid')
+    id: string;
+
+    @Column({ name: 'post_id' })
+    postId: string;
+
+    @ManyToOne(() => Post, (post) => post.images, { onDelete: 'CASCADE' })
+    @JoinColumn({ name: 'post_id' })
+    post: Post;
+
+    @Column({ name: 'original_name' })
+    originalName: string;
+
+    @Column({ name: 'file_name' })
+    fileName: string;
+
+    @Column({ name: 'mime_type' })
+    mimeType: string;
+
+    @Column({ name: 'file_size' })
+    fileSize: number;
+
+    @Column()
+    url: string;
+
+    @Column({ name: 'thumbnail_url', nullable: true })
+    thumbnailUrl: string;
+
+    @Column({ nullable: true })
+    width: number;
+
+    @Column({ nullable: true })
+    height: number;
+
+    @Column({ name: 'is_thumbnail', default: false })
+    isThumbnail: boolean;
+
+    @Column({ name: 'sort_order', default: 0 })
+    sortOrder: number;
+
+    @CreateDateColumn({ name: 'created_at' })
+    createdAt: Date;
+  }
+
+  6. Cập nhật Post Entity
+
+  // src/posts/entities/post.entity.ts (CẬP NHẬT)
+
+  import { PostImage } from './post-image.entity';
+
+  @Entity('posts')
+  export class Post {
+    // ... các field cũ giữ nguyên ...
+
+    @Column({ name: 'thumbnail_url', nullable: true })
+    thumbnailUrl: string;
+
+    // ═══ THÊM MỚI ═══
+    @OneToMany(() => PostImage, (image) => image.post, {
+      cascade: true,    // Tự động save images khi save post
+      eager: false,     // Không load images mặc định (lazy load)
+    })
+    images: PostImage[];
+  }
+
+  7. DTOs
+
+  // src/posts/dto/create-post.dto.ts (CẬP NHẬT)
+
+  import {
+    IsNotEmpty,
+    IsString,
+    IsOptional,
+    IsUUID,
+    IsEnum,
+    MaxLength,
+    MinLength,
+  } from 'class-validator';
+
+  export class CreatePostDto {
+    @IsNotEmpty()
+    @IsString()
+    @MinLength(10)
+    @MaxLength(200)
+    title: string;
+
+    @IsNotEmpty()
+    @IsString()
+    @MinLength(50)
+    content: string;
+
+    @IsOptional()
+    @IsUUID()
+    categoryId?: string;
+
+    @IsOptional()
+    @IsEnum(['draft', 'published'])
+    status?: 'draft' | 'published';
+
+    // ═══ THÊM MỚI ═══
+    // Chỉ định ảnh nào là thumbnail (index trong mảng images)
+    @IsOptional()
+    thumbnailIndex?: number;
+  }
+
+  8. Posts Controller (CẬP NHẬT - Nhận file upload)
+
+  // src/posts/posts.controller.ts (CẬP NHẬT)
+
+  import {
+    Controller,
+    Post,
+    Body,
+    UseGuards,
+    UseInterceptors,
+    UploadedFiles,
+    BadRequestException,
+    Get,
+    Param,
+    Delete,
+    Patch,
+    Query,
+  } from '@nestjs/common';
+  import { AuthGuard } from '@nestjs/passport';
+  import { FilesInterceptor } from '@nestjs/platform-express';
+  import { memoryStorage } from 'multer';
+  import { PostsService } from './posts.service';
+  import { CreatePostDto } from './dto/create-post.dto';
+  import { CurrentUser } from '../auth/decorators/current-user.decorator';
+
+  // ─── Multer config ───
+  const imageUploadOptions = {
+    storage: memoryStorage(), // Lưu vào RAM (buffer) → gửi thẳng lên MinIO
+    limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB per file
+      files: 10,                   // Tối đa 10 hình/post
+    },
+    fileFilter: (req: any, file: Express.Multer.File, cb: any) => {
+      const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+      if (allowedTypes.includes(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(
+          new BadRequestException(
+            `File "${file.originalname}" không hợp lệ. Chỉ chấp nhận JPEG, PNG, WebP, GIF.`,
+          ),
+          false,
+        );
+      }
+    },
+  };
+
+  @Controller('posts')
+  export class PostsController {
+    constructor(private readonly postsService: PostsService) {}
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * TẠO POST + UPLOAD HÌNH
+     * ═══════════════════════════════════════════════════
+     *
+     * Frontend gửi: multipart/form-data
+     * - fields: title, content, categoryId, status, thumbnailIndex
+     * - files: images[] (multiple files)
+     */
+    @Post()
+    @UseGuards(AuthGuard('jwt'))
+    @UseInterceptors(FilesInterceptor('images', 10, imageUploadOptions))
+    async createPost(
+      @CurrentUser() user: { id: string },
+      @Body() createPostDto: CreatePostDto,
+      @UploadedFiles() images?: Express.Multer.File[],
+    ) {
+      return this.postsService.createWithImages(
+        user.id,
+        createPostDto,
+        images || [],
+      );
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * THÊM HÌNH VÀO POST ĐÃ TỒN TẠI
+     * ═══════════════════════════════════════════════════
+     */
+    @Post(':postId/images')
+    @UseGuards(AuthGuard('jwt'))
+    @UseInterceptors(FilesInterceptor('images', 10, imageUploadOptions))
+    async addImages(
+      @CurrentUser() user: { id: string },
+      @Param('postId') postId: string,
+      @UploadedFiles() images: Express.Multer.File[],
+    ) {
+      if (!images || images.length === 0) {
+        throw new BadRequestException('Vui lòng chọn ít nhất 1 hình ảnh');
+      }
+      return this.postsService.addImagesToPost(user.id, postId, images);
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * XÓA 1 HÌNH KHỎI POST
+     * ═══════════════════════════════════════════════════
+     */
+    @Delete(':postId/images/:imageId')
+    @UseGuards(AuthGuard('jwt'))
+    async removeImage(
+      @CurrentUser() user: { id: string },
+      @Param('postId') postId: string,
+      @Param('imageId') imageId: string,
+    ) {
+      return this.postsService.removeImageFromPost(user.id, postId, imageId);
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * SET THUMBNAIL CHO POST
+     * ═══════════════════════════════════════════════════
+     */
+    @Patch(':postId/thumbnail/:imageId')
+    @UseGuards(AuthGuard('jwt'))
+    async setThumbnail(
+      @CurrentUser() user: { id: string },
+      @Param('postId') postId: string,
+      @Param('imageId') imageId: string,
+    ) {
+      return this.postsService.setThumbnail(user.id, postId, imageId);
+    }
+
+    // ... các API cũ (GET, UPDATE, DELETE post) giữ nguyên ...
+  }
+
+  9. Posts Service (CẬP NHẬT - Xử lý upload)
+
+  // src/posts/posts.service.ts (CẬP NHẬT)
+
+  import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository, DataSource } from 'typeorm';
+  import { Post } from './entities/post.entity';
+  import { PostImage } from './entities/post-image.entity';
+  import { CreatePostDto } from './dto/create-post.dto';
+  import { UploadService, UploadResult } from '../upload/upload.service';
+
+  @Injectable()
+  export class PostsService {
+    constructor(
+      @InjectRepository(Post)
+      private postsRepo: Repository<Post>,
+
+      @InjectRepository(PostImage)
+      private postImagesRepo: Repository<PostImage>,
+
+      private uploadService: UploadService,
+      private dataSource: DataSource,
+    ) {}
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * TẠO POST + UPLOAD HÌNH (Atomic Transaction)
+     * ═══════════════════════════════════════════════════
+     *
+     * Đảm bảo: Nếu upload hình lỗi → không tạo post
+     *           Nếu save DB lỗi → xóa hình đã upload trên MinIO
+     */
+    async createWithImages(
+      authorId: string,
+      dto: CreatePostDto,
+      imageFiles: Express.Multer.File[],
+    ): Promise<Post> {
+      // Step 1: Upload tất cả hình lên MinIO
+      let uploadResults: UploadResult[] = [];
+
+      if (imageFiles.length > 0) {
+        uploadResults = await this.uploadService.uploadMultipleImages(imageFiles);
+      }
+
+      // Step 2: Transaction - tạo post + save image records
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      try {
+        // Xác định thumbnail
+        const thumbnailIdx = dto.thumbnailIndex ?? 0;
+        const thumbnailResult = uploadResults[thumbnailIdx];
+
+        // Tạo post
+        const post = queryRunner.manager.create(Post, {
+          title: dto.title,
+          content: dto.content,
+          categoryId: dto.categoryId,
+          authorId,
+          status: dto.status || 'draft',
+          thumbnailUrl: thumbnailResult?.thumbnailUrl || null,
+        });
+
+        const savedPost = await queryRunner.manager.save(Post, post);
+
+        // Tạo image records
+        if (uploadResults.length > 0) {
+          const imageEntities = uploadResults.map((result, index) =>
+            queryRunner.manager.create(PostImage, {
+              postId: savedPost.id,
+              originalName: result.originalName,
+              fileName: result.fileName,
+              mimeType: result.mimeType,
+              fileSize: result.fileSize,
+              url: result.url,
+              thumbnailUrl: result.thumbnailUrl,
+              width: result.width,
+              height: result.height,
+              isThumbnail: index === thumbnailIdx,
+              sortOrder: index,
+            }),
+          );
+
+          await queryRunner.manager.save(PostImage, imageEntities);
+        }
+
+        await queryRunner.commitTransaction();
+
+        // Trả về post kèm images
+        return this.postsRepo.findOne({
+          where: { id: savedPost.id },
+          relations: ['images', 'author'],
+        });
+
+      } catch (error) {
+        await queryRunner.rollbackTransaction();
+
+        // ─── CLEANUP: Xóa hình đã upload trên MinIO nếu DB lỗi ───
+        for (const result of uploadResults) {
+          await this.uploadService.deleteImage(result.fileName).catch(() => {});
+        }
+
+        throw error;
+      } finally {
+        await queryRunner.release();
+      }
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * THÊM HÌNH VÀO POST ĐÃ CÓ
+     * ═══════════════════════════════════════════════════
+     */
+    async addImagesToPost(
+      userId: string,
+      postId: string,
+      imageFiles: Express.Multer.File[],
+    ): Promise<PostImage[]> {
+      const post = await this.postsRepo.findOne({ where: { id: postId } });
+      if (!post) throw new NotFoundException('Post không tồn tại');
+      if (post.authorId !== userId) throw new ForbiddenException('Bạn không phải tác giả');
+
+      // Đếm số hình hiện tại
+      const currentCount = await this.postImagesRepo.count({
+        where: { postId },
+      });
+      if (currentCount + imageFiles.length > 10) {
+        throw new ForbiddenException(
+          `Tối đa 10 hình/post. Hiện tại: ${currentCount}, đang thêm: ${imageFiles.length}`,
+        );
+      }
+
+      // Upload
+      const uploadResults = await this.uploadService.uploadMultipleImages(imageFiles);
+
+      // Save to DB
+      const imageEntities = uploadResults.map((result, index) =>
+        this.postImagesRepo.create({
+          postId,
+          originalName: result.originalName,
+          fileName: result.fileName,
+          mimeType: result.mimeType,
+          fileSize: result.fileSize,
+          url: result.url,
+          thumbnailUrl: result.thumbnailUrl,
+          width: result.width,
+          height: result.height,
+          sortOrder: currentCount + index,
+        }),
+      );
+
+      return this.postImagesRepo.save(imageEntities);
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * XÓA 1 HÌNH KHỎI POST
+     * ═══════════════════════════════════════════════════
+     */
+    async removeImageFromPost(
+      userId: string,
+      postId: string,
+      imageId: string,
+    ): Promise<{ message: string }> {
+      const post = await this.postsRepo.findOne({ where: { id: postId } });
+      if (!post) throw new NotFoundException('Post không tồn tại');
+      if (post.authorId !== userId) throw new ForbiddenException('Bạn không phải tác giả');
+
+      const image = await this.postImagesRepo.findOne({
+        where: { id: imageId, postId },
+      });
+      if (!image) throw new NotFoundException('Hình không tồn tại');
+
+      // Xóa trên MinIO
+      await this.uploadService.deleteImage(image.fileName);
+
+      // Xóa trong DB
+      await this.postImagesRepo.remove(image);
+
+      // Nếu đang xóa thumbnail → clear thumbnail_url của post
+      if (image.isThumbnail) {
+        await this.postsRepo.update(postId, { thumbnailUrl: null });
+      }
+
+      return { message: 'Đã xóa hình ảnh' };
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════
+     * SET THUMBNAIL
+     * ═══════════════════════════════════════════════════
+     */
+    async setThumbnail(
+      userId: string,
+      postId: string,
+      imageId: string,
+    ): Promise<Post> {
+      const post = await this.postsRepo.findOne({ where: { id: postId } });
+      if (!post) throw new NotFoundException('Post không tồn tại');
+      if (post.authorId !== userId) throw new ForbiddenException('Bạn không phải tác giả');
+
+      const image = await this.postImagesRepo.findOne({
+        where: { id: imageId, postId },
+      });
+      if (!image) throw new NotFoundException('Hình không tồn tại');
+
+      // Reset all isThumbnail = false
+      await this.postImagesRepo.update({ postId }, { isThumbnail: false });
+
+      // Set image mới = thumbnail
+      await this.postImagesRepo.update(imageId, { isThumbnail: true });
+
+      // Update post thumbnail_url
+      await this.postsRepo.update(postId, {
+        thumbnailUrl: image.thumbnailUrl,
+      });
+
+      return this.postsRepo.findOne({
+        where: { id: postId },
+        relations: ['images'],
+      });
+    }
+  }
+
+  10. Cập nhật Posts Module
+
+  // src/posts/posts.module.ts (CẬP NHẬT)
+
+  import { Module } from '@nestjs/common';
+  import { TypeOrmModule } from '@nestjs/typeorm';
+  import { PostsController } from './posts.controller';
+  import { PostsService } from './posts.service';
+  import { Post } from './entities/post.entity';
+  import { PostImage } from './entities/post-image.entity';
+  import { UploadModule } from '../upload/upload.module'; // ← THÊM
+
+  @Module({
+    imports: [
+      TypeOrmModule.forFeature([Post, PostImage]), // ← THÊM PostImage
+      UploadModule,                                 // ← THÊM
+    ],
+    controllers: [PostsController],
+    providers: [PostsService],
+    exports: [PostsService],
+  })
+  export class PostsModule {}
+
+  ---
+  🎨 FRONTEND IMPLEMENTATION (React/Next.js)
+
+  1. Component Upload Hình
+
+  // components/post/ImageUploader.tsx
+
+  'use client';
+
+  import React, { useState, useCallback, useRef } from 'react';
+
+  interface ImagePreview {
+    file: File;
+    previewUrl: string;   // URL.createObjectURL
+    isThumbnail: boolean;
+  }
+
+  interface ImageUploaderProps {
+    maxFiles?: number;
+    onImagesChange: (files: File[], thumbnailIndex: number) => void;
+  }
+
+  export default function ImageUploader({
+    maxFiles = 10,
+    onImagesChange,
+  }: ImageUploaderProps) {
+    const [previews, setPreviews] = useState<ImagePreview[]>([]);
+    const [thumbnailIdx, setThumbnailIdx] = useState<number>(0);
+    const [isDragging, setIsDragging] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // ─── Xử lý chọn file ───
+    const handleFiles = useCallback(
+      (fileList: FileList | null) => {
+        if (!fileList) return;
+
+        const newFiles = Array.from(fileList).filter((file) => {
+          // Validate client-side
+          const isImage = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+            .includes(file.type);
+          const isUnderLimit = file.size <= 10 * 1024 * 1024;
+
+          if (!isImage) {
+            alert(`"${file.name}" không phải hình ảnh hợp lệ`);
+            return false;
+          }
+          if (!isUnderLimit) {
+            alert(`"${file.name}" quá 10MB`);
+            return false;
+          }
+          return true;
+        });
+
+        setPreviews((prev) => {
+          const total = prev.length + newFiles.length;
+          if (total > maxFiles) {
+            alert(`Tối đa ${maxFiles} hình. Hiện tại: ${prev.length}`);
+            return prev;
+          }
+
+          const newPreviews: ImagePreview[] = newFiles.map((file) => ({
+            file,
+            previewUrl: URL.createObjectURL(file),
+            isThumbnail: false,
+          }));
+
+          const updated = [...prev, ...newPreviews];
+
+          // Callback ra parent
+          const allFiles = updated.map((p) => p.file);
+          onImagesChange(allFiles, thumbnailIdx);
+
+          return updated;
+        });
+      },
+      [maxFiles, onImagesChange, thumbnailIdx],
+    );
+
+    // ─── Drag & Drop ───
+    const handleDragOver = useCallback((e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(true);
+    }, []);
+
+    const handleDragLeave = useCallback((e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+    }, []);
+
+    const handleDrop = useCallback(
+      (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(false);
+        handleFiles(e.dataTransfer.files);
+      },
+      [handleFiles],
+    );
+
+    // ─── Xóa 1 hình ───
+    const removeImage = (index: number) => {
+      setPreviews((prev) => {
+        URL.revokeObjectURL(prev[index].previewUrl); // Free memory
+        const updated = prev.filter((_, i) => i !== index);
+
+        // Fix thumbnail index
+        let newThumbIdx = thumbnailIdx;
+        if (index === thumbnailIdx) {
+          newThumbIdx = 0;
+        } else if (index < thumbnailIdx) {
+          newThumbIdx = thumbnailIdx - 1;
+        }
+        setThumbnailIdx(newThumbIdx);
+
+        const allFiles = updated.map((p) => p.file);
+        onImagesChange(allFiles, newThumbIdx);
+
+        return updated;
+      });
+    };
+
+    // ─── Set Thumbnail ───
+    const selectThumbnail = (index: number) => {
+      setThumbnailIdx(index);
+      const allFiles = previews.map((p) => p.file);
+      onImagesChange(allFiles, index);
+    };
+
+    return (
+      <div className="space-y-4">
+        {/* ─── Drop Zone ─── */}
+        <div
+          className={`
+            relative border-2 border-dashed rounded-xl p-8
+            text-center cursor-pointer transition-all duration-200
+            ${isDragging
+              ? 'border-blue-500 bg-blue-50 scale-[1.02]'
+              : 'border-gray-300 hover:border-gray-400 bg-gray-50'
+            }
+          `}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            multiple
+            className="hidden"
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+
+          {/* Icon */}
+          <div className="mx-auto w-16 h-16 mb-4 text-gray-400">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              />
+            </svg>
+          </div>
+
+          <p className="text-gray-600 font-medium">
+            Kéo thả hình vào đây hoặc <span className="text-blue-600">chọn file</span>
+          </p>
+          <p className="text-gray-400 text-sm mt-1">
+            JPEG, PNG, WebP, GIF • Tối đa 10MB/file • Tối đa {maxFiles} hình
+          </p>
+        </div>
+
+        {/* ─── Preview Grid ─── */}
+        {previews.length > 0 && (
+          <div>
+            <p className="text-sm text-gray-500 mb-2">
+              📸 {previews.length}/{maxFiles} hình • Click vào hình để chọn làm ảnh bìa
+            </p>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {previews.map((preview, index) => (
+                <div
+                  key={preview.previewUrl}
+                  className={`
+                    relative group rounded-lg overflow-hidden
+                    aspect-square cursor-pointer
+                    ring-2 transition-all duration-200
+                    ${index === thumbnailIdx
+                      ? 'ring-blue-500 ring-offset-2'
+                      : 'ring-transparent hover:ring-gray-300'
+                    }
+                  `}
+                  onClick={() => selectThumbnail(index)}
+                >
+                  {/* Hình preview */}
+                  <img
+                    src={preview.previewUrl}
+                    alt={preview.file.name}
+                    className="w-full h-full object-cover"
+                  />
+
+                  {/* Overlay gradient */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                  {/* Badge: Ảnh bìa */}
+                  {index === thumbnailIdx && (
+                    <div className="absolute top-2 left-2 bg-blue-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+                      ⭐ Ảnh bìa
+                    </div>
+                  )}
+
+                  {/* File info */}
+                  <div className="absolute bottom-0 left-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <p className="text-white text-xs truncate">
+                      {preview.file.name}
+                    </p>
+                    <p className="text-white/70 text-xs">
+                      {(preview.file.size / 1024 / 1024).toFixed(1)} MB
+                    </p>
+                  </div>
+
+                  {/* Nút xóa */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeImage(index);
+                    }}
+                    className="
+                      absolute top-2 right-2 w-7 h-7
+                      bg-red-500 hover:bg-red-600
+                      text-white rounded-full
+                      flex items-center justify-center
+                      opacity-0 group-hover:opacity-100
+                      transition-all duration-200
+                      text-sm font-bold
+                    "
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  2. Form Tạo Post (Tích hợp Upload)
+
+  // components/post/CreatePostForm.tsx
+
+  'use client';
+
+  import React, { useState } from 'react';
+  import ImageUploader from './ImageUploader';
+
+  export default function CreatePostForm() {
+    const [title, setTitle] = useState('');
+    const [content, setContent] = useState('');
+    const [categoryId, setCategoryId] = useState('');
+    const [images, setImages] = useState<File[]>([]);
+    const [thumbnailIndex, setThumbnailIndex] = useState(0);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+
+    // ─── Callback từ ImageUploader ───
+    const handleImagesChange = (files: File[], thumbIdx: number) => {
+      setImages(files);
+      setThumbnailIndex(thumbIdx);
+    };
+
+    // ─── Submit Form ───
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setIsSubmitting(true);
+      setUploadProgress(0);
+
+      try {
+        // ═══ Tạo FormData (multipart/form-data) ═══
+        const formData = new FormData();
+        formData.append('title', title);
+        formData.append('content', content);
+        if (categoryId) formData.append('categoryId', categoryId);
+        formData.append('status', 'published');
+        formData.append('thumbnailIndex', thumbnailIndex.toString());
+
+        // Append từng file hình
+        images.forEach((file) => {
+          formData.append('images', file);  // ← key phải là 'images' (match backend)
+        });
+
+        // ═══ Gửi request với XMLHttpRequest để track progress ═══
+        const response = await uploadWithProgress(formData);
+
+        if (response.ok) {
+          const result = await response.json();
+          alert('Đăng bài thành công! 🎉');
+          // redirect hoặc reset form
+          window.location.href = `/posts/${result.id}`;
+        } else {
+          const error = await response.json();
+          alert(`Lỗi: ${error.message}`);
+        }
+
+      } catch (err) {
+        alert('Có lỗi xảy ra, vui lòng thử lại');
+        console.error(err);
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+
+    // ─── Upload với progress tracking ───
+    const uploadWithProgress = (formData: FormData): Promise<Response> => {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+
+        // Track upload progress
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percent);
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          resolve(new Response(xhr.responseText, {
+            status: xhr.status,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        });
+
+        xhr.addEventListener('error', () => reject(new Error('Network error')));
+        xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+
+        xhr.open('POST', '/api/posts');
+        xhr.setRequestHeader(
+          'Authorization',
+          `Bearer ${localStorage.getItem('token')}`,
+        );
+        // ⚠️  KHÔNG set Content-Type header! Browser tự set với boundary
+        xhr.send(formData);
+      });
+    };
+
+    return (
+      <form onSubmit={handleSubmit} className="max-w-3xl mx-auto space-y-6 p-6">
+        <h1 className="text-2xl font-bold">📝 Tạo bài viết mới</h1>
+
+        {/* Title */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Tiêu đề
+          </label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Tiêu đề bài viết..."
+            required
+            minLength={10}
+            maxLength={200}
+            className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        {/* ═══ IMAGE UPLOADER ═══ */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Hình ảnh
+          </label>
+          <ImageUploader
+            maxFiles={10}
+            onImagesChange={handleImagesChange}
+          />
+        </div>
+
+        {/* Content */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Nội dung
+          </label>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Viết nội dung bài viết..."
+            required
+            minLength={50}
+            rows={12}
+            className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 resize-y"
+          />
+        </div>
+
+        {/* ═══ PROGRESS BAR ═══ */}
+        {isSubmitting && uploadProgress > 0 && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-600">Đang tải lên...</span>
+              <span className="text-blue-600 font-medium">{uploadProgress}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2.5">
+              <div
+                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                style={{ width: `${uploadProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Submit */}
+        <button
+          type="submit"
+          disabled={isSubmitting}
+          className={`
+            w-full py-3 px-6 rounded-lg font-medium text-white
+            transition-all duration-200
+            ${isSubmitting
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'bg-blue-600 hover:bg-blue-700 active:scale-[0.98]'
+            }
+          `}
+        >
+          {isSubmitting ? '⏳ Đang đăng bài...' : '🚀 Đăng bài'}
+        </button>
+      </form>
+    );
+  }
+
+  ---
+  📡 API ENDPOINTS SUMMARY
+
+  ┌────────────────────────────────────────────────────────────────────────────┐
+  │                          IMAGE UPLOAD APIs                                 │
+  ├────────┬──────────────────────────────┬───────────────────────────────────┤
+  │ Method │ Endpoint                     │ Description                       │
+  ├────────┼──────────────────────────────┼───────────────────────────────────┤
+  │ POST   │ /api/posts                   │ Tạo post + upload hình            │
+  │        │                              │ Body: multipart/form-data         │
+  │        │                              │ Fields: title, content, ...       │
+  │        │                              │ Files: images[] (max 10)          │
+  ├────────┼──────────────────────────────┼───────────────────────────────────┤
+  │ POST   │ /api/posts/:id/images        │ Thêm hình vào post đã có         │
+  │        │                              │ Body: multipart/form-data         │
+  │        │                              │ Files: images[]                   │
+  ├────────┼──────────────────────────────┼───────────────────────────────────┤
+  │ DELETE │ /api/posts/:id/images/:imgId │ Xóa 1 hình khỏi post             │
+  ├────────┼──────────────────────────────┼───────────────────────────────────┤
+  │ PATCH  │ /api/posts/:id/thumbnail/:id │ Chọn hình làm ảnh bìa            │
+  ├────────┼──────────────────────────────┼───────────────────────────────────┤
+  │ GET    │ /api/posts/:id               │ Lấy post kèm danh sách hình      │
+  │        │                              │ Response includes: images[]       │
+  └────────┴──────────────────────────────┴───────────────────────────────────┘
+
+  Ví dụ Request/Response
+
+  # ═══ Tạo post với hình ═══
+  curl -X POST http://localhost:3000/api/posts \
+    -H "Authorization: Bearer <token>" \
+    -F "title=Hướng dẫn NestJS" \
+    -F "content=Nội dung bài viết dài ít nhất 50 ký tự..." \
+    -F "categoryId=uuid-here" \
+    -F "status=published" \
+    -F "thumbnailIndex=0" \
+    -F "images=@photo1.jpg" \
+    -F "images=@photo2.png" \
+    -F "images=@photo3.webp"
+
+  // ═══ Response ═══
+  {
+    "id": "a1b2c3d4-...",
+    "title": "Hướng dẫn NestJS",
+    "content": "Nội dung bài viết...",
+    "thumbnailUrl": "http://localhost:9000/blog-images/posts/thumbnails/thumb_uuid1.jpeg",
+    "status": "published",
+    "createdAt": "2026-03-22T10:30:00.000Z",
+    "author": {
+      "id": "user-uuid",
+      "displayName": "Dinh"
+    },
+    "images": [
+      {
+        "id": "img-uuid-1",
+        "originalName": "photo1.jpg",
+        "url": "http://localhost:9000/blog-images/posts/uuid1.jpeg",
+        "thumbnailUrl": "http://localhost:9000/blog-images/posts/thumbnails/thumb_uuid1.jpeg",
+        "width": 1920,
+        "height": 1080,
+        "isThumbnail": true,
+        "sortOrder": 0
+      },
+      {
+        "id": "img-uuid-2",
+        "originalName": "photo2.png",
+        "url": "http://localhost:9000/blog-images/posts/uuid2.jpeg",
+        "thumbnailUrl": "http://localhost:9000/blog-images/posts/thumbnails/thumb_uuid2.jpeg",
+        "width": 800,
+        "height": 600,
+        "isThumbnail": false,
+        "sortOrder": 1
+      }
+    ]
+  }
+
+  ---
+  🔒 LUỒNG XỬ LÝ CHI TIẾT (Flow Diagram)
+
+   User chọn hình + điền form
+           │
+           ▼
+   ┌───────────────────┐
+   │ Client-side       │
+   │ Validation        │
+   │ • File type?      │
+   │ • File size < 10MB│
+   │ • Count <= 10?    │
+   └────────┬──────────┘
+            │ OK
+            ▼
+   ┌───────────────────┐
+   │ new FormData()    │
+   │ • append fields   │
+   │ • append files    │
+   └────────┬──────────┘
+            │
+            │  POST /api/posts
+            │  Content-Type: multipart/form-data
+            ▼
+   ┌───────────────────────────────────────────────────────┐
+   │                    BACKEND                             │
+   │                                                        │
+   │  ┌──────────────┐                                      │
+   │  │ JWT Guard    │ → Verify token → Extract userId      │
+   │  └──────┬───────┘                                      │
+   │         │                                              │
+   │         ▼                                              │
+   │  ┌──────────────┐                                      │
+   │  │ Multer       │ → Parse multipart/form-data          │
+   │  │ Interceptor  │ → Extract files[] vào memory buffer  │
+   │  │              │ → Validate: type, size, count         │
+   │  └──────┬───────┘                                      │
+   │         │                                              │
+   │         ▼                                              │
+   │  ┌──────────────┐                                      │
+   │  │ ValidationPipe│ → Validate DTO (title, content...)  │
+   │  └──────┬───────┘                                      │
+   │         │                                              │
+   │         ▼                                              │
+   │  ┌──────────────────────────────────────────────┐      │
+   │  │         PostsService.createWithImages()       │      │
+   │  │                                               │      │
+   │  │  1. Upload each file to MinIO (parallel)      │      │
+   │  │     ├─ sharp: resize to max 1920x1080         │      │
+   │  │     ├─ sharp: convert to JPEG quality 85%     │      │
+   │  │     ├─ sharp: create thumbnail 400x300        │      │
+   │  │     ├─ minioClient.putObject(original)        │      │
+   │  │     └─ minioClient.putObject(thumbnail)       │      │
+   │  │                                               │      │
+   │  │  2. BEGIN TRANSACTION                          │      │
+   │  │     ├─ INSERT INTO posts (...)                 │      │
+   │  │     ├─ INSERT INTO post_images (...) x N       │      │
+   │  │     └─ COMMIT                                  │      │
+   │  │                                               │      │
+   │  │  3. If DB error → ROLLBACK + delete MinIO files│      │
+   │  │                                               │      │
+   │  │  4. Return post + images                       │      │
+   │  └──────────────────────────────────────────────┘      │
+   │                                                        │
+   └────────────────────────────────────────────────────────┘
+            │
+            ▼
+   ┌───────────────────┐
+   │ Frontend receives │
+   │ JSON response     │
+   │ → Redirect to     │
+   │   /posts/:id      │
+   └───────────────────┘
+
+  ---
+  🐳 Docker-compose Update (MinIO Config)
+
+  # docker-compose.yml - Thêm/cập nhật MinIO service
+
+  services:
+    # ... api, postgres, redis giữ nguyên ...
+
+    minio:
+      image: minio/minio
+      ports:
+        - "9000:9000"    # API endpoint
+        - "9001:9001"    # Console UI
+      environment:
+        MINIO_ROOT_USER: minioadmin
+        MINIO_ROOT_PASSWORD: minioadmin
+      command: server /data --console-address ":9001"
+      volumes:
+        - miniodata:/data
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+
+    # ═══ THÊM: Tự động tạo bucket khi startup ═══
+    minio-init:
+      image: minio/mc
+      depends_on:
+        minio:
+          condition: service_healthy
+      entrypoint: >
+        /bin/sh -c "
+        mc alias set myminio http://minio:9000 minioadmin minioadmin;
+        mc mb myminio/blog-images --ignore-existing;
+        mc anonymous set download myminio/blog-images;
+        echo 'Bucket blog-images created and set to public read';
+        "
+
+  ---
+  ✅ CHECKLIST TRIỂN KHAI
+
+  Phase 1: Backend Setup
+    [ ] Cài dependencies: minio, sharp, @types/multer
+    [ ] Tạo migration: post_images table + alter posts table
+    [ ] Tạo PostImage entity
+    [ ] Cập nhật Post entity (thêm images relation, thumbnailUrl)
+    [ ] Tạo minio.config.ts
+    [ ] Tạo UploadModule + UploadService
+    [ ] Cập nhật PostsModule (import UploadModule, register PostImage)
+    [ ] Cập nhật PostsController (thêm @UseInterceptors, FilesInterceptor)
+    [ ] Cập nhật PostsService (createWithImages, addImages, removeImage)
+    [ ] Cập nhật docker-compose.yml (minio-init service)
+
+  Phase 2: Frontend
+    [ ] Tạo ImageUploader component (drag & drop + preview)
+    [ ] Cập nhật CreatePostForm (multipart/form-data + progress bar)
+    [ ] Hiển thị hình ảnh trong Post detail page
+    [ ] Hiển thị thumbnail trong Post list/card
+
+  Phase 3: Testing
+    [ ] Test upload 1 hình
+    [ ] Test upload 10 hình (max)
+    [ ] Test upload > 10 hình (phải báo lỗi)
+    [ ] Test upload file > 10MB (phải báo lỗi)
+    [ ] Test upload file không phải hình (phải báo lỗi)
+    [ ] Test xóa hình + verify MinIO đã xóa
+    [ ] Test set thumbnail
+    [ ] Test tạo post → DB rollback nếu lỗi → MinIO cleanup
+
+  ---
+  🔑 LƯU Ý QUAN TRỌNG
+
+  ⚠️  Frontend: KHÔNG set Content-Type header khi gửi FormData
+
+  // ❌ SAI - Đây là lý do "API không nhận được hình từ frontend"
+  fetch('/api/posts', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',        // ← SAI!
+      // hoặc
+      'Content-Type': 'multipart/form-data',     // ← CŨNG SAI! Thiếu boundary
+    },
+    body: formData,
+  });
+
+  // ✅ ĐÚNG - Để browser tự set Content-Type với boundary
+  fetch('/api/posts', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      // KHÔNG có Content-Type ở đây!
+    },
+    body: formData,  // Browser tự thêm: Content-Type: multipart/form-data; boundary=----xxx
+  });
+
+  ▎ Đây rất có thể là nguyên nhân "API không nhận được hình từ frontend" — Frontend đang set Content-Type: application/json hoặc multipart/form-data thủ công mà không có boundary, khiến backend (Multer) không parse được file.
+
+  ⚠️  Backend: Đảm bảo Multer được register đúng
+
+  // main.ts - Nếu dùng NestJS, KHÔNG cần register multer global
+  // FilesInterceptor đã handle hết rồi
+
+  // Nhưng nếu có global middleware chặn body parsing, cần exclude:
+  app.use('/api/posts', (req, res, next) => {
+    // Bỏ qua body-parser cho route này, để Multer xử lý
+    next();
+  });
+
+✻ Sautéed for 3m 19s
