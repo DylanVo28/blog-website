@@ -13,6 +13,11 @@ export interface UploadResult {
   mode: "uploaded";
 }
 
+interface DeleteUploadResult {
+  deleted: boolean;
+  url: string;
+}
+
 export const uploadApi = {
   async getConfig() {
     const response = await apiClient.get<ApiResponse<UploadConfig>>("/upload/config");
@@ -26,6 +31,19 @@ export const uploadApi = {
     const response = await apiClient.post<ApiResponse<UploadResult>>(
       "/upload/images",
       formData,
+    );
+
+    return response.data.data;
+  },
+
+  async deleteFile(url: string) {
+    const response = await apiClient.delete<ApiResponse<DeleteUploadResult>>(
+      "/upload/images",
+      {
+        data: {
+          url,
+        },
+      },
     );
 
     return response.data.data;

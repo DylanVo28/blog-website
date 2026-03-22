@@ -10,7 +10,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { getApiErrorMessage } from "@/lib/api";
 import { buildExcerpt } from "@/lib/posts";
-import { EMPTY_EDITOR_CONTENT } from "@/lib/tiptap";
+import { EMPTY_EDITOR_CONTENT, extractImageUrlsFromContent } from "@/lib/tiptap";
 import { PostEditor } from "@/components/posts/PostEditor";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/toast";
 import { postsApi } from "@/services/api/posts.api";
+import { uploadApi } from "@/services/api/upload.api";
 import type { CreatePostPayload, Post, UpdatePostPayload } from "@/types/post.types";
 
 const optionalUuidField = z
@@ -63,9 +64,33 @@ function parseTagIds(tagIdsText?: string) {
     .filter(Boolean);
 }
 
+function isManagedEditorImageUrl(url: string) {
+  if (!url.trim()) {
+    return false;
+  }
+
+  if (url.includes("/uploads/")) {
+    return true;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    return (
+      parsedUrl.hostname === "res.cloudinary.com" &&
+      parsedUrl.pathname.includes("/image/upload/") &&
+      parsedUrl.pathname.includes("/blog-website/")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function PostForm({ mode, post }: PostFormProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const initialEditorImageUrls = extractImageUrlsFromContent(
+    post?.content ?? EMPTY_EDITOR_CONTENT,
+  );
   const [editorContent, setEditorContent] = useState<Record<string, unknown>>(
     post?.content ?? EMPTY_EDITOR_CONTENT,
   );
@@ -73,6 +98,15 @@ export function PostForm({ mode, post }: PostFormProps) {
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState<string | null>(post?.coverImageUrl ?? null);
   const coverObjectUrlRef = useRef<string | null>(null);
+  const editorImageUrlsRef = useRef<Set<string>>(
+    new Set(initialEditorImageUrls),
+  );
+  const persistedEditorImageUrlsRef = useRef<Set<string>>(new Set(initialEditorImageUrls));
+  const sessionUploadedEditorImageUrlsRef = useRef<Set<string>>(new Set());
+  const removedEditorImageUrlsRef = useRef<Set<string>>(new Set());
+  const pendingEditorImageDeletionTimeoutsRef = useRef<
+    Map<string, ReturnType<typeof window.setTimeout>>
+  >(new Map());
 
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postFormSchema),
@@ -86,12 +120,60 @@ export function PostForm({ mode, post }: PostFormProps) {
   });
 
   useEffect(() => {
+    const pendingDeletionTimeouts = pendingEditorImageDeletionTimeoutsRef.current;
+
     return () => {
       if (coverObjectUrlRef.current) {
         URL.revokeObjectURL(coverObjectUrlRef.current);
       }
+
+      pendingDeletionTimeouts.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      pendingDeletionTimeouts.clear();
     };
   }, []);
+
+  useEffect(() => {
+    const pendingDeletionTimeouts = pendingEditorImageDeletionTimeoutsRef.current;
+    const nextPersistedImageUrls = new Set(
+      extractImageUrlsFromContent(post?.content ?? EMPTY_EDITOR_CONTENT),
+    );
+    editorImageUrlsRef.current = new Set(nextPersistedImageUrls);
+    persistedEditorImageUrlsRef.current = nextPersistedImageUrls;
+    sessionUploadedEditorImageUrlsRef.current.clear();
+    removedEditorImageUrlsRef.current.clear();
+    pendingDeletionTimeouts.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    pendingDeletionTimeouts.clear();
+  }, [post?.content, post?.id]);
+
+  function cancelScheduledEditorImageDeletion(url: string) {
+    const timeoutId = pendingEditorImageDeletionTimeoutsRef.current.get(url);
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      pendingEditorImageDeletionTimeoutsRef.current.delete(url);
+    }
+  }
+
+  function scheduleSessionEditorImageDeletion(url: string) {
+    cancelScheduledEditorImageDeletion(url);
+
+    const timeoutId = window.setTimeout(async () => {
+      pendingEditorImageDeletionTimeoutsRef.current.delete(url);
+
+      try {
+        await uploadApi.deleteFile(url);
+        sessionUploadedEditorImageUrlsRef.current.delete(url);
+      } catch {
+        removedEditorImageUrlsRef.current.add(url);
+        toast.error("Không thể xóa ảnh vừa gỡ khỏi editor trên Cloudinary.");
+      }
+    }, 1500);
+
+    pendingEditorImageDeletionTimeoutsRef.current.set(url, timeoutId);
+  }
 
   function handleCoverChange(file: File | null) {
     if (coverObjectUrlRef.current) {
@@ -140,9 +222,49 @@ export function PostForm({ mode, post }: PostFormProps) {
     return createMutation.mutateAsync(payload as CreatePostPayload);
   }
 
+  async function cleanupRemovedEditorImages(savedContent: Record<string, unknown>) {
+    const activeImageUrls = new Set(extractImageUrlsFromContent(savedContent));
+    const urlsToDelete = [
+      ...new Set([
+        ...removedEditorImageUrlsRef.current,
+        ...pendingEditorImageDeletionTimeoutsRef.current.keys(),
+      ]),
+    ].filter((url) => !activeImageUrls.has(url));
+
+    urlsToDelete.forEach((url) => {
+      cancelScheduledEditorImageDeletion(url);
+    });
+
+    if (urlsToDelete.length === 0) {
+      removedEditorImageUrlsRef.current.clear();
+      editorImageUrlsRef.current = activeImageUrls;
+      persistedEditorImageUrlsRef.current = new Set(activeImageUrls);
+      sessionUploadedEditorImageUrlsRef.current.clear();
+      return;
+    }
+
+    const deletionResults = await Promise.allSettled(
+      urlsToDelete.map((url) => uploadApi.deleteFile(url)),
+    );
+
+    const failedUrls = urlsToDelete.filter(
+      (_, index) => deletionResults[index]?.status === "rejected",
+    );
+
+    removedEditorImageUrlsRef.current = new Set(failedUrls);
+    editorImageUrlsRef.current = activeImageUrls;
+    persistedEditorImageUrlsRef.current = new Set(activeImageUrls);
+    sessionUploadedEditorImageUrlsRef.current.clear();
+
+    if (failedUrls.length > 0) {
+      toast.error("Một số ảnh đã gỡ khỏi editor chưa được xóa khỏi Cloudinary.");
+    }
+  }
+
   const createMutation = useMutation({
     mutationFn: (payload: CreatePostPayload) => postsApi.create(payload),
-    onSuccess: (createdPost) => {
+    onSuccess: async (createdPost) => {
+      await cleanupRemovedEditorImages(createdPost.content);
       toast.success("Đã tạo bài viết thành công.");
       void queryClient.invalidateQueries({ queryKey: ["posts"] });
       startTransition(() => {
@@ -166,7 +288,8 @@ export function PostForm({ mode, post }: PostFormProps) {
 
       return postsApi.update(post.id, payload);
     },
-    onSuccess: (updatedPost) => {
+    onSuccess: async (updatedPost) => {
+      await cleanupRemovedEditorImages(updatedPost.content);
       toast.success("Đã cập nhật bài viết.");
       void queryClient.invalidateQueries({ queryKey: ["posts"] });
       startTransition(() => {
@@ -320,6 +443,33 @@ export function PostForm({ mode, post }: PostFormProps) {
               <PostEditor
                 content={editorContent}
                 onChange={({ json, text }) => {
+                  const nextEditorImageUrls = new Set(extractImageUrlsFromContent(json));
+
+                  editorImageUrlsRef.current.forEach((url) => {
+                    if (!nextEditorImageUrls.has(url) && isManagedEditorImageUrl(url)) {
+                      if (sessionUploadedEditorImageUrlsRef.current.has(url)) {
+                        scheduleSessionEditorImageDeletion(url);
+                        removedEditorImageUrlsRef.current.delete(url);
+                      } else {
+                        removedEditorImageUrlsRef.current.add(url);
+                      }
+                    }
+                  });
+
+                  nextEditorImageUrls.forEach((url) => {
+                    cancelScheduledEditorImageDeletion(url);
+                    removedEditorImageUrlsRef.current.delete(url);
+
+                    if (
+                      !editorImageUrlsRef.current.has(url) &&
+                      isManagedEditorImageUrl(url) &&
+                      !persistedEditorImageUrlsRef.current.has(url)
+                    ) {
+                      sessionUploadedEditorImageUrlsRef.current.add(url);
+                    }
+                  });
+
+                  editorImageUrlsRef.current = nextEditorImageUrls;
                   setEditorContent(json);
                   setEditorText(text);
                 }}

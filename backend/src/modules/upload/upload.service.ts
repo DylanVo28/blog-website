@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  v2 as cloudinary,
+  type UploadApiErrorResponse,
+  type UploadApiResponse,
+} from 'cloudinary';
 
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/avif',
@@ -42,11 +47,23 @@ export interface StoredUpload {
 export class UploadService {
   private readonly logger = new Logger(UploadService.name);
   private readonly uploadRoot = join(process.cwd(), 'uploads');
+  private hasWarnedIncompleteCloudinaryConfig = false;
+
+  constructor() {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
+      secure: true,
+    });
+  }
 
   getUploadConfig() {
     return {
-      provider: 'local',
-      bucket: 'uploads',
+      provider: this.isCloudinaryConfigured() ? 'cloudinary' : 'local',
+      bucket: this.isCloudinaryConfigured()
+        ? process.env.CLOUDINARY_CLOUD_NAME ?? ''
+        : 'uploads',
       maxFileSize: MAX_IMAGE_FILE_SIZE,
       allowedMimeTypes: [...ALLOWED_IMAGE_MIME_TYPES],
     };
@@ -58,6 +75,148 @@ export class UploadService {
   ): Promise<StoredUpload> {
     this.assertValidImage(file);
 
+    if (this.isCloudinaryConfigured()) {
+      return this.uploadToCloudinary(file, folder);
+    }
+
+    this.warnIncompleteCloudinaryConfig();
+    return this.uploadToLocal(file, folder);
+  }
+
+  async removeFileByUrl(fileUrl?: string | null) {
+    await this.removeManagedFileByUrl(fileUrl, {
+      suppressErrors: true,
+    });
+  }
+
+  async deleteUploadedImageByUrl(fileUrl: string) {
+    const deleted = await this.removeManagedFileByUrl(fileUrl, {
+      suppressErrors: false,
+    });
+
+    if (!deleted) {
+      throw new BadRequestException('Unsupported upload URL.');
+    }
+
+    return {
+      deleted: true,
+      url: fileUrl,
+    };
+  }
+
+  private async removeManagedFileByUrl(
+    fileUrl?: string | null,
+    options?: {
+      suppressErrors?: boolean;
+    },
+  ) {
+    const suppressErrors = options?.suppressErrors ?? true;
+
+    if (!fileUrl) {
+      return false;
+    }
+
+    const cloudinaryPublicId = this.extractCloudinaryPublicId(fileUrl);
+    if (cloudinaryPublicId && this.isCloudinaryConfigured()) {
+      try {
+        await cloudinary.uploader.destroy(cloudinaryPublicId, {
+          resource_type: 'image',
+          invalidate: true,
+        });
+      } catch (error) {
+        if (!suppressErrors) {
+          throw error;
+        }
+
+        this.logger.warn(
+          `Unable to remove Cloudinary asset: ${cloudinaryPublicId}`,
+          error instanceof Error ? error.message : undefined,
+        );
+      }
+      return true;
+    }
+
+    const absolutePath = this.resolveLocalUploadPath(fileUrl);
+    if (!absolutePath) {
+      return false;
+    }
+
+    try {
+      await unlink(absolutePath);
+    } catch (error) {
+      const errorCode =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        typeof error.code === 'string'
+          ? error.code
+          : null;
+
+      if (errorCode !== 'ENOENT') {
+        if (!suppressErrors) {
+          throw error;
+        }
+
+        this.logger.warn(`Unable to remove uploaded file: ${absolutePath}`);
+      }
+    }
+
+    return true;
+  }
+
+  private async uploadToCloudinary(
+    file: UploadedImageFile,
+    folder: string,
+  ): Promise<StoredUpload> {
+    const extension = this.getFileExtension(file);
+    const baseFileName = `${Date.now()}-${randomUUID()}`;
+    const publicId = `blog-website/${folder}/${baseFileName}`;
+
+    const result = await new Promise<UploadApiResponse>(
+      (resolveUpload, rejectUpload) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: 'image',
+            public_id: publicId,
+            overwrite: false,
+            unique_filename: false,
+            use_filename: false,
+          },
+          (
+            error?: UploadApiErrorResponse,
+            uploadResult?: UploadApiResponse,
+          ) => {
+            if (error) {
+              rejectUpload(error);
+              return;
+            }
+
+            if (!uploadResult) {
+              rejectUpload(new Error('Cloudinary upload did not return a result.'));
+              return;
+            }
+
+            resolveUpload(uploadResult);
+          },
+        );
+
+        stream.end(file.buffer);
+      },
+    );
+
+    return {
+      fileName: `${baseFileName}${result.format ? `.${result.format}` : extension}`,
+      mimeType: file.mimetype,
+      originalName: file.originalname,
+      size: result.bytes,
+      url: result.secure_url,
+    };
+  }
+
+  private async uploadToLocal(
+    file: UploadedImageFile,
+    folder: string,
+  ): Promise<StoredUpload> {
     const extension = this.getFileExtension(file);
     const fileName = `${Date.now()}-${randomUUID()}${extension}`;
     const targetDirectory = join(this.uploadRoot, folder);
@@ -79,30 +238,32 @@ export class UploadService {
     };
   }
 
-  async removeFileByUrl(fileUrl?: string | null) {
-    if (!fileUrl) {
+  private isCloudinaryConfigured() {
+    return Boolean(
+      process.env.CLOUDINARY_CLOUD_NAME?.trim() &&
+        process.env.CLOUDINARY_API_KEY?.trim() &&
+        process.env.CLOUDINARY_API_SECRET?.trim(),
+    );
+  }
+
+  private warnIncompleteCloudinaryConfig() {
+    if (this.hasWarnedIncompleteCloudinaryConfig) {
       return;
     }
 
-    const absolutePath = this.resolveLocalUploadPath(fileUrl);
-    if (!absolutePath) {
-      return;
-    }
+    const missingKeys = [
+      ['CLOUDINARY_CLOUD_NAME', process.env.CLOUDINARY_CLOUD_NAME],
+      ['CLOUDINARY_API_KEY', process.env.CLOUDINARY_API_KEY],
+      ['CLOUDINARY_API_SECRET', process.env.CLOUDINARY_API_SECRET],
+    ]
+      .filter(([, value]) => !value?.trim())
+      .map(([key]) => key);
 
-    try {
-      await unlink(absolutePath);
-    } catch (error) {
-      const errorCode =
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        typeof error.code === 'string'
-          ? error.code
-          : null;
-
-      if (errorCode !== 'ENOENT') {
-        this.logger.warn(`Unable to remove uploaded file: ${absolutePath}`);
-      }
+    if (missingKeys.length > 0) {
+      this.logger.warn(
+        `Cloudinary is not fully configured. Falling back to local uploads. Missing: ${missingKeys.join(', ')}`,
+      );
+      this.hasWarnedIncompleteCloudinaryConfig = true;
     }
   }
 
@@ -144,6 +305,45 @@ export class UploadService {
     const port = Number(process.env.APP_PORT ?? 3000);
 
     return `http://${publicHost}:${port}`;
+  }
+
+  private extractCloudinaryPublicId(fileUrl: string) {
+    let parsedUrl: URL;
+
+    try {
+      parsedUrl = new URL(fileUrl);
+    } catch {
+      return null;
+    }
+
+    if (parsedUrl.hostname !== 'res.cloudinary.com') {
+      return null;
+    }
+
+    const pathSegments = parsedUrl.pathname.split('/').filter(Boolean);
+    const uploadIndex = pathSegments.findIndex((segment) => segment === 'upload');
+
+    if (uploadIndex === -1) {
+      return null;
+    }
+
+    const assetSegments = pathSegments.slice(uploadIndex + 1);
+    const versionIndex = assetSegments.findIndex((segment) => /^v\d+$/.test(segment));
+    const publicIdSegments =
+      versionIndex >= 0 ? assetSegments.slice(versionIndex + 1) : assetSegments;
+
+    if (publicIdSegments.length === 0) {
+      return null;
+    }
+
+    const fileName = publicIdSegments[publicIdSegments.length - 1];
+    publicIdSegments[publicIdSegments.length - 1] = fileName.replace(
+      /\.[^.]+$/,
+      '',
+    );
+
+    const publicId = publicIdSegments.join('/');
+    return publicId.startsWith('blog-website/') ? publicId : null;
   }
 
   private resolveLocalUploadPath(fileUrl: string) {
