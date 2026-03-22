@@ -1,0 +1,2847 @@
+ Thiết kế hệ thống Social Login (Google, GitHub, ...) cho Blog Website
+
+  📋 Phân tích yêu cầu
+
+  Dựa trên schema hiện tại và kiến trúc NestJS + Next.js, tôi sẽ thiết kế hệ thống Social Login tích hợp với hệ thống Auth JWT + Refresh Token đã có.
+
+  ---
+  🗄️  PHASE 1: DATABASE SCHEMA
+
+  1.1 Bảng mới: social_accounts
+
+  -- ============================================
+  -- SOCIAL_ACCOUNTS (Liên kết tài khoản mạng xã hội)
+  -- ============================================
+  CREATE TABLE social_accounts (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider        VARCHAR(20) NOT NULL,        -- 'google' | 'github' | 'facebook' | 'discord'
+      provider_id     VARCHAR(255) NOT NULL,       -- ID từ provider (sub/id)
+      email           VARCHAR(255),                -- Email từ provider
+      display_name    VARCHAR(255),                -- Tên hiển thị từ provider
+      avatar_url      VARCHAR(500),                -- Avatar từ provider
+      access_token    TEXT,                         -- OAuth access token (encrypted)
+      refresh_token   TEXT,                         -- OAuth refresh token (encrypted)
+      token_expires_at TIMESTAMPTZ,                -- Thời hạn token
+      raw_profile     JSONB,                       -- Toàn bộ profile data gốc
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW(),
+
+      -- Mỗi provider chỉ có 1 account duy nhất
+      UNIQUE(provider, provider_id),
+      -- Mỗi user chỉ link 1 account/provider
+      UNIQUE(user_id, provider)
+  );
+
+  CREATE INDEX idx_social_accounts_user ON social_accounts(user_id);
+  CREATE INDEX idx_social_accounts_provider ON social_accounts(provider, provider_id);
+
+  1.2 Cập nhật bảng users
+
+  -- Thêm cột cho users
+  ALTER TABLE users
+      ADD COLUMN auth_provider VARCHAR(20) DEFAULT 'local',  -- 'local' | 'google' | 'github'
+      ADD COLUMN is_password_set BOOLEAN DEFAULT TRUE;        -- FALSE nếu đăng ký qua social
+
+  -- User đăng ký qua social có thể không có password
+  -- Cho phép password_hash NULL cho social users
+  ALTER TABLE users
+      ALTER COLUMN password_hash DROP NOT NULL;
+
+  -- Constraint: local users phải có password
+  ALTER TABLE users
+      ADD CONSTRAINT chk_local_user_password
+      CHECK (auth_provider = 'local' AND password_hash IS NOT NULL
+             OR auth_provider != 'local');
+
+  1.3 Migration file
+
+  // src/database/migrations/XXXXXX-add-social-login.ts
+  import { MigrationInterface, QueryRunner } from 'typeorm';
+
+  export class AddSocialLogin1679000000000 implements MigrationInterface {
+    public async up(queryRunner: QueryRunner): Promise<void> {
+      // 1. Cập nhật bảng users
+      await queryRunner.query(`
+        ALTER TABLE users
+          ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) DEFAULT 'local',
+          ADD COLUMN IF NOT EXISTS is_password_set BOOLEAN DEFAULT TRUE;
+      `);
+
+      await queryRunner.query(`
+        ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+      `);
+
+      // 2. Tạo bảng social_accounts
+      await queryRunner.query(`
+        CREATE TABLE IF NOT EXISTS social_accounts (
+          id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          provider        VARCHAR(20) NOT NULL,
+          provider_id     VARCHAR(255) NOT NULL,
+          email           VARCHAR(255),
+          display_name    VARCHAR(255),
+          avatar_url      VARCHAR(500),
+          access_token    TEXT,
+          refresh_token   TEXT,
+          token_expires_at TIMESTAMPTZ,
+          raw_profile     JSONB,
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(provider, provider_id),
+          UNIQUE(user_id, provider)
+        );
+      `);
+
+      await queryRunner.query(`
+        CREATE INDEX IF NOT EXISTS idx_social_accounts_user
+          ON social_accounts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_social_accounts_provider
+          ON social_accounts(provider, provider_id);
+      `);
+    }
+
+    public async down(queryRunner: QueryRunner): Promise<void> {
+      await queryRunner.query(`DROP TABLE IF EXISTS social_accounts;`);
+      await queryRunner.query(`
+        ALTER TABLE users
+          DROP COLUMN IF EXISTS auth_provider,
+          DROP COLUMN IF EXISTS is_password_set;
+      `);
+      await queryRunner.query(`
+        ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL;
+      `);
+    }
+  }
+
+  ---
+  ⚙️  PHASE 2: BACKEND (NestJS)
+
+  2.1 Project Structure
+
+  src/modules/auth/
+  ├── auth.module.ts
+  ├── auth.controller.ts
+  ├── auth.service.ts
+  ├── strategies/
+  │   ├── jwt.strategy.ts
+  │   ├── jwt-refresh.strategy.ts
+  │   ├── google.strategy.ts          # NEW
+  │   └── github.strategy.ts          # NEW
+  ├── guards/
+  │   ├── jwt-auth.guard.ts
+  │   ├── google-auth.guard.ts        # NEW
+  │   └── github-auth.guard.ts        # NEW
+  ├── dto/
+  │   ├── register.dto.ts
+  │   ├── login.dto.ts
+  │   ├── refresh-token.dto.ts
+  │   ├── social-login.dto.ts         # NEW
+  │   └── link-social.dto.ts          # NEW
+  ├── entities/
+  │   └── social-account.entity.ts    # NEW
+  └── services/
+      ├── social-auth.service.ts      # NEW - Core social logic
+      ├── google-auth.service.ts      # NEW
+      ├── github-auth.service.ts      # NEW
+      └── token-encryption.service.ts # NEW - Encrypt OAuth tokens
+
+  2.2 Config
+
+  // src/config/social-auth.config.ts
+  import { registerAs } from '@nestjs/config';
+
+  export default registerAs('socialAuth', () => ({
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackUrl: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3000/api/v1/auth/google/callback',
+    },
+    github: {
+      clientId: process.env.GITHUB_CLIENT_ID,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET,
+      callbackUrl: process.env.GITHUB_CALLBACK_URL || 'http://localhost:3000/api/v1/auth/github/callback',
+    },
+    // Dễ mở rộng thêm
+    facebook: {
+      clientId: process.env.FACEBOOK_CLIENT_ID,
+      clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
+      callbackUrl: process.env.FACEBOOK_CALLBACK_URL,
+    },
+    discord: {
+      clientId: process.env.DISCORD_CLIENT_ID,
+      clientSecret: process.env.DISCORD_CLIENT_SECRET,
+      callbackUrl: process.env.DISCORD_CALLBACK_URL,
+    },
+    // URL Frontend redirect sau khi login thành công/thất bại
+    frontendSuccessUrl: process.env.SOCIAL_AUTH_SUCCESS_URL || 'http://localhost:3001/auth/social/callback',
+    frontendFailureUrl: process.env.SOCIAL_AUTH_FAILURE_URL || 'http://localhost:3001/auth/login?error=social_auth_failed',
+    // Encryption key cho OAuth tokens
+    tokenEncryptionKey: process.env.OAUTH_TOKEN_ENCRYPTION_KEY,
+  }));
+
+  # .env
+  # Google OAuth
+  GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com
+  GOOGLE_CLIENT_SECRET=GOCSPX-xxxxx
+  GOOGLE_CALLBACK_URL=http://localhost:3000/api/v1/auth/google/callback
+
+  # GitHub OAuth
+  GITHUB_CLIENT_ID=Iv1.xxxxx
+  GITHUB_CLIENT_SECRET=xxxxx
+  GITHUB_CALLBACK_URL=http://localhost:3000/api/v1/auth/github/callback
+
+  # Social Auth
+  SOCIAL_AUTH_SUCCESS_URL=http://localhost:3001/auth/social/callback
+  SOCIAL_AUTH_FAILURE_URL=http://localhost:3001/auth/login?error=social_auth_failed
+  OAUTH_TOKEN_ENCRYPTION_KEY=your-32-char-encryption-key-here
+
+  2.3 Entity
+
+  // src/modules/auth/entities/social-account.entity.ts
+  import {
+    Entity, Column, PrimaryGeneratedColumn,
+    ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn,
+    Unique, Index,
+  } from 'typeorm';
+  import { User } from '../../users/entities/user.entity';
+
+  export enum SocialProvider {
+    GOOGLE = 'google',
+    GITHUB = 'github',
+    FACEBOOK = 'facebook',
+    DISCORD = 'discord',
+  }
+
+  @Entity('social_accounts')
+  @Unique(['provider', 'providerId'])
+  @Unique(['userId', 'provider'])
+  export class SocialAccount {
+    @PrimaryGeneratedColumn('uuid')
+    id: string;
+
+    @Column({ name: 'user_id' })
+    @Index()
+    userId: string;
+
+    @ManyToOne(() => User, { onDelete: 'CASCADE' })
+    @JoinColumn({ name: 'user_id' })
+    user: User;
+
+    @Column({ type: 'varchar', length: 20 })
+    provider: SocialProvider;
+
+    @Column({ name: 'provider_id', type: 'varchar', length: 255 })
+    providerId: string;
+
+    @Column({ nullable: true })
+    email: string;
+
+    @Column({ name: 'display_name', nullable: true })
+    displayName: string;
+
+    @Column({ name: 'avatar_url', nullable: true })
+    avatarUrl: string;
+
+    @Column({ name: 'access_token', type: 'text', nullable: true })
+    accessToken: string; // Encrypted
+
+    @Column({ name: 'refresh_token', type: 'text', nullable: true })
+    refreshToken: string; // Encrypted
+
+    @Column({ name: 'token_expires_at', type: 'timestamptz', nullable: true })
+    tokenExpiresAt: Date;
+
+    @Column({ name: 'raw_profile', type: 'jsonb', nullable: true })
+    rawProfile: Record<string, any>;
+
+    @CreateDateColumn({ name: 'created_at' })
+    createdAt: Date;
+
+    @UpdateDateColumn({ name: 'updated_at' })
+    updatedAt: Date;
+  }
+
+  2.4 Cập nhật User Entity
+
+  // src/modules/users/entities/user.entity.ts - Thêm fields mới
+  import { SocialAccount } from '../../auth/entities/social-account.entity';
+
+  @Entity('users')
+  export class User {
+    // ... existing fields ...
+
+    @Column({ name: 'auth_provider', default: 'local' })
+    authProvider: string; // 'local' | 'google' | 'github'
+
+    @Column({ name: 'is_password_set', default: true })
+    isPasswordSet: boolean;
+
+    @Column({ name: 'password_hash', nullable: true }) // Cho phép NULL cho social users
+    passwordHash: string;
+
+    @OneToMany(() => SocialAccount, (sa) => sa.user)
+    socialAccounts: SocialAccount[];
+  }
+
+  2.5 DTOs
+
+  // src/modules/auth/dto/social-login.dto.ts
+  import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+  import { SocialProvider } from '../entities/social-account.entity';
+
+  /**
+   * DTO cho Social Login qua OAuth code (Frontend gửi code lên)
+   * Approach 2: Frontend-initiated OAuth
+   */
+  export class SocialLoginDto {
+    @IsEnum(SocialProvider)
+    @IsNotEmpty()
+    provider: SocialProvider;
+
+    @IsString()
+    @IsNotEmpty()
+    code: string; // Authorization code từ OAuth provider
+
+    @IsString()
+    @IsOptional()
+    redirectUri?: string; // redirect_uri dùng khi lấy code
+  }
+
+  /**
+   * DTO cho Social Login qua ID Token (Google One Tap, etc.)
+   */
+  export class SocialTokenLoginDto {
+    @IsEnum(SocialProvider)
+    @IsNotEmpty()
+    provider: SocialProvider;
+
+    @IsString()
+    @IsNotEmpty()
+    idToken: string; // ID token từ Google Sign-In, etc.
+  }
+
+  /**
+   * DTO cho link social account vào user hiện tại
+   */
+  export class LinkSocialAccountDto {
+    @IsEnum(SocialProvider)
+    @IsNotEmpty()
+    provider: SocialProvider;
+
+    @IsString()
+    @IsNotEmpty()
+    code: string;
+
+    @IsString()
+    @IsOptional()
+    redirectUri?: string;
+  }
+
+  /**
+   * DTO cho unlink social account
+   */
+  export class UnlinkSocialAccountDto {
+    @IsEnum(SocialProvider)
+    @IsNotEmpty()
+    provider: SocialProvider;
+  }
+
+  // src/modules/auth/dto/social-profile.dto.ts
+
+  /**
+   * Profile chuẩn hóa từ các provider khác nhau
+   */
+  export class SocialProfileDto {
+    provider: string;
+    providerId: string;
+    email: string;
+    displayName: string;
+    avatarUrl?: string;
+    accessToken?: string;
+    refreshToken?: string;
+    tokenExpiresAt?: Date;
+    rawProfile: Record<string, any>;
+  }
+
+  2.6 Token Encryption Service
+
+  // src/modules/auth/services/token-encryption.service.ts
+  import { Injectable } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+  import * as crypto from 'crypto';
+
+  @Injectable()
+  export class TokenEncryptionService {
+    private readonly algorithm = 'aes-256-gcm';
+    private readonly key: Buffer;
+
+    constructor(private configService: ConfigService) {
+      const encryptionKey = this.configService.get<string>('socialAuth.tokenEncryptionKey');
+      // Derive a 32-byte key from the config key
+      this.key = crypto.scryptSync(encryptionKey, 'salt', 32);
+    }
+
+    encrypt(plainText: string): string {
+      if (!plainText) return null;
+
+      const iv = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv(this.algorithm, this.key, iv);
+
+      let encrypted = cipher.update(plainText, 'utf8', 'hex');
+      encrypted += cipher.final('hex');
+
+      const authTag = cipher.getAuthTag();
+
+      // Format: iv:authTag:encrypted
+      return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+    }
+
+    decrypt(encryptedText: string): string {
+      if (!encryptedText) return null;
+
+      const [ivHex, authTagHex, encrypted] = encryptedText.split(':');
+
+      const iv = Buffer.from(ivHex, 'hex');
+      const authTag = Buffer.from(authTagHex, 'hex');
+
+      const decipher = crypto.createDecipheriv(this.algorithm, this.key, iv);
+      decipher.setAuthTag(authTag);
+
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+
+      return decrypted;
+    }
+  }
+
+  2.7 Google Auth Service
+
+  // src/modules/auth/services/google-auth.service.ts
+  import { Injectable, UnauthorizedException } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+  import { OAuth2Client, TokenPayload } from 'google-auth-library';
+  import { SocialProfileDto } from '../dto/social-profile.dto';
+  import { SocialProvider } from '../entities/social-account.entity';
+
+  @Injectable()
+  export class GoogleAuthService {
+    private oauthClient: OAuth2Client;
+
+    constructor(private configService: ConfigService) {
+      this.oauthClient = new OAuth2Client(
+        this.configService.get('socialAuth.google.clientId'),
+        this.configService.get('socialAuth.google.clientSecret'),
+      );
+    }
+
+    /**
+     * Lấy URL redirect đến Google OAuth
+     */
+    getAuthUrl(state?: string): string {
+      const redirectUri = this.configService.get('socialAuth.google.callbackUrl');
+      return this.oauthClient.generateAuthUrl({
+        access_type: 'offline',
+        scope: [
+          'openid',
+          'https://www.googleapis.com/auth/userinfo.email',
+          'https://www.googleapis.com/auth/userinfo.profile',
+        ],
+        redirect_uri: redirectUri,
+        state,
+        prompt: 'consent',
+      });
+    }
+
+    /**
+     * Exchange authorization code cho tokens + profile
+     */
+    async getProfileFromCode(code: string, redirectUri?: string): Promise<SocialProfileDto> {
+      try {
+        const finalRedirectUri = redirectUri || this.configService.get('socialAuth.google.callbackUrl');
+
+        const { tokens } = await this.oauthClient.getToken({
+          code,
+          redirect_uri: finalRedirectUri,
+        });
+
+        this.oauthClient.setCredentials(tokens);
+
+        // Verify ID token
+        const ticket = await this.oauthClient.verifyIdToken({
+          idToken: tokens.id_token,
+          audience: this.configService.get('socialAuth.google.clientId'),
+        });
+
+        const payload: TokenPayload = ticket.getPayload();
+
+        if (!payload.email_verified) {
+          throw new UnauthorizedException('Google email is not verified');
+        }
+
+        return {
+          provider: SocialProvider.GOOGLE,
+          providerId: payload.sub,
+          email: payload.email,
+          displayName: payload.name || payload.email.split('@')[0],
+          avatarUrl: payload.picture,
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token,
+          tokenExpiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+          rawProfile: payload as any,
+        };
+      } catch (error) {
+        throw new UnauthorizedException(`Google authentication failed: ${error.message}`);
+      }
+    }
+
+    /**
+     * Verify Google ID Token trực tiếp (cho Google One Tap)
+     */
+    async getProfileFromIdToken(idToken: string): Promise<SocialProfileDto> {
+      try {
+        const ticket = await this.oauthClient.verifyIdToken({
+          idToken,
+          audience: this.configService.get('socialAuth.google.clientId'),
+        });
+
+        const payload: TokenPayload = ticket.getPayload();
+
+        if (!payload.email_verified) {
+          throw new UnauthorizedException('Google email is not verified');
+        }
+
+        return {
+          provider: SocialProvider.GOOGLE,
+          providerId: payload.sub,
+          email: payload.email,
+          displayName: payload.name || payload.email.split('@')[0],
+          avatarUrl: payload.picture,
+          rawProfile: payload as any,
+        };
+      } catch (error) {
+        throw new UnauthorizedException(`Google token verification failed: ${error.message}`);
+      }
+    }
+  }
+
+  2.8 GitHub Auth Service
+
+  // src/modules/auth/services/github-auth.service.ts
+  import { Injectable, UnauthorizedException } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+  import { HttpService } from '@nestjs/axios';
+  import { firstValueFrom } from 'rxjs';
+  import { SocialProfileDto } from '../dto/social-profile.dto';
+  import { SocialProvider } from '../entities/social-account.entity';
+
+  @Injectable()
+  export class GitHubAuthService {
+    constructor(
+      private configService: ConfigService,
+      private httpService: HttpService,
+    ) {}
+
+    /**
+     * Lấy URL redirect đến GitHub OAuth
+     */
+    getAuthUrl(state?: string): string {
+      const clientId = this.configService.get('socialAuth.github.clientId');
+      const redirectUri = this.configService.get('socialAuth.github.callbackUrl');
+      const scope = 'read:user user:email';
+
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        scope,
+        state: state || '',
+      });
+
+      return `https://github.com/login/oauth/authorize?${params.toString()}`;
+    }
+
+    /**
+     * Exchange authorization code cho tokens + profile
+     */
+    async getProfileFromCode(code: string, redirectUri?: string): Promise<SocialProfileDto> {
+      try {
+        // 1. Exchange code cho access token
+        const tokenResponse = await firstValueFrom(
+          this.httpService.post(
+            'https://github.com/login/oauth/access_token',
+            {
+              client_id: this.configService.get('socialAuth.github.clientId'),
+              client_secret: this.configService.get('socialAuth.github.clientSecret'),
+              code,
+              redirect_uri: redirectUri || this.configService.get('socialAuth.github.callbackUrl'),
+            },
+            {
+              headers: { Accept: 'application/json' },
+            },
+          ),
+        );
+
+        const { access_token, token_type } = tokenResponse.data;
+
+        if (!access_token) {
+          throw new UnauthorizedException('Failed to get GitHub access token');
+        }
+
+        // 2. Lấy profile
+        const profileResponse = await firstValueFrom(
+          this.httpService.get('https://api.github.com/user', {
+            headers: { Authorization: `${token_type} ${access_token}` },
+          }),
+        );
+
+        const profile = profileResponse.data;
+
+        // 3. Lấy email (nếu email là private)
+        let email = profile.email;
+        if (!email) {
+          const emailsResponse = await firstValueFrom(
+            this.httpService.get('https://api.github.com/user/emails', {
+              headers: { Authorization: `${token_type} ${access_token}` },
+            }),
+          );
+
+          const primaryEmail = emailsResponse.data.find(
+            (e: any) => e.primary && e.verified,
+          );
+          email = primaryEmail?.email;
+        }
+
+        if (!email) {
+          throw new UnauthorizedException(
+            'Cannot get email from GitHub. Please make your email public or use another login method.',
+          );
+        }
+
+        return {
+          provider: SocialProvider.GITHUB,
+          providerId: String(profile.id),
+          email,
+          displayName: profile.name || profile.login,
+          avatarUrl: profile.avatar_url,
+          accessToken: access_token,
+          rawProfile: profile,
+        };
+      } catch (error) {
+        if (error instanceof UnauthorizedException) throw error;
+        throw new UnauthorizedException(`GitHub authentication failed: ${error.message}`);
+      }
+    }
+  }
+
+  2.9 Core Social Auth Service
+
+  // src/modules/auth/services/social-auth.service.ts
+  import {
+    Injectable, UnauthorizedException, ConflictException,
+    BadRequestException, Logger,
+  } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository, DataSource } from 'typeorm';
+  import { SocialAccount, SocialProvider } from '../entities/social-account.entity';
+  import { User } from '../../users/entities/user.entity';
+  import { Wallet } from '../../wallet/entities/wallet.entity';
+  import { GoogleAuthService } from './google-auth.service';
+  import { GitHubAuthService } from './github-auth.service';
+  import { TokenEncryptionService } from './token-encryption.service';
+  import { AuthService } from '../auth.service';
+  import { SocialProfileDto } from '../dto/social-profile.dto';
+
+  export interface SocialAuthResult {
+    accessToken: string;
+    refreshToken: string;
+    user: Partial<User>;
+    isNewUser: boolean;
+  }
+
+  @Injectable()
+  export class SocialAuthService {
+    private readonly logger = new Logger(SocialAuthService.name);
+
+    constructor(
+      @InjectRepository(SocialAccount)
+      private socialAccountRepo: Repository<SocialAccount>,
+      @InjectRepository(User)
+      private userRepo: Repository<User>,
+      private dataSource: DataSource,
+      private googleAuthService: GoogleAuthService,
+      private gitHubAuthService: GitHubAuthService,
+      private tokenEncryptionService: TokenEncryptionService,
+      private authService: AuthService, // Dùng để tạo JWT tokens
+    ) {}
+
+    // ========================================
+    // 1. GET AUTH URL (redirect user đến provider)
+    // ========================================
+    getAuthUrl(provider: SocialProvider, state?: string): string {
+      switch (provider) {
+        case SocialProvider.GOOGLE:
+          return this.googleAuthService.getAuthUrl(state);
+        case SocialProvider.GITHUB:
+          return this.gitHubAuthService.getAuthUrl(state);
+        default:
+          throw new BadRequestException(`Provider ${provider} is not supported`);
+      }
+    }
+
+    // ========================================
+    // 2. SOCIAL LOGIN / REGISTER
+    // ========================================
+    async socialLogin(
+      provider: SocialProvider,
+      code: string,
+      redirectUri?: string,
+    ): Promise<SocialAuthResult> {
+      // Step 1: Lấy profile từ provider
+      const socialProfile = await this.getProfileFromProvider(provider, code, redirectUri);
+
+      // Step 2: Tìm social account đã link chưa
+      const existingSocialAccount = await this.socialAccountRepo.findOne({
+        where: {
+          provider: socialProfile.provider as SocialProvider,
+          providerId: socialProfile.providerId,
+        },
+        relations: ['user'],
+      });
+
+      // Step 3: Xử lý các cases
+      if (existingSocialAccount) {
+        // Case A: Đã link → Login bình thường
+        return this.loginExistingSocialUser(existingSocialAccount, socialProfile);
+      }
+
+      // Case B: Chưa link → Kiểm tra email đã tồn tại chưa
+      const existingUser = await this.userRepo.findOne({
+        where: { email: socialProfile.email },
+      });
+
+      if (existingUser) {
+        // Case B1: Email đã tồn tại → Tự động link + login
+        return this.linkAndLogin(existingUser, socialProfile);
+      }
+
+      // Case C: User hoàn toàn mới → Tạo account mới
+      return this.createSocialUser(socialProfile);
+    }
+
+    // ========================================
+    // 3. SOCIAL LOGIN VIA ID TOKEN (Google One Tap)
+    // ========================================
+    async socialLoginViaIdToken(
+      provider: SocialProvider,
+      idToken: string,
+    ): Promise<SocialAuthResult> {
+      let socialProfile: SocialProfileDto;
+
+      switch (provider) {
+        case SocialProvider.GOOGLE:
+          socialProfile = await this.googleAuthService.getProfileFromIdToken(idToken);
+          break;
+        default:
+          throw new BadRequestException(`ID token login not supported for ${provider}`);
+      }
+
+      // Tương tự flow socialLogin
+      const existingSocialAccount = await this.socialAccountRepo.findOne({
+        where: {
+          provider: socialProfile.provider as SocialProvider,
+          providerId: socialProfile.providerId,
+        },
+        relations: ['user'],
+      });
+
+      if (existingSocialAccount) {
+        return this.loginExistingSocialUser(existingSocialAccount, socialProfile);
+      }
+
+      const existingUser = await this.userRepo.findOne({
+        where: { email: socialProfile.email },
+      });
+
+      if (existingUser) {
+        return this.linkAndLogin(existingUser, socialProfile);
+      }
+
+      return this.createSocialUser(socialProfile);
+    }
+
+    // ========================================
+    // 4. LINK SOCIAL ACCOUNT (User đã đăng nhập muốn link thêm)
+    // ========================================
+    async linkSocialAccount(
+      userId: string,
+      provider: SocialProvider,
+      code: string,
+      redirectUri?: string,
+    ): Promise<SocialAccount> {
+      const socialProfile = await this.getProfileFromProvider(provider, code, redirectUri);
+
+      // Kiểm tra provider+providerId đã được link bởi user khác chưa
+      const existingLink = await this.socialAccountRepo.findOne({
+        where: {
+          provider: socialProfile.provider as SocialProvider,
+          providerId: socialProfile.providerId,
+        },
+      });
+
+      if (existingLink && existingLink.userId !== userId) {
+        throw new ConflictException(
+          `This ${provider} account is already linked to another user`,
+        );
+      }
+
+      if (existingLink && existingLink.userId === userId) {
+        // Đã link rồi → Update tokens
+        return this.updateSocialAccount(existingLink, socialProfile);
+      }
+
+      // Kiểm tra user đã link provider này chưa
+      const userLink = await this.socialAccountRepo.findOne({
+        where: { userId, provider },
+      });
+
+      if (userLink) {
+        throw new ConflictException(
+          `You already have a ${provider} account linked. Unlink it first.`,
+        );
+      }
+
+      // Tạo link mới
+      return this.createSocialAccount(userId, socialProfile);
+    }
+
+    // ========================================
+    // 5. UNLINK SOCIAL ACCOUNT
+    // ========================================
+    async unlinkSocialAccount(
+      userId: string,
+      provider: SocialProvider,
+    ): Promise<void> {
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+
+      // Không cho unlink nếu:
+      // - User không có password (chỉ login bằng social)
+      // - Và chỉ còn 1 social account
+      if (!user.isPasswordSet) {
+        const socialCount = await this.socialAccountRepo.count({
+          where: { userId },
+        });
+
+        if (socialCount <= 1) {
+          throw new BadRequestException(
+            'Cannot unlink the only login method. Please set a password first.',
+          );
+        }
+      }
+
+      const result = await this.socialAccountRepo.delete({ userId, provider });
+
+      if (result.affected === 0) {
+        throw new BadRequestException(`No ${provider} account linked`);
+      }
+    }
+
+    // ========================================
+    // 6. GET LINKED ACCOUNTS
+    // ========================================
+    async getLinkedAccounts(userId: string): Promise<Partial<SocialAccount>[]> {
+      const accounts = await this.socialAccountRepo.find({
+        where: { userId },
+        select: ['id', 'provider', 'email', 'displayName', 'avatarUrl', 'createdAt'],
+      });
+
+      return accounts;
+    }
+
+    // ========================================
+    // PRIVATE METHODS
+    // ========================================
+
+    private async getProfileFromProvider(
+      provider: SocialProvider,
+      code: string,
+      redirectUri?: string,
+    ): Promise<SocialProfileDto> {
+      switch (provider) {
+        case SocialProvider.GOOGLE:
+          return this.googleAuthService.getProfileFromCode(code, redirectUri);
+        case SocialProvider.GITHUB:
+          return this.gitHubAuthService.getProfileFromCode(code, redirectUri);
+        default:
+          throw new BadRequestException(`Provider ${provider} is not supported`);
+      }
+    }
+
+    /**
+     * Case A: User đã có social account → Login
+     */
+    private async loginExistingSocialUser(
+      socialAccount: SocialAccount,
+      profile: SocialProfileDto,
+    ): Promise<SocialAuthResult> {
+      // Update tokens nếu có mới
+      await this.updateSocialAccount(socialAccount, profile);
+
+      // Tạo JWT tokens
+      const tokens = await this.authService.generateTokens(socialAccount.user);
+
+      return {
+        ...tokens,
+        user: this.sanitizeUser(socialAccount.user),
+        isNewUser: false,
+      };
+    }
+
+    /**
+     * Case B1: Email đã tồn tại → Auto link + login
+     */
+    private async linkAndLogin(
+      existingUser: User,
+      profile: SocialProfileDto,
+    ): Promise<SocialAuthResult> {
+      // Tạo social account link
+      await this.createSocialAccount(existingUser.id, profile);
+
+      // Update avatar nếu user chưa có
+      if (!existingUser.avatarUrl && profile.avatarUrl) {
+        await this.userRepo.update(existingUser.id, {
+          avatarUrl: profile.avatarUrl,
+        });
+        existingUser.avatarUrl = profile.avatarUrl;
+      }
+
+      const tokens = await this.authService.generateTokens(existingUser);
+
+      return {
+        ...tokens,
+        user: this.sanitizeUser(existingUser),
+        isNewUser: false,
+      };
+    }
+
+    /**
+     * Case C: Tạo user hoàn toàn mới từ social profile
+     */
+    private async createSocialUser(
+      profile: SocialProfileDto,
+    ): Promise<SocialAuthResult> {
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      try {
+        // 1. Tạo user mới (không có password)
+        const newUser = queryRunner.manager.create(User, {
+          email: profile.email,
+          displayName: profile.displayName,
+          avatarUrl: profile.avatarUrl,
+          authProvider: profile.provider,
+          isPasswordSet: false,
+          passwordHash: null,
+          isVerified: true, // Social login = email đã verified
+          role: 'reader',
+        });
+
+        const savedUser = await queryRunner.manager.save(User, newUser);
+
+        // 2. Tạo wallet + bonus (giống register thường)
+        const wallet = queryRunner.manager.create(Wallet, {
+          userId: savedUser.id,
+          balance: 5000, // Bonus 5.000đ
+          totalEarned: 0,
+          totalSpent: 0,
+        });
+        await queryRunner.manager.save(Wallet, wallet);
+
+        // 3. Tạo social account link
+        const socialAccount = queryRunner.manager.create(SocialAccount, {
+          userId: savedUser.id,
+          provider: profile.provider as SocialProvider,
+          providerId: profile.providerId,
+          email: profile.email,
+          displayName: profile.displayName,
+          avatarUrl: profile.avatarUrl,
+          accessToken: this.tokenEncryptionService.encrypt(profile.accessToken),
+          refreshToken: this.tokenEncryptionService.encrypt(profile.refreshToken),
+          tokenExpiresAt: profile.tokenExpiresAt,
+          rawProfile: profile.rawProfile,
+        });
+        await queryRunner.manager.save(SocialAccount, socialAccount);
+
+        // 4. Tạo transaction bonus (giống register thường)
+        // ... (tạo transaction record cho bonus 5000đ)
+
+        await queryRunner.commitTransaction();
+
+        // 5. Tạo JWT tokens
+        const tokens = await this.authService.generateTokens(savedUser);
+
+        this.logger.log(
+          `New social user created: ${savedUser.email} via ${profile.provider}`,
+        );
+
+        return {
+          ...tokens,
+          user: this.sanitizeUser(savedUser),
+          isNewUser: true,
+        };
+      } catch (error) {
+        await queryRunner.rollbackTransaction();
+        this.logger.error(`Failed to create social user: ${error.message}`);
+        throw error;
+      } finally {
+        await queryRunner.release();
+      }
+    }
+
+    private async createSocialAccount(
+      userId: string,
+      profile: SocialProfileDto,
+    ): Promise<SocialAccount> {
+      const socialAccount = this.socialAccountRepo.create({
+        userId,
+        provider: profile.provider as SocialProvider,
+        providerId: profile.providerId,
+        email: profile.email,
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+        accessToken: this.tokenEncryptionService.encrypt(profile.accessToken),
+        refreshToken: this.tokenEncryptionService.encrypt(profile.refreshToken),
+        tokenExpiresAt: profile.tokenExpiresAt,
+        rawProfile: profile.rawProfile,
+      });
+
+      return this.socialAccountRepo.save(socialAccount);
+    }
+
+    private async updateSocialAccount(
+      existingAccount: SocialAccount,
+      profile: SocialProfileDto,
+    ): Promise<SocialAccount> {
+      if (profile.accessToken) {
+        existingAccount.accessToken = this.tokenEncryptionService.encrypt(profile.accessToken);
+      }
+      if (profile.refreshToken) {
+        existingAccount.refreshToken = this.tokenEncryptionService.encrypt(profile.refreshToken);
+      }
+      if (profile.tokenExpiresAt) {
+        existingAccount.tokenExpiresAt = profile.tokenExpiresAt;
+      }
+      existingAccount.displayName = profile.displayName;
+      existingAccount.avatarUrl = profile.avatarUrl;
+      existingAccount.rawProfile = profile.rawProfile;
+
+      return this.socialAccountRepo.save(existingAccount);
+    }
+
+    private sanitizeUser(user: User): Partial<User> {
+      const { passwordHash, ...sanitized } = user;
+      return sanitized;
+    }
+  }
+
+  2.10 Auth Controller (Social Routes)
+
+  // src/modules/auth/auth.controller.ts - Thêm social routes
+  import {
+    Controller, Post, Get, Delete, Body, Query, Res,
+    UseGuards, HttpCode, HttpStatus, Param,
+  } from '@nestjs/common';
+  import { Response } from 'express';
+  import { ConfigService } from '@nestjs/config';
+  import { SocialAuthService } from './services/social-auth.service';
+  import {
+    SocialLoginDto, SocialTokenLoginDto,
+    LinkSocialAccountDto, UnlinkSocialAccountDto,
+  } from './dto/social-login.dto';
+  import { SocialProvider } from './entities/social-account.entity';
+  import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+  import { CurrentUser } from '../common/decorators/current-user.decorator';
+
+  @Controller('auth')
+  export class AuthController {
+    constructor(
+      private socialAuthService: SocialAuthService,
+      private configService: ConfigService,
+      // ... existing dependencies
+    ) {}
+
+    // ============================================
+    // APPROACH 1: Server-Side OAuth (Redirect Flow)
+    // ============================================
+
+    /**
+     * GET /auth/:provider
+     * Redirect user đến OAuth provider
+     */
+    @Get(':provider(google|github)')
+    async socialRedirect(
+      @Param('provider') provider: SocialProvider,
+      @Query('state') state: string,
+      @Res() res: Response,
+    ) {
+      const authUrl = this.socialAuthService.getAuthUrl(provider, state);
+      return res.redirect(authUrl);
+    }
+
+    /**
+     * GET /auth/:provider/callback
+     * OAuth callback - Provider redirect về đây sau khi user authorize
+     */
+    @Get(':provider(google|github)/callback')
+    async socialCallback(
+      @Param('provider') provider: SocialProvider,
+      @Query('code') code: string,
+      @Query('state') state: string,
+      @Query('error') error: string,
+      @Res() res: Response,
+    ) {
+      const frontendSuccessUrl = this.configService.get('socialAuth.frontendSuccessUrl');
+      const frontendFailureUrl = this.configService.get('socialAuth.frontendFailureUrl');
+
+      if (error) {
+        return res.redirect(`${frontendFailureUrl}&detail=${encodeURIComponent(error)}`);
+      }
+
+      try {
+        const result = await this.socialAuthService.socialLogin(provider, code);
+
+        // Redirect về frontend với tokens trong URL params
+        // (Sẽ được xử lý bởi frontend callback page)
+        const params = new URLSearchParams({
+          access_token: result.accessToken,
+          refresh_token: result.refreshToken,
+          is_new_user: String(result.isNewUser),
+          provider,
+        });
+
+        return res.redirect(`${frontendSuccessUrl}?${params.toString()}`);
+      } catch (err) {
+        return res.redirect(
+          `${frontendFailureUrl}&detail=${encodeURIComponent(err.message)}`,
+        );
+      }
+    }
+
+    // ============================================
+    // APPROACH 2: Client-Side OAuth (Code Exchange)
+    // Frontend lấy code rồi gửi lên backend
+    // ============================================
+
+    /**
+     * POST /auth/social/login
+     * Frontend gửi authorization code lên để exchange
+     */
+    @Post('social/login')
+    @HttpCode(HttpStatus.OK)
+    async socialLogin(@Body() dto: SocialLoginDto) {
+      const result = await this.socialAuthService.socialLogin(
+        dto.provider,
+        dto.code,
+        dto.redirectUri,
+      );
+
+      return {
+        success: true,
+        data: result,
+      };
+    }
+
+    /**
+     * POST /auth/social/token-login
+     * Login bằng ID Token (Google One Tap)
+     */
+    @Post('social/token-login')
+    @HttpCode(HttpStatus.OK)
+    async socialTokenLogin(@Body() dto: SocialTokenLoginDto) {
+      const result = await this.socialAuthService.socialLoginViaIdToken(
+        dto.provider,
+        dto.idToken,
+      );
+
+      return {
+        success: true,
+        data: result,
+      };
+    }
+
+    // ============================================
+    // SOCIAL ACCOUNT MANAGEMENT (Cần đăng nhập)
+    // ============================================
+
+    /**
+     * GET /auth/social/accounts
+     * Lấy danh sách social accounts đã link
+     */
+    @Get('social/accounts')
+    @UseGuards(JwtAuthGuard)
+    async getLinkedAccounts(@CurrentUser() user: any) {
+      const accounts = await this.socialAuthService.getLinkedAccounts(user.id);
+      return {
+        success: true,
+        data: accounts,
+      };
+    }
+
+    /**
+     * POST /auth/social/link
+     * Link thêm social account vào user hiện tại
+     */
+    @Post('social/link')
+    @UseGuards(JwtAuthGuard)
+    async linkSocialAccount(
+      @CurrentUser() user: any,
+      @Body() dto: LinkSocialAccountDto,
+    ) {
+      const account = await this.socialAuthService.linkSocialAccount(
+        user.id,
+        dto.provider,
+        dto.code,
+        dto.redirectUri,
+      );
+
+      return {
+        success: true,
+        data: {
+          id: account.id,
+          provider: account.provider,
+          email: account.email,
+          displayName: account.displayName,
+        },
+      };
+    }
+
+    /**
+     * DELETE /auth/social/unlink
+     * Gỡ social account
+     */
+    @Delete('social/unlink')
+    @UseGuards(JwtAuthGuard)
+    async unlinkSocialAccount(
+      @CurrentUser() user: any,
+      @Body() dto: UnlinkSocialAccountDto,
+    ) {
+      await this.socialAuthService.unlinkSocialAccount(user.id, dto.provider);
+      return {
+        success: true,
+        message: `${dto.provider} account unlinked successfully`,
+      };
+    }
+
+    /**
+     * GET /auth/social/url/:provider
+     * Lấy OAuth URL cho frontend (nếu dùng popup flow)
+     */
+    @Get('social/url/:provider')
+    async getSocialAuthUrl(
+      @Param('provider') provider: SocialProvider,
+      @Query('redirect_uri') redirectUri: string,
+      @Query('state') state: string,
+    ) {
+      const url = this.socialAuthService.getAuthUrl(provider, state);
+      return {
+        success: true,
+        data: { url },
+      };
+    }
+  }
+
+  2.11 Auth Module Update
+
+  // src/modules/auth/auth.module.ts
+  import { Module } from '@nestjs/common';
+  import { TypeOrmModule } from '@nestjs/typeorm';
+  import { HttpModule } from '@nestjs/axios';
+  import { JwtModule } from '@nestjs/jwt';
+  import { ConfigModule, ConfigService } from '@nestjs/config';
+
+  import { AuthController } from './auth.controller';
+  import { AuthService } from './auth.service';
+  import { SocialAuthService } from './services/social-auth.service';
+  import { GoogleAuthService } from './services/google-auth.service';
+  import { GitHubAuthService } from './services/github-auth.service';
+  import { TokenEncryptionService } from './services/token-encryption.service';
+
+  import { User } from '../users/entities/user.entity';
+  import { SocialAccount } from './entities/social-account.entity';
+  import { Wallet } from '../wallet/entities/wallet.entity';
+
+  import { JwtStrategy } from './strategies/jwt.strategy';
+  import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
+
+  import socialAuthConfig from '../../config/social-auth.config';
+
+  @Module({
+    imports: [
+      TypeOrmModule.forFeature([User, SocialAccount, Wallet]),
+      HttpModule, // Cho GitHub API calls
+      ConfigModule.forFeature(socialAuthConfig),
+      JwtModule.registerAsync({
+        imports: [ConfigModule],
+        useFactory: async (configService: ConfigService) => ({
+          secret: configService.get('jwt.secret'),
+          signOptions: { expiresIn: configService.get('jwt.accessExpiresIn') },
+        }),
+        inject: [ConfigService],
+      }),
+    ],
+    controllers: [AuthController],
+    providers: [
+      AuthService,
+      SocialAuthService,
+      GoogleAuthService,
+      GitHubAuthService,
+      TokenEncryptionService,
+      JwtStrategy,
+      JwtRefreshStrategy,
+    ],
+    exports: [AuthService, SocialAuthService],
+  })
+  export class AuthModule {}
+
+  ---
+  🖥️  PHASE 3: FRONTEND (Next.js)
+
+  3.1 Project Structure
+
+  src/
+  ├── app/
+  │   └── auth/
+  │       ├── login/
+  │       │   └── page.tsx               # Updated with social buttons
+  │       ├── register/
+  │       │   └── page.tsx               # Updated with social buttons
+  │       └── social/
+  │           └── callback/
+  │               └── page.tsx           # NEW - Handle OAuth callback
+  │
+  ├── components/
+  │   └── auth/
+  │       ├── SocialLoginButtons.tsx     # NEW
+  │       ├── GoogleLoginButton.tsx      # NEW
+  │       ├── GitHubLoginButton.tsx      # NEW
+  │       ├── SocialAccountsManager.tsx  # NEW - Settings page
+  │       └── SetPasswordForm.tsx        # NEW - Cho social users
+  │
+  ├── services/
+  │   └── api/
+  │       └── auth.api.ts               # Updated
+  │
+  ├── hooks/
+  │   └── useSocialAuth.ts              # NEW
+  │
+  ├── lib/
+  │   └── social-auth.ts                # NEW - OAuth helpers
+  │
+  └── types/
+      └── auth.types.ts                  # Updated
+
+  3.2 Types
+
+  // src/types/auth.types.ts - Thêm social types
+
+  export type SocialProvider = 'google' | 'github' | 'facebook' | 'discord';
+
+  export interface SocialLoginRequest {
+    provider: SocialProvider;
+    code: string;
+    redirectUri?: string;
+  }
+
+  export interface SocialTokenLoginRequest {
+    provider: SocialProvider;
+    idToken: string;
+  }
+
+  export interface SocialAuthResult {
+    accessToken: string;
+    refreshToken: string;
+    user: User;
+    isNewUser: boolean;
+  }
+
+  export interface SocialAccount {
+    id: string;
+    provider: SocialProvider;
+    email: string;
+    displayName: string;
+    avatarUrl?: string;
+    createdAt: string;
+  }
+
+  export interface LinkSocialAccountRequest {
+    provider: SocialProvider;
+    code: string;
+    redirectUri?: string;
+  }
+
+  3.3 Social Auth Helpers
+
+  // src/lib/social-auth.ts
+
+  export type SocialProvider = 'google' | 'github';
+
+  interface OAuthConfig {
+    clientId: string;
+    authUrl: string;
+    scope: string;
+    redirectUri: string;
+  }
+
+  const OAUTH_CONFIGS: Record<SocialProvider, OAuthConfig> = {
+    google: {
+      clientId: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!,
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      scope: 'openid email profile',
+      redirectUri: `${process.env.NEXT_PUBLIC_APP_URL}/auth/social/callback`,
+    },
+    github: {
+      clientId: process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID!,
+      authUrl: 'https://github.com/login/oauth/authorize',
+      scope: 'read:user user:email',
+      redirectUri: `${process.env.NEXT_PUBLIC_APP_URL}/auth/social/callback`,
+    },
+  };
+
+  /**
+   * Tạo OAuth URL và mở popup/redirect
+   */
+  export function initiateOAuth(
+    provider: SocialProvider,
+    options: {
+      mode?: 'redirect' | 'popup';
+      state?: string;
+    } = {},
+  ): Window | null {
+    const config = OAUTH_CONFIGS[provider];
+    const { mode = 'popup', state } = options;
+
+    // Generate random state để chống CSRF
+    const oauthState = state || generateState(provider);
+    sessionStorage.setItem('oauth_state', oauthState);
+
+    const params = new URLSearchParams({
+      client_id: config.clientId,
+      redirect_uri: config.redirectUri,
+      scope: config.scope,
+      state: oauthState,
+      response_type: 'code',
+    });
+
+    // Thêm params đặc biệt cho từng provider
+    if (provider === 'google') {
+      params.set('access_type', 'offline');
+      params.set('prompt', 'consent');
+    }
+
+    const authUrl = `${config.authUrl}?${params.toString()}`;
+
+    if (mode === 'popup') {
+      const width = 500;
+      const height = 600;
+      const left = window.screenX + (window.outerWidth - width) / 2;
+      const top = window.screenY + (window.outerHeight - height) / 2;
+
+      return window.open(
+        authUrl,
+        `${provider}_oauth`,
+        `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no`,
+      );
+    } else {
+      window.location.href = authUrl;
+      return null;
+    }
+  }
+
+  /**
+   * Parse callback URL parameters
+   */
+  export function parseOAuthCallback(searchParams: URLSearchParams): {
+    code?: string;
+    state?: string;
+    error?: string;
+    provider?: SocialProvider;
+  } {
+    const code = searchParams.get('code');
+    const state = searchParams.get('state');
+    const error = searchParams.get('error');
+
+    // Extract provider from state
+    let provider: SocialProvider | undefined;
+    if (state) {
+      const parts = state.split(':');
+      if (parts.length >= 1) {
+        provider = parts[0] as SocialProvider;
+      }
+    }
+
+    return { code, state, error, provider };
+  }
+
+  /**
+   * Verify state parameter (CSRF protection)
+   */
+  export function verifyOAuthState(state: string): boolean {
+    const savedState = sessionStorage.getItem('oauth_state');
+    sessionStorage.removeItem('oauth_state');
+    return savedState === state;
+  }
+
+  /**
+   * Get redirect URI for a provider
+   */
+  export function getRedirectUri(provider: SocialProvider): string {
+    return OAUTH_CONFIGS[provider].redirectUri;
+  }
+
+  function generateState(provider: SocialProvider): string {
+    const random = Math.random().toString(36).substring(2, 15);
+    return `${provider}:${random}:${Date.now()}`;
+  }
+
+  3.4 API Service
+
+  // src/services/api/auth.api.ts - Thêm social endpoints
+  import { apiClient } from '../axios';
+  import type {
+    SocialLoginRequest,
+    SocialTokenLoginRequest,
+    SocialAuthResult,
+    SocialAccount,
+    LinkSocialAccountRequest,
+    SocialProvider,
+  } from '@/types/auth.types';
+
+  export const authApi = {
+    // ... existing methods (login, register, refresh, logout) ...
+
+    // ============================================
+    // SOCIAL AUTH
+    // ============================================
+
+    /**
+     * Login/Register via OAuth authorization code
+     */
+    socialLogin: (data: SocialLoginRequest) =>
+      apiClient.post<{ success: boolean; data: SocialAuthResult }>(
+        '/auth/social/login',
+        data,
+      ),
+
+    /**
+     * Login via ID Token (Google One Tap)
+     */
+    socialTokenLogin: (data: SocialTokenLoginRequest) =>
+      apiClient.post<{ success: boolean; data: SocialAuthResult }>(
+        '/auth/social/token-login',
+        data,
+      ),
+
+    /**
+     * Get OAuth URL from backend (alternative approach)
+     */
+    getSocialAuthUrl: (provider: SocialProvider) =>
+      apiClient.get<{ success: boolean; data: { url: string } }>(
+        `/auth/social/url/${provider}`,
+      ),
+
+    /**
+     * Get linked social accounts
+     */
+    getLinkedAccounts: () =>
+      apiClient.get<{ success: boolean; data: SocialAccount[] }>(
+        '/auth/social/accounts',
+      ),
+
+    /**
+     * Link a social account
+     */
+    linkSocialAccount: (data: LinkSocialAccountRequest) =>
+      apiClient.post<{ success: boolean; data: SocialAccount }>(
+        '/auth/social/link',
+        data,
+      ),
+
+    /**
+     * Unlink a social account
+     */
+    unlinkSocialAccount: (provider: SocialProvider) =>
+      apiClient.delete<{ success: boolean; message: string }>(
+        '/auth/social/unlink',
+        { data: { provider } },
+      ),
+  };
+
+  3.5 useSocialAuth Hook
+
+  // src/hooks/useSocialAuth.ts
+  'use client';
+
+  import { useState, useCallback, useEffect, useRef } from 'react';
+  import { useRouter } from 'next/navigation';
+  import { useMutation } from '@tanstack/react-query';
+  import { toast } from 'sonner';
+  import { authApi } from '@/services/api/auth.api';
+  import { useAuthStore } from '@/stores/authStore';
+  import {
+    initiateOAuth,
+    getRedirectUri,
+    type SocialProvider,
+  } from '@/lib/social-auth';
+
+  export function useSocialAuth() {
+    const router = useRouter();
+    const { setAuth } = useAuthStore();
+    const [loadingProvider, setLoadingProvider] = useState<SocialProvider | null>(null);
+    const popupRef = useRef<Window | null>(null);
+    const popupCheckInterval = useRef<NodeJS.Timeout | null>(null);
+
+    // Mutation: Exchange code cho tokens
+    const socialLoginMutation = useMutation({
+      mutationFn: authApi.socialLogin,
+      onSuccess: (response) => {
+        const { accessToken, refreshToken, user, isNewUser } = response.data.data;
+
+        setAuth(accessToken, refreshToken, user);
+
+        if (isNewUser) {
+          toast.success('🎉 Chào mừng bạn! Tài khoản đã được tạo thành công.');
+          router.push('/onboarding'); // Trang setup profile cho user mới
+        } else {
+          toast.success('Đăng nhập thành công!');
+          router.push('/');
+        }
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.message || 'Đăng nhập thất bại';
+        toast.error(message);
+      },
+      onSettled: () => {
+        setLoadingProvider(null);
+      },
+    });
+
+    // Google One Tap mutation
+    const tokenLoginMutation = useMutation({
+      mutationFn: authApi.socialTokenLogin,
+      onSuccess: (response) => {
+        const { accessToken, refreshToken, user, isNewUser } = response.data.data;
+
+        setAuth(accessToken, refreshToken, user);
+
+        if (isNewUser) {
+          toast.success('🎉 Chào mừng bạn!');
+          router.push('/onboarding');
+        } else {
+          toast.success('Đăng nhập thành công!');
+          router.push('/');
+        }
+      },
+      onError: (error: any) => {
+        toast.error(error?.response?.data?.message || 'Đăng nhập thất bại');
+      },
+      onSettled: () => {
+        setLoadingProvider(null);
+      },
+    });
+
+    /**
+     * Bắt đầu OAuth flow (popup mode)
+     */
+    const loginWithProvider = useCallback((provider: SocialProvider) => {
+      setLoadingProvider(provider);
+
+      // Mở popup
+      popupRef.current = initiateOAuth(provider, { mode: 'popup' });
+
+      if (!popupRef.current) {
+        // Popup bị chặn → fallback sang redirect
+        toast.info('Popup bị chặn. Đang chuyển hướng...');
+        initiateOAuth(provider, { mode: 'redirect' });
+        return;
+      }
+
+      // Poll popup để check khi nào đóng/có kết quả
+      popupCheckInterval.current = setInterval(() => {
+        if (!popupRef.current || popupRef.current.closed) {
+          clearInterval(popupCheckInterval.current!);
+          setLoadingProvider(null);
+        }
+      }, 500);
+    }, []);
+
+    /**
+     * Google One Tap login
+     */
+    const loginWithGoogleOneTap = useCallback((idToken: string) => {
+      setLoadingProvider('google');
+      tokenLoginMutation.mutate({
+        provider: 'google',
+        idToken,
+      });
+    }, [tokenLoginMutation]);
+
+    /**
+     * Xử lý OAuth callback (gọi từ callback page)
+     */
+    const handleCallback = useCallback(
+      async (provider: SocialProvider, code: string) => {
+        setLoadingProvider(provider);
+        socialLoginMutation.mutate({
+          provider,
+          code,
+          redirectUri: getRedirectUri(provider),
+        });
+      },
+      [socialLoginMutation],
+    );
+
+    // Cleanup
+    useEffect(() => {
+      return () => {
+        if (popupCheckInterval.current) {
+          clearInterval(popupCheckInterval.current);
+        }
+      };
+    }, []);
+
+    // Lắng nghe message từ popup
+    useEffect(() => {
+      const handleMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+
+        if (event.data?.type === 'SOCIAL_AUTH_CALLBACK') {
+          const { provider, code, error } = event.data;
+
+          if (popupRef.current) {
+            popupRef.current.close();
+          }
+
+          if (error) {
+            toast.error(`Đăng nhập ${provider} thất bại: ${error}`);
+            setLoadingProvider(null);
+            return;
+          }
+
+          if (code && provider) {
+            handleCallback(provider, code);
+          }
+        }
+      };
+
+      window.addEventListener('message', handleMessage);
+      return () => window.removeEventListener('message', handleMessage);
+    }, [handleCallback]);
+
+    return {
+      loginWithProvider,
+      loginWithGoogleOneTap,
+      handleCallback,
+      loadingProvider,
+      isLoading: socialLoginMutation.isPending || tokenLoginMutation.isPending,
+    };
+  }
+
+  3.6 Social Login Buttons
+
+  // src/components/auth/SocialLoginButtons.tsx
+  'use client';
+
+  import { useSocialAuth } from '@/hooks/useSocialAuth';
+  import { GoogleLoginButton } from './GoogleLoginButton';
+  import { GitHubLoginButton } from './GitHubLoginButton';
+
+  interface SocialLoginButtonsProps {
+    mode?: 'login' | 'register';
+  }
+
+  export function SocialLoginButtons({ mode = 'login' }: SocialLoginButtonsProps) {
+    const { loginWithProvider, loadingProvider } = useSocialAuth();
+
+    const label = mode === 'login' ? 'Đăng nhập' : 'Đăng ký';
+
+    return (
+      <div className="space-y-3">
+        {/* Divider */}
+        <div className="relative my-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-200 dark:border-gray-700" />
+          </div>
+          <div className="relative flex justify-center text-sm">
+            <span className="bg-white dark:bg-gray-900 px-4 text-gray-500">
+              hoặc {label} với
+            </span>
+          </div>
+        </div>
+
+        {/* Buttons */}
+        <div className="grid grid-cols-2 gap-3">
+          <GoogleLoginButton
+            onClick={() => loginWithProvider('google')}
+            isLoading={loadingProvider === 'google'}
+            disabled={!!loadingProvider}
+            label={label}
+          />
+          <GitHubLoginButton
+            onClick={() => loginWithProvider('github')}
+            isLoading={loadingProvider === 'github'}
+            disabled={!!loadingProvider}
+            label={label}
+          />
+        </div>
+
+        {/* Terms notice */}
+        {mode === 'register' && (
+          <p className="text-xs text-center text-gray-500 mt-4">
+            Bằng việc đăng ký, bạn đồng ý với{' '}
+            <a href="/terms" className="underline hover:text-gray-700">
+              Điều khoản dịch vụ
+            </a>{' '}
+            và{' '}
+            <a href="/privacy" className="underline hover:text-gray-700">
+              Chính sách bảo mật
+            </a>
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // src/components/auth/GoogleLoginButton.tsx
+  'use client';
+
+  import { Loader2 } from 'lucide-react';
+  import { Button } from '@/components/ui/button';
+
+  interface GoogleLoginButtonProps {
+    onClick: () => void;
+    isLoading?: boolean;
+    disabled?: boolean;
+    label?: string;
+  }
+
+  export function GoogleLoginButton({
+    onClick,
+    isLoading,
+    disabled,
+    label = 'Đăng nhập',
+  }: GoogleLoginButtonProps) {
+    return (
+      <Button
+        variant="outline"
+        className="w-full h-11 font-medium border-gray-300 dark:border-gray-600
+                   hover:bg-gray-50 dark:hover:bg-gray-800 transition-all
+                   disabled:opacity-50"
+        onClick={onClick}
+        disabled={disabled || isLoading}
+      >
+        {isLoading ? (
+          <Loader2 className="w-5 h-5 animate-spin mr-2" />
+        ) : (
+          <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
+            <path
+              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"
+              fill="#4285F4"
+            />
+            <path
+              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+              fill="#34A853"
+            />
+            <path
+              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+              fill="#FBBC05"
+            />
+            <path
+              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+              fill="#EA4335"
+            />
+          </svg>
+        )}
+        Google
+      </Button>
+    );
+  }
+
+  // src/components/auth/GitHubLoginButton.tsx
+  'use client';
+
+  import { Loader2, Github } from 'lucide-react';
+  import { Button } from '@/components/ui/button';
+
+  interface GitHubLoginButtonProps {
+    onClick: () => void;
+    isLoading?: boolean;
+    disabled?: boolean;
+    label?: string;
+  }
+
+  export function GitHubLoginButton({
+    onClick,
+    isLoading,
+    disabled,
+    label = 'Đăng nhập',
+  }: GitHubLoginButtonProps) {
+    return (
+      <Button
+        variant="outline"
+        className="w-full h-11 font-medium border-gray-300 dark:border-gray-600
+                   hover:bg-gray-50 dark:hover:bg-gray-800 transition-all
+                   disabled:opacity-50"
+        onClick={onClick}
+        disabled={disabled || isLoading}
+      >
+        {isLoading ? (
+          <Loader2 className="w-5 h-5 animate-spin mr-2" />
+        ) : (
+          <Github className="w-5 h-5 mr-2" />
+        )}
+        GitHub
+      </Button>
+    );
+  }
+
+  3.7 OAuth Callback Page
+
+  // src/app/auth/social/callback/page.tsx
+  'use client';
+
+  import { useEffect, useRef, useState } from 'react';
+  import { useSearchParams, useRouter } from 'next/navigation';
+  import { Loader2, CheckCircle, XCircle } from 'lucide-react';
+  import { useSocialAuth } from '@/hooks/useSocialAuth';
+  import { useAuthStore } from '@/stores/authStore';
+  import {
+    parseOAuthCallback,
+    verifyOAuthState,
+  } from '@/lib/social-auth';
+
+  type CallbackStatus = 'processing' | 'success' | 'error';
+
+  export default function SocialCallbackPage() {
+    const searchParams = useSearchParams();
+    const router = useRouter();
+    const { handleCallback } = useSocialAuth();
+    const { setAuth } = useAuthStore();
+    const [status, setStatus] = useState<CallbackStatus>('processing');
+    const [errorMessage, setErrorMessage] = useState('');
+    const processed = useRef(false);
+
+    useEffect(() => {
+      if (processed.current) return;
+      processed.current = true;
+
+      // ============================================
+      // Case 1: Server-side redirect (tokens in URL)
+      // ============================================
+      const accessToken = searchParams.get('access_token');
+      const refreshToken = searchParams.get('refresh_token');
+
+      if (accessToken && refreshToken) {
+        const isNewUser = searchParams.get('is_new_user') === 'true';
+
+        setAuth(accessToken, refreshToken, null); // User sẽ được fetch sau
+        setStatus('success');
+
+        // Nếu đang trong popup → gửi message về parent window
+        if (window.opener) {
+          window.opener.postMessage(
+            {
+              type: 'SOCIAL_AUTH_SUCCESS',
+              accessToken,
+              refreshToken,
+              isNewUser,
+            },
+            window.location.origin,
+          );
+          window.close();
+          return;
+        }
+
+        // Redirect
+        setTimeout(() => {
+          router.push(isNewUser ? '/onboarding' : '/');
+        }, 1000);
+
+        return;
+      }
+
+      // ============================================
+      // Case 2: Client-side OAuth (code in URL)
+      // ============================================
+      const { code, state, error, provider } = parseOAuthCallback(
+        new URLSearchParams(searchParams.toString()),
+      );
+
+      if (error) {
+        setStatus('error');
+        setErrorMessage(error);
+
+        // Gửi error về popup parent
+        if (window.opener) {
+          window.opener.postMessage(
+            { type: 'SOCIAL_AUTH_CALLBACK', error, provider },
+            window.location.origin,
+          );
+          window.close();
+        }
+        return;
+      }
+
+      if (!code || !provider) {
+        setStatus('error');
+        setErrorMessage('Invalid callback parameters');
+        return;
+      }
+
+      // Verify state (CSRF protection)
+      if (state && !verifyOAuthState(state)) {
+        setStatus('error');
+        setErrorMessage('Invalid state parameter. Please try again.');
+        return;
+      }
+
+      // Nếu đang trong popup → gửi code về parent window xử lý
+      if (window.opener) {
+        window.opener.postMessage(
+          { type: 'SOCIAL_AUTH_CALLBACK', provider, code },
+          window.location.origin,
+        );
+        window.close();
+        return;
+      }
+
+      // Nếu không phải popup (redirect mode) → xử lý trực tiếp
+      handleCallback(provider, code);
+    }, [searchParams, handleCallback, router, setAuth]);
+
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="text-center space-y-4 p-8">
+          {status === 'processing' && (
+            <>
+              <Loader2 className="w-12 h-12 animate-spin text-blue-500 mx-auto" />
+              <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-200">
+                Đang xử lý đăng nhập...
+              </h2>
+              <p className="text-gray-500">
+                Vui lòng chờ trong giây lát
+              </p>
+            </>
+          )}
+
+          {status === 'success' && (
+            <>
+              <CheckCircle className="w-12 h-12 text-green-500 mx-auto" />
+              <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-200">
+                Đăng nhập thành công!
+              </h2>
+              <p className="text-gray-500">
+                Đang chuyển hướng...
+              </p>
+            </>
+          )}
+
+          {status === 'error' && (
+            <>
+              <XCircle className="w-12 h-12 text-red-500 mx-auto" />
+              <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-200">
+                Đăng nhập thất bại
+              </h2>
+              <p className="text-red-500 text-sm">{errorMessage}</p>
+              <button
+                onClick={() => router.push('/auth/login')}
+                className="mt-4 px-6 py-2 bg-blue-500 text-white rounded-lg
+                           hover:bg-blue-600 transition-colors"
+              >
+                Quay lại đăng nhập
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  3.8 Updated Login Page
+
+  // src/app/auth/login/page.tsx
+  'use client';
+
+  import { useState } from 'react';
+  import { useForm } from 'react-hook-form';
+  import { zodResolver } from '@hookform/resolvers/zod';
+  import { z } from 'zod';
+  import Link from 'next/link';
+  import { useMutation } from '@tanstack/react-query';
+  import { toast } from 'sonner';
+  import { useRouter } from 'next/navigation';
+
+  import { Button } from '@/components/ui/button';
+  import { Input } from '@/components/ui/input';
+  import { Label } from '@/components/ui/label';
+  import { SocialLoginButtons } from '@/components/auth/SocialLoginButtons';
+  import { authApi } from '@/services/api/auth.api';
+  import { useAuthStore } from '@/stores/authStore';
+  import { Loader2, Eye, EyeOff } from 'lucide-react';
+
+  const loginSchema = z.object({
+    email: z.string().email('Email không hợp lệ'),
+    password: z.string().min(6, 'Mật khẩu tối thiểu 6 ký tự'),
+  });
+
+  type LoginFormValues = z.infer<typeof loginSchema>;
+
+  export default function LoginPage() {
+    const router = useRouter();
+    const { setAuth } = useAuthStore();
+    const [showPassword, setShowPassword] = useState(false);
+
+    const form = useForm<LoginFormValues>({
+      resolver: zodResolver(loginSchema),
+      defaultValues: { email: '', password: '' },
+    });
+
+    const loginMutation = useMutation({
+      mutationFn: authApi.login,
+      onSuccess: (response) => {
+        const { accessToken, refreshToken, user } = response.data.data;
+        setAuth(accessToken, refreshToken, user);
+        toast.success('Đăng nhập thành công!');
+        router.push('/');
+      },
+      onError: (error: any) => {
+        toast.error(error?.response?.data?.message || 'Đăng nhập thất bại');
+      },
+    });
+
+    const onSubmit = (values: LoginFormValues) => {
+      loginMutation.mutate(values);
+    };
+
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4">
+        <div className="w-full max-w-md">
+          {/* Header */}
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+              Đăng nhập
+            </h1>
+            <p className="text-gray-500 mt-2">
+              Chào mừng bạn quay lại!
+            </p>
+          </div>
+
+          {/* Card */}
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-8">
+            {/* ⭐ Social Login Buttons */}
+            <SocialLoginButtons mode="login" />
+
+            {/* Email/Password Form */}
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 mt-6">
+              <div>
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="your@email.com"
+                  {...form.register('email')}
+                  className="mt-1"
+                />
+                {form.formState.errors.email && (
+                  <p className="text-sm text-red-500 mt-1">
+                    {form.formState.errors.email.message}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Mật khẩu</Label>
+                  <Link
+                    href="/auth/forgot-password"
+                    className="text-sm text-blue-600 hover:underline"
+                  >
+                    Quên mật khẩu?
+                  </Link>
+                </div>
+                <div className="relative mt-1">
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    {...form.register('password')}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400
+                               hover:text-gray-600"
+                    onClick={() => setShowPassword(!showPassword)}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {form.formState.errors.password && (
+                  <p className="text-sm text-red-500 mt-1">
+                    {form.formState.errors.password.message}
+                  </p>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                className="w-full h-11"
+                disabled={loginMutation.isPending}
+              >
+                {loginMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : null}
+                Đăng nhập
+              </Button>
+            </form>
+
+            {/* Register link */}
+            <p className="text-center text-sm text-gray-500 mt-6">
+              Chưa có tài khoản?{' '}
+              <Link href="/auth/register" className="text-blue-600 font-medium hover:underline">
+                Đăng ký ngay
+              </Link>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  3.9 Google One Tap Component (Bonus)
+
+  // src/components/auth/GoogleOneTap.tsx
+  'use client';
+
+  import { useEffect, useCallback } from 'react';
+  import { useAuthStore } from '@/stores/authStore';
+  import { useSocialAuth } from '@/hooks/useSocialAuth';
+
+  declare global {
+    interface Window {
+      google?: {
+        accounts: {
+          id: {
+            initialize: (config: any) => void;
+            prompt: (callback?: (notification: any) => void) => void;
+            renderButton: (element: HTMLElement, config: any) => void;
+            cancel: () => void;
+          };
+        };
+      };
+    }
+  }
+
+  export function GoogleOneTap() {
+    const { isAuthenticated } = useAuthStore();
+    const { loginWithGoogleOneTap } = useSocialAuth();
+
+    const handleCredentialResponse = useCallback(
+      (response: any) => {
+        if (response.credential) {
+          loginWithGoogleOneTap(response.credential);
+        }
+      },
+      [loginWithGoogleOneTap],
+    );
+
+    useEffect(() => {
+      // Không hiện One Tap nếu đã đăng nhập
+      if (isAuthenticated) return;
+
+      // Load Google Identity Services SDK
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+
+      script.onload = () => {
+        if (window.google) {
+          window.google.accounts.id.initialize({
+            client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+            callback: handleCredentialResponse,
+            auto_select: false, // Không tự động chọn account
+            cancel_on_tap_outside: true,
+          });
+
+          // Hiển thị One Tap popup
+          window.google.accounts.id.prompt((notification: any) => {
+            if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+              // One Tap bị ẩn (user đã dismiss trước đó, etc.)
+              console.log('Google One Tap not displayed:', notification.getNotDisplayedReason?.());
+            }
+          });
+        }
+      };
+
+      document.body.appendChild(script);
+
+      return () => {
+        // Cleanup
+        if (window.google) {
+          window.google.accounts.id.cancel();
+        }
+        document.body.removeChild(script);
+      };
+    }, [isAuthenticated, handleCredentialResponse]);
+
+    // Component không render gì - One Tap tự hiện popup
+    return null;
+  }
+
+  3.10 Social Accounts Manager (Settings Page)
+
+  // src/components/auth/SocialAccountsManager.tsx
+  'use client';
+
+  import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+  import { toast } from 'sonner';
+  import { Github, Loader2, Link2, Unlink } from 'lucide-react';
+  import { Button } from '@/components/ui/button';
+  import { Card } from '@/components/ui/card';
+  import { authApi } from '@/services/api/auth.api';
+  import { initiateOAuth, getRedirectUri, type SocialProvider } from '@/lib/social-auth';
+  import { useEffect, useCallback } from 'react';
+
+  const PROVIDERS: {
+    id: SocialProvider;
+    name: string;
+    icon: React.ReactNode;
+    color: string;
+  }[] = [
+    {
+      id: 'google',
+      name: 'Google',
+      icon: (
+        <svg className="w-5 h-5" viewBox="0 0 24 24">
+          {/* Google SVG icon */}
+          <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+          <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+          <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+          <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+        </svg>
+      ),
+      color: 'border-red-200 bg-red-50',
+    },
+    {
+      id: 'github',
+      name: 'GitHub',
+      icon: <Github className="w-5 h-5" />,
+      color: 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800',
+    },
+  ];
+
+  export function SocialAccountsManager() {
+    const queryClient = useQueryClient();
+
+    // Fetch linked accounts
+    const { data: linkedAccounts, isLoading } = useQuery({
+      queryKey: ['social-accounts'],
+      queryFn: async () => {
+        const res = await authApi.getLinkedAccounts();
+        return res.data.data;
+      },
+    });
+
+    // Unlink mutation
+    const unlinkMutation = useMutation({
+      mutationFn: (provider: SocialProvider) => authApi.unlinkSocialAccount(provider),
+      onSuccess: (_, provider) => {
+        toast.success(`Đã gỡ liên kết ${provider}`);
+        queryClient.invalidateQueries({ queryKey: ['social-accounts'] });
+      },
+      onError: (error: any) => {
+        toast.error(error?.response?.data?.message || 'Gỡ liên kết thất bại');
+      },
+    });
+
+    // Link mutation
+    const linkMutation = useMutation({
+      mutationFn: (data: { provider: SocialProvider; code: string }) =>
+        authApi.linkSocialAccount({
+          provider: data.provider,
+          code: data.code,
+          redirectUri: getRedirectUri(data.provider),
+        }),
+      onSuccess: (_, variables) => {
+        toast.success(`Đã liên kết ${variables.provider} thành công`);
+        queryClient.invalidateQueries({ queryKey: ['social-accounts'] });
+      },
+      onError: (error: any) => {
+        toast.error(error?.response?.data?.message || 'Liên kết thất bại');
+      },
+    });
+
+    // Handle popup message for linking
+    const handleLinkMessage = useCallback(
+      (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.data?.type === 'SOCIAL_AUTH_CALLBACK') {
+          const { provider, code, error } = event.data;
+          if (error) {
+            toast.error(`Liên kết ${provider} thất bại: ${error}`);
+            return;
+          }
+          if (code && provider) {
+            linkMutation.mutate({ provider, code });
+          }
+        }
+      },
+      [linkMutation],
+    );
+
+    useEffect(() => {
+      window.addEventListener('message', handleLinkMessage);
+      return () => window.removeEventListener('message', handleLinkMessage);
+    }, [handleLinkMessage]);
+
+    const handleLink = (provider: SocialProvider) => {
+      initiateOAuth(provider, { mode: 'popup' });
+    };
+
+    const isLinked = (providerId: SocialProvider) =>
+      linkedAccounts?.some((a) => a.provider === providerId);
+
+    const getLinkedAccount = (providerId: SocialProvider) =>
+      linkedAccounts?.find((a) => a.provider === providerId);
+
+    if (isLoading) {
+      return (
+        <div className="flex justify-center py-8">
+          <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+        </div>
+      );
+    }
+
+    return (
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Tài khoản liên kết</h3>
+        <p className="text-sm text-gray-500 mb-6">
+          Liên kết tài khoản mạng xã hội để đăng nhập nhanh hơn
+        </p>
+
+        <div className="space-y-4">
+          {PROVIDERS.map((provider) => {
+            const linked = isLinked(provider.id);
+            const account = getLinkedAccount(provider.id);
+
+            return (
+              <div
+                key={provider.id}
+                className={`flex items-center justify-between p-4 rounded-lg border
+                           ${linked ? provider.color : 'border-gray-200 dark:border-gray-700'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 flex items-center justify-center rounded-full
+                                  bg-white dark:bg-gray-700 shadow-sm">
+                    {provider.icon}
+                  </div>
+                  <div>
+                    <p className="font-medium">{provider.name}</p>
+                    {linked && account ? (
+                      <p className="text-sm text-gray-500">{account.email}</p>
+                    ) : (
+                      <p className="text-sm text-gray-400">Chưa liên kết</p>
+                    )}
+                  </div>
+                </div>
+
+                {linked ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                    onClick={() => unlinkMutation.mutate(provider.id)}
+                    disabled={unlinkMutation.isPending}
+                  >
+                    {unlinkMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <Unlink className="w-4 h-4 mr-1" />
+                    )}
+                    Gỡ liên kết
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleLink(provider.id)}
+                    disabled={linkMutation.isPending}
+                  >
+                    {linkMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <Link2 className="w-4 h-4 mr-1" />
+                    )}
+                    Liên kết
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    );
+  }
+
+  3.11 Set Password Form (Cho social users)
+
+  // src/components/auth/SetPasswordForm.tsx
+  'use client';
+
+  import { useForm } from 'react-hook-form';
+  import { zodResolver } from '@hookform/resolvers/zod';
+  import { z } from 'zod';
+  import { useMutation } from '@tanstack/react-query';
+  import { toast } from 'sonner';
+  import { Loader2, ShieldCheck } from 'lucide-react';
+  import { Button } from '@/components/ui/button';
+  import { Input } from '@/components/ui/input';
+  import { Label } from '@/components/ui/label';
+  import { Card } from '@/components/ui/card';
+  import { useAuthStore } from '@/stores/authStore';
+  import { authApi } from '@/services/api/auth.api';
+
+  const setPasswordSchema = z
+    .object({
+      password: z
+        .string()
+        .min(8, 'Mật khẩu tối thiểu 8 ký tự')
+        .regex(/[A-Z]/, 'Cần ít nhất 1 chữ hoa')
+        .regex(/[a-z]/, 'Cần ít nhất 1 chữ thường')
+        .regex(/[0-9]/, 'Cần ít nhất 1 chữ số'),
+      confirmPassword: z.string(),
+    })
+    .refine((data) => data.password === data.confirmPassword, {
+      message: 'Mật khẩu không khớp',
+      path: ['confirmPassword'],
+    });
+
+  type SetPasswordFormValues = z.infer<typeof setPasswordSchema>;
+
+  export function SetPasswordForm() {
+    const { user, updateUser } = useAuthStore();
+
+    const form = useForm<SetPasswordFormValues>({
+      resolver: zodResolver(setPasswordSchema),
+      defaultValues: { password: '', confirmPassword: '' },
+    });
+
+    const mutation = useMutation({
+      mutationFn: (data: { password: string }) =>
+        authApi.setPassword(data), // API endpoint mới
+      onSuccess: () => {
+        toast.success('Đã thiết lập mật khẩu thành công!');
+        updateUser({ isPasswordSet: true });
+        form.reset();
+      },
+      onError: (error: any) => {
+        toast.error(error?.response?.data?.message || 'Thiết lập mật khẩu thất bại');
+      },
+    });
+
+    if (user?.isPasswordSet) {
+      return null; // Đã có password → không hiện form
+    }
+
+    return (
+      <Card className="p-6 border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
+        <div className="flex items-start gap-3 mb-4">
+          <ShieldCheck className="w-6 h-6 text-amber-600 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-amber-800 dark:text-amber-200">
+              Thiết lập mật khẩu
+            </h3>
+            <p className="text-sm text-amber-600 dark:text-amber-400 mt-1">
+              Bạn đăng ký bằng mạng xã hội. Thiết lập mật khẩu để có thêm cách đăng nhập.
+            </p>
+          </div>
+        </div>
+
+        <form
+          onSubmit={form.handleSubmit((values) =>
+            mutation.mutate({ password: values.password }),
+          )}
+          className="space-y-4"
+        >
+          <div>
+            <Label htmlFor="new-password">Mật khẩu mới</Label>
+            <Input
+              id="new-password"
+              type="password"
+              {...form.register('password')}
+              className="mt-1 bg-white dark:bg-gray-800"
+            />
+            {form.formState.errors.password && (
+              <p className="text-sm text-red-500 mt-1">
+                {form.formState.errors.password.message}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <Label htmlFor="confirm-password">Xác nhận mật khẩu</Label>
+            <Input
+              id="confirm-password"
+              type="password"
+              {...form.register('confirmPassword')}
+              className="mt-1 bg-white dark:bg-gray-800"
+            />
+            {form.formState.errors.confirmPassword && (
+              <p className="text-sm text-red-500 mt-1">
+                {form.formState.errors.confirmPassword.message}
+              </p>
+            )}
+          </div>
+
+          <Button type="submit" disabled={mutation.isPending}>
+            {mutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+            Thiết lập mật khẩu
+          </Button>
+        </form>
+      </Card>
+    );
+  }
+
+  ---
+  🔄 PHASE 4: FLOW DIAGRAMS
+
+  4.1 Social Login Flow (Popup Mode)
+
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │   Frontend   │     │  OAuth Popup │     │   Provider   │     │   Backend    │
+  │  (Login Page)│     │  (New Window)│     │(Google/GitHub)│     │   (NestJS)   │
+  └──────┬───────┘     └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+         │                    │                     │                    │
+         │ 1. Click "Login    │                     │                    │
+         │    with Google"    │                     │                    │
+         │───────────────────>│                     │                    │
+         │ window.open()      │                     │                    │
+         │                    │ 2. Redirect to      │                    │
+         │                    │    Google OAuth      │                    │
+         │                    │────────────────────>│                    │
+         │                    │                     │                    │
+         │                    │     3. User         │                    │
+         │                    │     authorizes      │                    │
+         │                    │<────────────────────│                    │
+         │                    │  redirect with code │                    │
+         │                    │                     │                    │
+         │ 4. postMessage     │                     │                    │
+         │    {code, provider}│                     │                    │
+         │<───────────────────│                     │                    │
+         │                    │ (popup closes)      │                    │
+         │                    │                     │                    │
+         │ 5. POST /auth/social/login               │                    │
+         │    {provider, code, redirectUri}          │                    │
+         │─────────────────────────────────────────────────────────────>│
+         │                                          │                    │
+         │                                          │ 6. Exchange code   │
+         │                                          │    for profile     │
+         │                                          │<───────────────────│
+         │                                          │  tokens + profile  │
+         │                                          │───────────────────>│
+         │                                          │                    │
+         │                                          │    7. Find/Create  │
+         │                                          │       user         │
+         │                                          │    8. Generate JWT │
+         │                                          │                    │
+         │ 9. Response {accessToken, refreshToken, user, isNewUser}      │
+         │<─────────────────────────────────────────────────────────────│
+         │                                                               │
+         │ 10. Store tokens                                              │
+         │     Redirect to home                                          │
+         │     (or /onboarding if new user)                              │
+
+  4.2 Account Linking Decision Tree
+
+                      Social Login Request
+                             │
+                      ┌──────▼──────┐
+                      │ Get Profile │
+                      │ from Provider│
+                      └──────┬──────┘
+                             │
+                ┌────────────▼────────────┐
+                │ social_accounts has      │
+                │ (provider, provider_id)? │
+                └────────────┬────────────┘
+                       ┌─────┴─────┐
+                      YES          NO
+                       │            │
+                ┌──────▼──────┐   ┌▼───────────────────┐
+                │ Login with  │   │ users has email?    │
+                │ existing    │   └┬────────────────────┘
+                │ user        │    │         │
+                └─────────────┘   YES        NO
+                                   │          │
+                      ┌────────────▼─┐   ┌───▼──────────────┐
+                      │ Auto-link    │   │ Create new user  │
+                      │ social acc   │   │ + wallet         │
+                      │ to existing  │   │ + social account │
+                      │ user         │   │ + bonus 5000đ    │
+                      └──────────────┘   └──────────────────┘
+                            │                     │
+                      ┌─────▼─────────────────────▼─────┐
+                      │  Generate JWT tokens + Return   │
+                      └─────────────────────────────────┘
+
+  4.3 Security Considerations
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                      SECURITY MEASURES                           │
+  ├─────────────────────────────────────────────────────────────────┤
+  │                                                                  │
+  │  1. CSRF Protection                                              │
+  │     - state parameter with random + timestamp                    │
+  │     - Verify state on callback                                   │
+  │                                                                  │
+  │  2. Token Security                                               │
+  │     - OAuth tokens encrypted at rest (AES-256-GCM)              │
+  │     - JWT tokens in httpOnly cookies (optional)                  │
+  │     - Short-lived access tokens (15m)                            │
+  │                                                                  │
+  │  3. Popup vs Redirect                                            │
+  │     - Popup: tokens never in URL, postMessage same-origin only   │
+  │     - Redirect: tokens in URL briefly, cleared after processing  │
+  │                                                                  │
+  │  4. Account Takeover Prevention                                  │
+  │     - Email must be verified by provider                         │
+  │     - Auto-link only if emails match exactly                     │
+  │     - Log all social auth events                                 │
+  │                                                                  │
+  │  5. Unlink Protection                                            │
+  │     - Cannot unlink last login method                            │
+  │     - Must set password before unlinking all social accounts     │
+  │                                                                  │
+  │  6. Rate Limiting                                                │
+  │     - Max 10 social login attempts per IP per minute             │
+  │     - Max 5 failed attempts → temporary block                    │
+  │                                                                  │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ---
+  📦 PHASE 5: NPM DEPENDENCIES
+
+  Backend
+
+  # NestJS Backend
+  npm install google-auth-library    # Google OAuth verification
+  npm install @nestjs/axios axios    # HTTP calls (GitHub API)
+  # passport-google-oauth20 KHÔNG cần (dùng trực tiếp google-auth-library)
+  # passport-github2 KHÔNG cần (dùng trực tiếp HTTP calls)
+
+  Frontend
+
+  # Next.js Frontend
+  # Không cần thêm dependency mới!
+  # Dùng native fetch/axios + window.open() + postMessage
+
+  ---
+  🌍 PHASE 6: ENVIRONMENT VARIABLES
+
+  # ============================================
+  # .env (Backend)
+  # ============================================
+
+  # Google OAuth 2.0
+  # Tạo tại: https://console.cloud.google.com/apis/credentials
+  GOOGLE_CLIENT_ID=123456789-xxxxx.apps.googleusercontent.com
+  GOOGLE_CLIENT_SECRET=GOCSPX-xxxxx
+  GOOGLE_CALLBACK_URL=http://localhost:3000/api/v1/auth/google/callback
+
+  # GitHub OAuth App
+  # Tạo tại: https://github.com/settings/developers
+  GITHUB_CLIENT_ID=Iv1.xxxxx
+  GITHUB_CLIENT_SECRET=xxxxx
+  GITHUB_CALLBACK_URL=http://localhost:3000/api/v1/auth/github/callback
+
+  # Social Auth Config
+  SOCIAL_AUTH_SUCCESS_URL=http://localhost:3001/auth/social/callback
+  SOCIAL_AUTH_FAILURE_URL=http://localhost:3001/auth/login?error=social_auth_failed
+  OAUTH_TOKEN_ENCRYPTION_KEY=my-super-secret-32-char-key-here
+
+  # ============================================
+  # .env.local (Frontend)
+  # ============================================
+  NEXT_PUBLIC_GOOGLE_CLIENT_ID=123456789-xxxxx.apps.googleusercontent.com
+  NEXT_PUBLIC_GITHUB_CLIENT_ID=Iv1.xxxxx
+  NEXT_PUBLIC_APP_URL=http://localhost:3001
+
+  ---
+  📋 SETUP GUIDES
+
+  Google OAuth Setup
+
+  1. Truy cập https://console.cloud.google.com/apis/credentials
+  2. Create Credentials → OAuth 2.0 Client IDs
+  3. Application type: Web application
+  4. Authorized JavaScript origins:
+     - http://localhost:3001 (dev)
+     - https://yourdomain.com (prod)
+  5. Authorized redirect URIs:
+     - http://localhost:3001/auth/social/callback (frontend callback)
+     - http://localhost:3000/api/v1/auth/google/callback (backend callback)
+  6. Copy Client ID + Client Secret vào .env
+
+  GitHub OAuth Setup
+
+  1. Truy cập https://github.com/settings/developers
+  2. New OAuth App
+  3. Homepage URL: http://localhost:3001
+  4. Authorization callback URL:
+     - http://localhost:3001/auth/social/callback (frontend callback)
+  5. Copy Client ID + Client Secret vào .env
+
+  ---
+  ✅ CHECKLIST
+
+  Backend:
+    [ ] Migration: social_accounts table + users columns
+    [ ] Entity: SocialAccount
+    [ ] Service: GoogleAuthService (code exchange + ID token verify)
+    [ ] Service: GitHubAuthService (code exchange + profile fetch)
+    [ ] Service: SocialAuthService (login/register/link/unlink)
+    [ ] Service: TokenEncryptionService
+    [ ] Controller: Social auth routes
+    [ ] Config: social-auth.config.ts
+    [ ] Rate limiting cho social auth endpoints
+
+  Frontend:
+    [ ] SocialLoginButtons component
+    [ ] GoogleLoginButton + GitHubLoginButton
+    [ ] OAuth callback page (/auth/social/callback)
+    [ ] useSocialAuth hook (popup + redirect + message handling)
+    [ ] social-auth.ts helper (URL generation + state management)
+    [ ] SocialAccountsManager (settings page)
+    [ ] SetPasswordForm (cho social users)
+    [ ] GoogleOneTap component (optional)
+    [ ] Update Login page với social buttons
+    [ ] Update Register page với social buttons
+
+  Testing:
+    [ ] Social login → new user created + wallet + bonus
+    [ ] Social login → existing user (same email) auto-linked
+    [ ] Social login → returning user logged in
+    [ ] Link social account từ settings
+    [ ] Unlink social account (với password set check)
+    [ ] CSRF state verification
+    [ ] Popup blocked fallback to redirect
+    [ ] Error handling (provider denied, network error, etc.)
+
+  ---
+  Thiết kế này có những ưu điểm:
+
+  1. Dual approach: Hỗ trợ cả popup (UX tốt) và redirect (fallback)
+  2. Extensible: Thêm provider mới chỉ cần tạo 1 service + config
+  3. Secure: State CSRF, encrypted tokens, verified emails only
+  4. User-friendly: Auto-link by email, Google One Tap, set password later
+  5. Tương thích: Hoạt động cùng hệ thống JWT + Refresh Token hiện có
