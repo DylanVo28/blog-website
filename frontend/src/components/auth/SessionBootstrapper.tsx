@@ -31,10 +31,7 @@ export function SessionBootstrapper() {
 
   const walletQuery = useQuery({
     queryKey: ["wallet", "me", accessToken],
-    queryFn: async () => {
-      const response = await walletApi.getWallet();
-      return response.data.data;
-    },
+    queryFn: () => walletApi.getWallet(),
     enabled: hydrated && Boolean(accessToken),
     retry: false,
     staleTime: 60 * 1000,

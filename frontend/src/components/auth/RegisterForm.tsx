@@ -52,8 +52,8 @@ export function RegisterForm() {
       login(session);
 
       try {
-        const walletResponse = await walletApi.getWallet();
-        setBalance(walletResponse.data.data.balance);
+        const wallet = await walletApi.getWallet();
+        setBalance(wallet.balance);
       } catch {
         setBalance(0);
       }

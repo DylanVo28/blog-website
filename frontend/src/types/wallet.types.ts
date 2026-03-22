@@ -1,3 +1,4 @@
+export type PaymentMethod = "vnpay" | "momo";
 export type TransactionType =
   | "deposit"
   | "withdrawal"
@@ -8,6 +9,8 @@ export type TransactionType =
   | "bonus";
 
 export type TransactionStatus = "pending" | "completed" | "failed" | "refunded";
+export type WithdrawalStatus = "pending" | "approved" | "rejected" | "completed";
+export type TransactionDirection = "in" | "out" | "neutral";
 
 export interface Wallet {
   id: string;
@@ -15,18 +18,77 @@ export interface Wallet {
   balance: number;
   totalEarned: number;
   totalSpent: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface WalletEarnings {
+  userId: string;
+  availableToWithdraw: number;
+  totalEarned: number;
+  totalSpent: number;
+}
+
+export interface PaymentRequest {
+  provider: PaymentMethod;
+  orderId: string;
+  amount: number;
+  paymentUrl: string;
+}
+
+export interface DepositOrder {
+  id: string;
+  userId: string;
+  amount: number;
+  paymentMethod: PaymentMethod | null;
+  paymentRef: string | null;
+  status: "pending" | "completed" | "failed";
+  createdAt: string;
+  completedAt: string | null;
+  paymentRequest: PaymentRequest;
+}
+
+export interface WithdrawalRequest {
+  id: string;
+  userId: string;
+  amount: number;
+  feeAmount: number;
+  bankName: string | null;
+  bankAccount: string | null;
+  bankHolder: string | null;
+  status: WithdrawalStatus;
+  approvedBy: string | null;
+  createdAt: string;
+  completedAt: string | null;
 }
 
 export interface Transaction {
   id: string;
+  senderId: string | null;
+  receiverId: string | null;
   type: TransactionType;
   amount: number;
   status: TransactionStatus;
+  direction: TransactionDirection;
+  label: string;
   description: string;
-  balanceAfter?: number | null;
-  relatedQuestionId?: string | null;
-  referenceId?: string | null;
-  referenceType?: string | null;
+  referenceId: string | null;
+  referenceType: string | null;
+  metadata: Record<string, unknown> | null;
   createdAt: string;
-  updatedAt?: string;
+  updatedAt: string;
+}
+
+export interface BackendTransactionRecord {
+  id: string;
+  senderId: string | null;
+  receiverId: string | null;
+  amount: number | string;
+  type: TransactionType;
+  status: TransactionStatus;
+  referenceId: string | null;
+  referenceType: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
 }

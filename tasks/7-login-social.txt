@@ -2845,3 +2845,856 @@
   3. Secure: State CSRF, encrypted tokens, verified emails only
   4. User-friendly: Auto-link by email, Google One Tap, set password later
   5. Tương thích: Hoạt động cùng hệ thống JWT + Refresh Token hiện có
+
+ Giải thích FULL luồng Social Login (từ A → Z)
+
+   📌 Tổng quan: Có 2 luồng chính
+
+   ┌─────────────────────────────────────────────────────────┐
+   │                                                         │
+   │  LUỒNG 1: POPUP (Ưu tiên - UX tốt hơn)               │
+   │  User click → Popup mở → Đăng nhập → Popup đóng       │
+   │  → Trang gốc nhận token → Xong                         │
+   │                                                         │
+   │  LUỒNG 2: REDIRECT (Fallback khi popup bị chặn)       │
+   │  User click → Redirect sang Google/GitHub               │
+   │  → Redirect về callback page → Xử lý → Xong           │
+   │                                                         │
+   └─────────────────────────────────────────────────────────┘
+
+   Mình sẽ giải thích LUỒNG 1 (Popup) chi tiết từng bước vì đây là luồng chính.
+
+   ---
+   🔄 LUỒNG POPUP CHI TIẾT (Ví dụ: Login with Google)
+
+   BƯỚC 1: User click nút "Đăng nhập bằng Google"
+
+   ┌─────────────────────────────────────────┐
+   │           Trang Login                    │
+   │                                          │
+   │   ┌──────────────────────────────────┐  │
+   │   │  📧  Email: ________________    │  │
+   │   │  🔑  Password: _____________    │  │
+   │   │         [ Đăng nhập ]           │  │
+   │   │                                  │  │
+   │   │  ──── Hoặc tiếp tục với ─────  │  │
+   │   │                                  │  │
+   │   │  [ 🔴 Google ]  [ ⚫ GitHub ]  │  ← User click vào đây
+   │   └──────────────────────────────────┘  │
+   └─────────────────────────────────────────┘
+
+   Code chạy khi click:
+
+   // GoogleLoginButton.tsx
+   const handleGoogleLogin = () => {
+     // 1. Tạo random state để chống CSRF
+     const state = crypto.randomUUID(); // VD: "a1b2c3d4-e5f6-..."
+     sessionStorage.setItem('oauth_state', state);
+
+     // 2. Tạo URL đến Google
+     const googleAuthUrl = buildGoogleAuthUrl(state);
+     // URL: https://accounts.google.com/o/oauth2/v2/auth?
+     //        client_id=123456.apps.googleusercontent.com
+     //        &redirect_uri=http://localhost:3001/auth/social/callback
+     //        &response_type=code
+     //        &scope=openid email profile
+     //        &state=a1b2c3d4-e5f6-...
+
+     // 3. Mở popup window
+     const popup = window.open(googleAuthUrl, 'google-login', 'width=500,height=600');
+
+     // 4. Lắng nghe message từ popup
+     window.addEventListener('message', handleMessage);
+   };
+
+   Giải thích:
+   - state là chuỗi ngẫu nhiên dùng để verify sau này (chống tấn công CSRF)
+   - redirect_uri trỏ về frontend (không phải backend)
+   - Popup mở ra trang đăng nhập Google
+
+   ---
+   BƯỚC 2: Popup hiển thị trang đăng nhập Google
+
+   ┌──────────────── POPUP WINDOW ────────────────┐
+   │                                               │
+   │          ┌─────────────────────────┐         │
+   │          │     🔵 Google           │         │
+   │          │                         │         │
+   │          │  Chọn tài khoản:       │         │
+   │          │                         │         │
+   │          │  👤 user@gmail.com     │         │
+   │          │  👤 work@gmail.com     │         │
+   │          │                         │         │
+   │          │  ＋ Dùng tài khoản khác│         │
+   │          └─────────────────────────┘         │
+   │                                               │
+   └───────────────────────────────────────────────┘
+
+   User chọn tài khoản → Google xác nhận → Google redirect popup đến:
+
+   http://localhost:3001/auth/social/callback?code=4/0AbC...xYz&state=a1b2c3d4-e5f6-...
+
+   Chú ý quan trọng:
+   - code = Authorization Code (mã tạm thời, dùng 1 lần, hết hạn trong ~5 phút)
+   - state = chuỗi state mà mình đã gửi ở bước 1
+   - Code này CHƯA PHẢI access token. Chưa lấy được thông tin user.
+
+   ---
+   BƯỚC 3: Callback page trong popup xử lý
+
+   Popup bây giờ ở URL: http://localhost:3001/auth/social/callback?code=...&state=...
+
+   ┌──────────── POPUP WINDOW (callback page) ────────────┐
+   │                                                        │
+   │              ⏳ Đang xử lý đăng nhập...               │
+   │              (spinner loading)                          │
+   │                                                        │
+   └────────────────────────────────────────────────────────┘
+
+   Code callback page chạy:
+
+   // app/auth/social/callback/page.tsx
+   export default function SocialCallbackPage() {
+     useEffect(() => {
+       // 1. Lấy code và state từ URL
+       const params = new URLSearchParams(window.location.search);
+       const code = params.get('code');     // "4/0AbC...xYz"
+       const state = params.get('state');   // "a1b2c3d4-e5f6-..."
+       const error = params.get('error');   // null (nếu thành công)
+
+       // 2. Kiểm tra có lỗi không (user cancel, etc.)
+       if (error) {
+         window.opener?.postMessage(
+           { type: 'SOCIAL_AUTH_ERROR', error },
+           window.location.origin
+         );
+         window.close();
+         return;
+       }
+
+       // 3. Gửi code về trang gốc (trang Login) qua postMessage
+       if (window.opener) {
+         // ← POPUP MODE: gửi message cho trang cha
+         window.opener.postMessage(
+           {
+             type: 'SOCIAL_AUTH_CALLBACK',
+             payload: { code, state, provider: 'google' }
+           },
+           window.location.origin  // Chỉ gửi cho same-origin (bảo mật)
+         );
+         window.close(); // Đóng popup
+       } else {
+         // ← REDIRECT MODE (fallback): tự xử lý luôn tại đây
+         handleSocialLogin(code, state, 'google');
+       }
+     }, []);
+
+     return <div>Đang xử lý...</div>;
+   }
+
+   Giải thích:
+   - window.opener = tham chiếu đến trang Login (trang mở popup)
+   - postMessage = cách an toàn để 2 window giao tiếp
+   - Popup tự đóng sau khi gửi message
+
+   ---
+   BƯỚC 4: Trang Login nhận message từ popup
+
+   Popup đã đóng. Trang Login nhận được message:
+
+   // Trang Login - handleMessage function
+   const handleMessage = async (event: MessageEvent) => {
+     // 1. Kiểm tra bảo mật: message phải từ cùng origin
+     if (event.origin !== window.location.origin) return;
+
+     // 2. Kiểm tra đúng loại message
+     if (event.data?.type !== 'SOCIAL_AUTH_CALLBACK') return;
+
+     const { code, state, provider } = event.data.payload;
+
+     // 3. ⚡ VERIFY STATE (chống CSRF)
+     const savedState = sessionStorage.getItem('oauth_state');
+     if (state !== savedState) {
+       toast.error('Xác thực không hợp lệ. Vui lòng thử lại.');
+       return;
+       // → Nếu state không khớp = có người đang cố tấn công
+     }
+     sessionStorage.removeItem('oauth_state'); // Dùng 1 lần
+
+     // 4. 🚀 GỬI CODE LÊN BACKEND
+     try {
+       const response = await authApi.socialLogin({
+         provider: 'google',
+         code: code,          // "4/0AbC...xYz"
+         redirectUri: `${window.location.origin}/auth/social/callback`,
+       });
+
+       // 5. Nhận tokens từ backend
+       const { accessToken, refreshToken, user, isNewUser } = response.data.data;
+
+       // 6. Lưu tokens
+       useAuthStore.getState().setAuth(accessToken, refreshToken, user);
+
+       // 7. Redirect
+       if (isNewUser) {
+         router.push('/onboarding');  // User mới → trang welcome
+       } else {
+         router.push('/');            // User cũ → trang chủ
+       }
+     } catch (error) {
+       toast.error('Đăng nhập thất bại');
+     }
+   };
+
+   Giải thích:
+   - Verify state: so sánh state nhận được với state đã lưu → phải khớp
+   - Frontend gửi code lên backend (KHÔNG TỰ exchange code)
+   - Lý do: backend mới có client_secret để exchange code
+
+   ---
+   BƯỚC 5: Backend nhận code từ Frontend
+
+   Frontend                          Backend (NestJS)
+      │                                   │
+      │  POST /api/v1/auth/social/login   │
+      │  {                                │
+      │    provider: "google",            │
+      │    code: "4/0AbC...xYz",         │
+      │    redirectUri: "http://..."      │
+      │  }                                │
+      │──────────────────────────────────>│
+      │                                   │
+
+   Code backend xử lý:
+
+   // auth.controller.ts
+   @Post('social/login')
+   @HttpCode(200)
+   async socialLogin(@Body() dto: SocialLoginDto) {
+     // dto = { provider: 'google', code: '4/0AbC...', redirectUri: 'http://...' }
+     return this.socialAuthService.socialLogin(dto);
+   }
+
+   // social-auth.service.ts
+   async socialLogin(dto: SocialLoginDto) {
+     // ====== BƯỚC 5a: Exchange code lấy profile ======
+     const profile = await this.getProfileFromProvider(dto);
+     // profile = {
+     //   provider: 'google',
+     //   providerId: '109876543210',        ← Google user ID
+     //   email: 'user@gmail.com',
+     //   displayName: 'Nguyễn Văn A',
+     //   avatarUrl: 'https://lh3.google...',
+     //   accessToken: 'ya29.xxx...',         ← Google access token
+     //   refreshToken: '1//xxx...',          ← Google refresh token
+     //   rawProfile: { ... }                 ← Toàn bộ data từ Google
+     // }
+
+     // ====== BƯỚC 5b: Tìm hoặc tạo user ======
+     const { user, isNewUser } = await this.findOrCreateUser(profile);
+
+     // ====== BƯỚC 5c: Tạo JWT tokens ======
+     const tokens = await this.authService.generateTokens(user);
+
+     return {
+       accessToken: tokens.accessToken,
+       refreshToken: tokens.refreshToken,
+       user: this.sanitizeUser(user),
+       isNewUser,
+     };
+   }
+
+   ---
+   BƯỚC 5a (Chi tiết): Exchange code với Google
+
+   // google-auth.service.ts
+   async getProfileFromCode(code: string, redirectUri: string) {
+     //
+     // Backend gửi request đến Google:
+     //
+     // POST https://oauth2.googleapis.com/token
+     // {
+     //   code: "4/0AbC...xYz",
+     //   client_id: "123456.apps.googleusercontent.com",
+     //   client_secret: "GOCSPX-xxxxx",          ← CHỈ BACKEND MỚI CÓ
+     //   redirect_uri: "http://localhost:3001/auth/social/callback",
+     //   grant_type: "authorization_code"
+     // }
+     //
+     const { tokens } = await this.oauthClient.getToken({ code, redirect_uri: redirectUri });
+     // tokens = {
+     //   access_token: "ya29.xxx...",
+     //   refresh_token: "1//xxx...",
+     //   id_token: "eyJhbGciOiJS...",    ← JWT chứa thông tin user
+     //   expiry_date: 1679999999999
+     // }
+
+     //
+     // Verify id_token (JWT từ Google)
+     //
+     const ticket = await this.oauthClient.verifyIdToken({
+       idToken: tokens.id_token,
+       audience: this.clientId,
+     });
+
+     const payload = ticket.getPayload();
+     // payload = {
+     //   sub: "109876543210",          ← Google User ID (unique, không đổi)
+     //   email: "user@gmail.com",
+     //   email_verified: true,
+     //   name: "Nguyễn Văn A",
+     //   picture: "https://lh3.googleusercontent.com/...",
+     //   ...
+     // }
+
+     // Kiểm tra email đã verified
+     if (!payload.email_verified) {
+       throw new UnauthorizedException('Email chưa được xác minh');
+     }
+
+     return {
+       provider: 'google',
+       providerId: payload.sub,       // "109876543210"
+       email: payload.email,          // "user@gmail.com"
+       displayName: payload.name,     // "Nguyễn Văn A"
+       avatarUrl: payload.picture,
+       accessToken: tokens.access_token,
+       refreshToken: tokens.refresh_token,
+       tokenExpiresAt: new Date(tokens.expiry_date),
+       rawProfile: payload,
+     };
+   }
+
+   Tại sao code chỉ dùng 1 lần?
+   Code "4/0AbC...xYz" có đặc điểm:
+     ✅ Hết hạn sau ~5 phút
+     ✅ Chỉ dùng được 1 lần (exchange xong → Google xóa)
+     ✅ Cần client_secret mới exchange được
+     ✅ Phải đúng redirect_uri đã đăng ký
+
+   → Nếu hacker lấy được code, vẫn không dùng được vì:
+     - Không có client_secret
+     - Code đã hết hạn hoặc đã dùng rồi
+
+   ---
+   BƯỚC 5b (Chi tiết): Tìm hoặc tạo User
+
+   Đây là logic phức tạp nhất. Có 3 trường hợp:
+
+   // social-auth.service.ts
+   async findOrCreateUser(profile: SocialProfileDto) {
+     return await this.dataSource.transaction(async (manager) => {
+       const socialAccountRepo = manager.getRepository(SocialAccount);
+       const userRepo = manager.getRepository(User);
+       const walletRepo = manager.getRepository(Wallet);
+
+       // ========================================
+       // CASE 1: Đã từng login bằng provider này
+       // ========================================
+       const existingSocial = await socialAccountRepo.findOne({
+         where: {
+           provider: profile.provider,       // 'google'
+           providerId: profile.providerId,   // '109876543210'
+         },
+         relations: ['user'],
+       });
+
+       if (existingSocial) {
+         // User đã có → Cập nhật token mới (Google cấp token mới mỗi lần)
+         existingSocial.accessToken = this.encryptionService.encrypt(profile.accessToken);
+         existingSocial.refreshToken = this.encryptionService.encrypt(profile.refreshToken);
+         existingSocial.tokenExpiresAt = profile.tokenExpiresAt;
+         await socialAccountRepo.save(existingSocial);
+
+         return { user: existingSocial.user, isNewUser: false };
+         // → Login xong, trả về user cũ
+       }
+
+       // ========================================
+       // CASE 2: Chưa link provider này, nhưng email đã tồn tại
+       // ========================================
+       const existingUser = await userRepo.findOne({
+         where: { email: profile.email },   // Tìm theo email
+       });
+
+       if (existingUser) {
+         // User đã có (đăng ký bằng email hoặc provider khác)
+         // → Auto-link social account vào user này
+         const socialAccount = socialAccountRepo.create({
+           userId: existingUser.id,
+           provider: profile.provider,
+           providerId: profile.providerId,
+           email: profile.email,
+           displayName: profile.displayName,
+           avatarUrl: profile.avatarUrl,
+           accessToken: this.encryptionService.encrypt(profile.accessToken),
+           refreshToken: this.encryptionService.encrypt(profile.refreshToken),
+           tokenExpiresAt: profile.tokenExpiresAt,
+           rawProfile: profile.rawProfile,
+         });
+         await socialAccountRepo.save(socialAccount);
+
+         // Cập nhật avatar nếu user chưa có
+         if (!existingUser.avatarUrl && profile.avatarUrl) {
+           existingUser.avatarUrl = profile.avatarUrl;
+           await userRepo.save(existingUser);
+         }
+
+         return { user: existingUser, isNewUser: false };
+         // → Login xong, user cũ nhưng thêm liên kết Google
+       }
+
+       // ========================================
+       // CASE 3: Hoàn toàn mới → Tạo user mới
+       // ========================================
+       // 3a. Tạo user
+       const newUser = userRepo.create({
+         email: profile.email,
+         displayName: profile.displayName,
+         avatarUrl: profile.avatarUrl,
+         passwordHash: null,                 // Không có password!
+         authProvider: profile.provider,     // 'google'
+         isPasswordSet: false,               // Chưa set password
+         isVerified: true,                   // Google đã verify email
+         role: 'reader',
+       });
+       await userRepo.save(newUser);
+
+       // 3b. Tạo wallet + bonus 5000đ
+       const wallet = walletRepo.create({
+         userId: newUser.id,
+         balance: 5000,      // Bonus đăng ký
+         totalEarned: 0,
+         totalSpent: 0,
+       });
+       await walletRepo.save(wallet);
+
+       // 3c. Ghi transaction bonus
+       await manager.getRepository(Transaction).save({
+         receiverId: newUser.id,
+         amount: 5000,
+         type: 'bonus',
+         status: 'completed',
+         metadata: { reason: 'welcome_bonus' },
+       });
+
+       // 3d. Tạo social account link
+       const socialAccount = socialAccountRepo.create({
+         userId: newUser.id,
+         provider: profile.provider,
+         providerId: profile.providerId,
+         email: profile.email,
+         displayName: profile.displayName,
+         avatarUrl: profile.avatarUrl,
+         accessToken: this.encryptionService.encrypt(profile.accessToken),
+         refreshToken: this.encryptionService.encrypt(profile.refreshToken),
+         tokenExpiresAt: profile.tokenExpiresAt,
+         rawProfile: profile.rawProfile,
+       });
+       await socialAccountRepo.save(socialAccount);
+
+       return { user: newUser, isNewUser: true };
+       // → Tạo xong user mới + wallet + link Google
+     });
+   }
+
+   Minh họa 3 trường hợp:
+
+   CASE 1: Đã từng đăng nhập Google
+   ──────────────────────────────────
+   Database hiện tại:
+     users: { id: "u1", email: "a@gmail.com" }
+     social_accounts: { user_id: "u1", provider: "google", provider_id: "109876..." }
+
+   → Tìm thấy social_accounts match
+   → Cập nhật token mới
+   → Return user "u1"
+   → isNewUser = false
+
+
+   CASE 2: Đăng ký bằng email trước, giờ login Google
+   ──────────────────────────────────────────────────────
+   Database hiện tại:
+     users: { id: "u2", email: "b@gmail.com", auth_provider: "local" }
+     social_accounts: (không có)
+
+   Google profile email = "b@gmail.com" → trùng email!
+
+   → Không tìm thấy social_accounts
+   → Tìm thấy users.email match
+   → Auto-link: tạo social_accounts { user_id: "u2", provider: "google", ... }
+   → Return user "u2"
+   → isNewUser = false
+
+
+   CASE 3: User hoàn toàn mới
+   ──────────────────────────────
+   Database hiện tại:
+     users: (không có email "c@gmail.com")
+     social_accounts: (không có)
+
+   → Không tìm thấy social_accounts
+   → Không tìm thấy users.email
+   → Tạo users mới { email: "c@gmail.com", auth_provider: "google" }
+   → Tạo wallets { balance: 5000 }
+   → Tạo social_accounts { provider: "google", ... }
+   → Return user mới
+   → isNewUser = true
+
+   ---
+   BƯỚC 5c (Chi tiết): Tạo JWT Tokens
+
+   // auth.service.ts
+   async generateTokens(user: User) {
+     // Access Token (15 phút)
+     const accessToken = this.jwtService.sign(
+       {
+         sub: user.id,              // "u1"
+         email: user.email,         // "a@gmail.com"
+         role: user.role,           // "reader"
+       },
+       {
+         secret: this.configService.get('JWT_ACCESS_SECRET'),
+         expiresIn: '15m',
+       },
+     );
+     // accessToken = "eyJhbGciOiJIUzI1NiIs..."
+
+     // Refresh Token (7 ngày)
+     const refreshToken = this.jwtService.sign(
+       { sub: user.id },
+       {
+         secret: this.configService.get('JWT_REFRESH_SECRET'),
+         expiresIn: '7d',
+       },
+     );
+
+     // Lưu refresh token hash vào Redis (để revoke được)
+     await this.redis.set(
+       `refresh_token:${user.id}`,
+       this.hashToken(refreshToken),
+       'EX',
+       7 * 24 * 60 * 60, // 7 ngày
+     );
+
+     return { accessToken, refreshToken };
+   }
+
+   Tại sao dùng JWT riêng, không dùng Google token?
+   Google Access Token:
+     ❌ Chỉ dùng để gọi Google API
+     ❌ Không chứa thông tin role/permission của app mình
+     ❌ Expiry do Google quyết định
+
+   JWT của app mình:
+     ✅ Chứa user.id, role, email
+     ✅ Dùng cho TẤT CẢ API của app
+     ✅ Mình kiểm soát expiry
+     ✅ Cùng format với user đăng nhập email/password
+
+   → Sau khi social login, mọi thứ đều dùng JWT của app
+   → Không phân biệt user login bằng cách nào
+
+   ---
+   BƯỚC 6: Backend trả response về Frontend
+
+   Backend                               Frontend (Trang Login)
+      │                                       │
+      │  Response:                            │
+      │  {                                    │
+      │    data: {                            │
+      │      accessToken: "eyJhbG...",        │
+      │      refreshToken: "eyJhbG...",       │
+      │      user: {                          │
+      │        id: "u1",                      │
+      │        email: "a@gmail.com",          │
+      │        displayName: "Nguyễn Văn A",   │
+      │        avatarUrl: "https://...",      │
+      │        role: "reader",               │
+      │        authProvider: "google",        │
+      │        isPasswordSet: false           │
+      │      },                               │
+      │      isNewUser: true                  │
+      │    }                                  │
+      │  }                                    │
+      │<──────────────────────────────────────│
+      │                                       │
+
+   ---
+   BƯỚC 7: Frontend lưu tokens và redirect
+
+   // Trang Login - sau khi nhận response
+   const { accessToken, refreshToken, user, isNewUser } = response.data.data;
+
+   // 1. Lưu vào Zustand store (memory)
+   useAuthStore.getState().setAuth(accessToken, refreshToken, user);
+
+   // Bên trong setAuth:
+   // {
+   //   accessToken: "eyJhbG...",       → dùng cho mọi API request
+   //   refreshToken: "eyJhbG...",      → dùng khi access token hết hạn
+   //   user: { id, email, ... },       → hiển thị UI
+   //   isAuthenticated: true
+   // }
+
+   // 2. Lưu refreshToken vào cookie (httpOnly nếu dùng SSR)
+   // hoặc localStorage (SPA)
+   Cookies.set('refreshToken', refreshToken, {
+     expires: 7,         // 7 ngày
+     secure: true,
+     sameSite: 'lax',
+   });
+
+   // 3. Redirect dựa vào trạng thái
+   if (isNewUser) {
+     // User mới → trang onboarding (chọn topic, set password, etc.)
+     router.push('/onboarding');
+   } else {
+     // User cũ → về trang chủ hoặc trang trước đó
+     const returnUrl = searchParams.get('returnUrl') || '/';
+     router.push(returnUrl);
+   }
+
+   ---
+   BƯỚC 8: Sau khi đăng nhập - Mọi API request
+
+   // Axios interceptor - tự động gắn token cho mọi request
+   api.interceptors.request.use((config) => {
+     const { accessToken } = useAuthStore.getState();
+     if (accessToken) {
+       config.headers.Authorization = `Bearer ${accessToken}`;
+     }
+     return config;
+   });
+
+   // Ví dụ: Lấy danh sách bài viết
+   // GET /api/v1/posts
+   // Headers: { Authorization: "Bearer eyJhbG..." }
+   //
+   // Backend decode JWT → biết user là ai → trả data phù hợp
+
+   → Từ thời điểm này, KHÔNG CÒN PHÂN BIỆT user login bằng Google
+     hay email/password. Tất cả đều dùng JWT giống nhau.
+
+   ---
+   🔐 GIẢI THÍCH CÁC CƠ CHẾ BẢO MẬT
+
+   1. State Parameter (Chống CSRF)
+
+   CSRF Attack scenario (không có state):
+
+   1. Hacker tạo link:
+      https://accounts.google.com/o/oauth2/auth?
+        client_id=YOUR_APP
+        &redirect_uri=http://localhost:3001/auth/social/callback
+        &response_type=code
+
+   2. Hacker gửi link cho victim qua email/chat
+
+   3. Victim click → Đăng nhập Google → code gửi về app
+
+   4. ❌ App không biết request này do USER bắt đầu hay do HACKER gửi link
+
+   VỚI STATE:
+
+   1. User click button → Tạo state random → Lưu sessionStorage
+      state = "a1b2c3d4"
+      sessionStorage['oauth_state'] = "a1b2c3d4"
+
+   2. Gửi state trong URL: &state=a1b2c3d4
+
+   3. Google redirect về: ?code=xxx&state=a1b2c3d4
+
+   4. App kiểm tra: state nhận được === sessionStorage['oauth_state']?
+      ✅ Khớp → Chính user này bắt đầu request
+      ❌ Không khớp → Ai đó đang cố tấn công → Reject
+
+   5. Hacker không thể biết state random → Không thể giả mạo
+
+   2. PostMessage Security
+
+   // Popup gửi message:
+   window.opener.postMessage(data, 'http://localhost:3001');
+                                     ↑
+                             CHỈ GỬI CHO ORIGIN NÀY
+
+   // Trang Login nhận message:
+   window.addEventListener('message', (event) => {
+     if (event.origin !== 'http://localhost:3001') return;
+     //                     ↑
+     //            CHỈ CHẤP NHẬN TỪ ORIGIN NÀY
+   });
+
+   → Trang web khác KHÔNG THỂ đọc được message này
+   → Trang web khác KHÔNG THỂ gửi message giả mạo (sẽ bị origin check chặn)
+
+   3. Code Exchange an toàn
+
+   TẠI SAO KHÔNG EXCHANGE CODE Ở FRONTEND?
+
+   Frontend (public):
+     ❌ client_secret nằm trong JS → ai cũng đọc được
+     ❌ Hacker lấy client_secret → giả mạo app của bạn
+
+   Backend (private):
+     ✅ client_secret nằm trong .env → không ai thấy
+     ✅ Chỉ backend mới exchange được code
+
+   FLOW AN TOÀN:
+     Frontend có: code (tạm thời, 1 lần)
+     Backend có:  code + client_secret → exchange → tokens + profile
+     Frontend nhận: JWT của app (không phải Google tokens)
+
+   4. Token Encryption
+
+   Google OAuth tokens lưu trong database:
+
+   KHÔNG MÃ HÓA (❌):
+     access_token: "ya29.a0AbC..."
+     → Nếu database bị hack → hacker có Google token → truy cập Google API
+
+   CÓ MÃ HÓA (✅):
+     access_token: "7f8a9b2c:3d4e5f:a1b2c3d4e5f6..."  (encrypted)
+     → Nếu database bị hack → hacker chỉ thấy chuỗi vô nghĩa
+     → Cần encryption key (chỉ backend có) mới decrypt được
+
+   ---
+   🔗 LUỒNG LINK/UNLINK SOCIAL ACCOUNT
+
+   Link thêm tài khoản (Đã login bằng email, muốn thêm Google)
+
+   User đang ở trang Settings:
+   ┌──────────────────────────────────────────┐
+   │  Tài khoản liên kết                      │
+   │                                          │
+   │  🔴 Google       [Chưa liên kết]  [Liên kết]  ← Click
+   │  ⚫ GitHub       ✅ linked@github  [Gỡ]       │
+   │  🔵 Facebook    [Chưa liên kết]  [Liên kết]  │
+   └──────────────────────────────────────────┘
+
+   Click "Liên kết" → Mở popup Google → Đăng nhập → Nhận code
+   → Gửi code + JWT hiện tại lên backend
+
+   POST /api/v1/auth/social/link
+   Headers: { Authorization: "Bearer eyJhbG..." }  ← Đã login
+   Body: { provider: "google", code: "4/0AbC..." }
+
+   Backend:
+     1. Verify JWT → biết user hiện tại là ai
+     2. Exchange code → lấy Google profile
+     3. Kiểm tra Google account chưa link user khác
+     4. Tạo social_accounts { user_id: current_user, provider: "google", ... }
+     5. Trả về thành công
+
+   → Lần sau user có thể login bằng Google hoặc email/password
+
+   Unlink tài khoản
+
+   POST /api/v1/auth/social/unlink
+   Headers: { Authorization: "Bearer eyJhbG..." }
+   Body: { provider: "github" }
+
+   Backend:
+     1. Verify JWT → user hiện tại
+     2. ⚠️  KIỂM TRA: user còn cách đăng nhập nào khác không?
+        - isPasswordSet = true?  → OK, có thể login bằng password
+        - Còn social account khác? → OK, có thể login bằng cái khác
+        - KHÔNG CÒN GÌ? → ❌ REJECT! Không cho gỡ
+
+     3. Nếu OK → Xóa social_accounts { user_id, provider: "github" }
+
+   Logic kiểm tra:
+     const otherSocials = await socialAccountRepo.count({
+       where: { userId: user.id, provider: Not(dto.provider) }
+     });
+
+     if (!user.isPasswordSet && otherSocials === 0) {
+       throw new BadRequestException(
+         'Không thể gỡ. Vui lòng thiết lập mật khẩu trước.'
+       );
+     }
+
+   ---
+   📱 LUỒNG REDIRECT (Fallback khi popup bị chặn)
+
+   Một số browser/mobile chặn popup. Khi đó:
+
+   1. User click "Login Google"
+   2. window.open() thất bại (popup bị chặn)
+   3. Fallback: redirect TOÀN BỘ TRANG đến Google
+
+      window.location.href = googleAuthUrl;
+      // Trang hiện tại → Google → Trang callback
+
+   4. Google redirect về:
+      http://localhost:3001/auth/social/callback?code=xxx&state=xxx
+
+   5. Callback page kiểm tra: window.opener tồn tại không?
+      - CÓ → Popup mode (gửi postMessage)
+      - KHÔNG → Redirect mode (tự xử lý luôn)
+
+   6. Redirect mode: callback page tự gọi API social login
+      → Lưu tokens
+      → redirect về trang chủ
+
+   7. Khác biệt: Trang Login bị mất state
+      → Lưu state vào sessionStorage TRƯỚC KHI redirect
+      → Callback page đọc từ sessionStorage để verify
+
+   ---
+   📊 TỔNG KẾT FLOW
+
+   ┌─────────────────────────────────────────────────────────────────────────┐
+   │                        COMPLETE SOCIAL LOGIN FLOW                        │
+   │                                                                          │
+   │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐          │
+   │  │  CLICK   │───>│  POPUP   │───>│  GOOGLE  │───>│ CALLBACK │          │
+   │  │  BUTTON  │    │  OPENS   │    │  LOGIN   │    │   PAGE   │          │
+   │  └──────────┘    └──────────┘    └──────────┘    └────┬─────┘          │
+   │       │                                               │                 │
+   │       │  state="abc"                         code="xyz"                 │
+   │       │  saved to                            state="abc"                │
+   │       │  sessionStorage                           │                     │
+   │       │                                    ┌──────▼──────┐              │
+   │       │                                    │ postMessage │              │
+   │       │                                    │ to opener   │              │
+   │       │                                    │ popup close │              │
+   │       │                                    └──────┬──────┘              │
+   │       │                                           │                     │
+   │  ┌────▼───────────────────────────────────────────▼────┐               │
+   │  │                    LOGIN PAGE                        │               │
+   │  │  1. Receive message                                 │               │
+   │  │  2. Verify state (abc === abc ✅)                   │               │
+   │  │  3. POST /api/v1/auth/social/login                  │               │
+   │  │     { provider:"google", code:"xyz" }               │               │
+   │  └─────────────────────────┬───────────────────────────┘               │
+   │                             │                                           │
+   │                    ┌────────▼────────┐                                  │
+   │                    │     BACKEND     │                                  │
+   │                    │                 │                                  │
+   │                    │  1. code → Google API → profile                    │
+   │                    │  2. Find user by provider_id                       │
+   │                    │     OR by email                                    │
+   │                    │     OR create new                                  │
+   │                    │  3. Generate JWT                                   │
+   │                    │  4. Return tokens + user                           │
+   │                    └────────┬────────┘                                  │
+   │                             │                                           │
+   │                    ┌────────▼────────┐                                  │
+   │                    │    FRONTEND     │                                  │
+   │                    │                 │                                  │
+   │                    │  1. Store JWT   │                                  │
+   │                    │  2. Store user  │                                  │
+   │                    │  3. Redirect    │                                  │
+   │                    │     → / (home)  │                                  │
+   │                    │     or          │                                  │
+   │                    │     → /onboard  │                                  │
+   │                    └─────────────────┘                                  │
+   │                                                                          │
+   │  ═══════════════════════════════════════════════════                     │
+   │  Từ đây trở đi: dùng JWT cho mọi API request                           │
+   │  KHÔNG còn liên quan gì đến Google/GitHub                               │
+   │  ═══════════════════════════════════════════════════                     │
+   └─────────────────────────────────────────────────────────────────────────┘
+
+   Tóm lại: Social Login chỉ là cách xác minh danh tính ban đầu. Sau khi xác minh xong, hệ thống tạo JWT riêng và mọi thứ hoạt động giống hệt user đăng nhập bằng email/password.
