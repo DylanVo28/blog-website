@@ -121,22 +121,42 @@ export function normalizePaginatedPosts(
   };
 }
 
-export function buildPostRequestPayload(
-  payload: CreatePostPayload | UpdatePostPayload,
-  coverImageUrl?: string | null,
-) {
-  return {
-    ...(payload.title !== undefined ? { title: payload.title } : {}),
-    ...(payload.slug !== undefined ? { slug: payload.slug } : {}),
-    ...(payload.content !== undefined ? { content: payload.content } : {}),
-    ...(payload.contentPlain !== undefined ? { contentPlain: payload.contentPlain } : {}),
-    ...(payload.excerpt !== undefined ? { excerpt: payload.excerpt } : {}),
-    ...(payload.categoryId !== undefined ? { categoryId: payload.categoryId || undefined } : {}),
-    ...(payload.tagIds !== undefined ? { tagIds: payload.tagIds } : {}),
-    ...(coverImageUrl !== undefined
-      ? { coverImage: coverImageUrl || undefined }
-      : payload.coverImageUrl !== undefined
-        ? { coverImage: payload.coverImageUrl || undefined }
-        : {}),
-  };
+export function buildPostFormData(payload: CreatePostPayload | UpdatePostPayload) {
+  const formData = new FormData();
+
+  if (payload.title !== undefined) {
+    formData.append("title", payload.title);
+  }
+
+  if (payload.slug !== undefined) {
+    formData.append("slug", payload.slug);
+  }
+
+  if (payload.content !== undefined) {
+    formData.append("content", JSON.stringify(payload.content));
+  }
+
+  if (payload.contentPlain !== undefined) {
+    formData.append("contentPlain", payload.contentPlain);
+  }
+
+  if (payload.excerpt !== undefined) {
+    formData.append("excerpt", payload.excerpt);
+  }
+
+  if (payload.categoryId !== undefined && payload.categoryId) {
+    formData.append("categoryId", payload.categoryId);
+  }
+
+  if (payload.tagIds !== undefined) {
+    formData.append("tagIds", JSON.stringify(payload.tagIds));
+  }
+
+  if (payload.coverImage) {
+    formData.append("coverImage", payload.coverImage);
+  } else if (payload.coverImageUrl !== undefined && payload.coverImageUrl) {
+    formData.append("coverImage", payload.coverImageUrl);
+  }
+
+  return formData;
 }

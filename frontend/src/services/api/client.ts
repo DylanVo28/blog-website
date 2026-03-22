@@ -43,6 +43,12 @@ async function refreshAccessToken(refreshToken: string) {
 }
 
 apiClient.interceptors.request.use((config) => {
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    const headers = AxiosHeaders.from(config.headers);
+    headers.delete("Content-Type");
+    config.headers = headers;
+  }
+
   const token = useAuthStore.getState().accessToken;
 
   if (token) {

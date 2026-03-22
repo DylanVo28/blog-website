@@ -1,22 +1,16 @@
 import apiClient from "@/services/api/client";
 import type { ApiResponse } from "@/types/api.types";
 
-interface UploadSession {
-  uploadId: string;
-  fileName: string;
-  contentType: string;
-  uploadUrl: string;
-  expiresInSeconds: number;
-}
-
 interface UploadConfig {
   provider: string;
   bucket: string;
+  maxFileSize: number;
+  allowedMimeTypes: string[];
 }
 
 export interface UploadResult {
   url: string;
-  mode: "uploaded" | "mock";
+  mode: "uploaded";
 }
 
 export const uploadApi = {
@@ -25,49 +19,15 @@ export const uploadApi = {
     return response.data.data;
   },
 
-  async presign(file: File) {
-    const response = await apiClient.post<ApiResponse<UploadSession>>("/upload/presign", {
-      fileName: file.name,
-      contentType: file.type || "application/octet-stream",
-    });
+  async uploadFile(file: File): Promise<UploadResult> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post<ApiResponse<UploadResult>>(
+      "/upload/images",
+      formData,
+    );
 
     return response.data.data;
-  },
-
-  async uploadFile(file: File): Promise<UploadResult> {
-    const session = await this.presign(file);
-
-    try {
-      const uploadUrl = new URL(session.uploadUrl);
-
-      if (uploadUrl.hostname === "storage.example.com") {
-        return {
-          url: session.uploadUrl,
-          mode: "mock",
-        };
-      }
-    } catch {
-      return {
-        url: session.uploadUrl,
-        mode: "mock",
-      };
-    }
-
-    const response = await fetch(session.uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": file.type || "application/octet-stream",
-      },
-      body: file,
-    });
-
-    if (!response.ok) {
-      throw new Error("Không thể tải ảnh lên storage.");
-    }
-
-    return {
-      url: session.uploadUrl,
-      mode: "uploaded",
-    };
   },
 };

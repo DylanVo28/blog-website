@@ -36,12 +36,7 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
     try {
       const uploaded = await uploadApi.uploadFile(file);
       editor.chain().focus().setImage({ src: uploaded.url, alt: file.name }).run();
-
-      if (uploaded.mode === "mock") {
-        toast.info("Upload backend hiện đang ở chế độ mock. URL ảnh đã được gắn vào bài viết.");
-      } else {
-        toast.success("Đã chèn ảnh vào nội dung.");
-      }
+      toast.success("Đã chèn ảnh vào nội dung.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Không thể tải ảnh lên.");
     }

@@ -7,14 +7,18 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CreatePostDto } from './dto/create-post.dto';
 import { PostQueryDto } from './dto/post-query.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
 import { PostsService } from './posts.service';
+import type { UploadedImageFile } from '../upload/upload.service';
 
 @Controller('posts')
 export class PostsController {
@@ -22,11 +26,13 @@ export class PostsController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('coverImage'))
   create(
     @CurrentUser('sub') authorId: string,
     @Body() dto: CreatePostDto,
+    @UploadedFile() coverImage?: UploadedImageFile,
   ) {
-    return this.postsService.create(authorId, dto);
+    return this.postsService.create(authorId, dto, coverImage);
   }
 
   @Get('feed')
@@ -47,13 +53,15 @@ export class PostsController {
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('coverImage'))
   update(
     @Param('id') id: string,
     @CurrentUser('sub') actorId: string,
     @CurrentUser('role') role: 'reader' | 'author' | 'admin',
     @Body() dto: UpdatePostDto,
+    @UploadedFile() coverImage?: UploadedImageFile,
   ) {
-    return this.postsService.update(id, actorId, role, dto);
+    return this.postsService.update(id, actorId, role, dto, coverImage);
   }
 
   @Delete(':id')

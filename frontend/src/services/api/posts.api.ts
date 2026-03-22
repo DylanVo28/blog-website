@@ -1,6 +1,5 @@
 import apiClient from "@/services/api/client";
-import { buildPostRequestPayload, normalizePaginatedPosts, normalizePostRecord } from "@/lib/posts";
-import { uploadApi } from "@/services/api/upload.api";
+import { buildPostFormData, normalizePaginatedPosts, normalizePostRecord } from "@/lib/posts";
 import { usersApi } from "@/services/api/users.api";
 import type { ApiResponse, PaginatedResponse } from "@/types/api.types";
 import type {
@@ -67,13 +66,9 @@ export const postsApi = {
   },
 
   async create(payload: CreatePostPayload): Promise<Post> {
-    const uploadedCover = payload.coverImage
-      ? await uploadApi.uploadFile(payload.coverImage)
-      : null;
-
     const response = await apiClient.post<ApiResponse<BackendPostRecord>>(
       "/posts",
-      buildPostRequestPayload(payload, uploadedCover?.url),
+      buildPostFormData(payload),
     );
 
     const post = await enrichPost(response.data.data);
@@ -86,13 +81,9 @@ export const postsApi = {
   },
 
   async update(postId: string, payload: UpdatePostPayload): Promise<Post> {
-    const uploadedCover = payload.coverImage
-      ? await uploadApi.uploadFile(payload.coverImage)
-      : undefined;
-
     const response = await apiClient.patch<ApiResponse<BackendPostRecord>>(
       `/posts/${postId}`,
-      buildPostRequestPayload(payload, uploadedCover?.url),
+      buildPostFormData(payload),
     );
 
     let post = await enrichPost(response.data.data);

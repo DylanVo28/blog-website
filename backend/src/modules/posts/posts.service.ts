@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { AppRole } from '../../common/constants';
 import { JobQueueService } from '../../jobs/job-queue.service';
+import { UploadService } from '../upload/upload.service';
 import { CategoryEntity } from './entities/category.entity';
 import { PostEntity } from './entities/post.entity';
 import { PostTagEntity } from './entities/post-tag.entity';
@@ -15,6 +16,7 @@ import { TagEntity } from './entities/tag.entity';
 import { CreatePostDto } from './dto/create-post.dto';
 import { PostQueryDto } from './dto/post-query.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
+import type { UploadedImageFile } from '../upload/upload.service';
 
 @Injectable()
 export class PostsService {
@@ -22,6 +24,7 @@ export class PostsService {
 
   constructor(
     private readonly jobQueueService: JobQueueService,
+    private readonly uploadService: UploadService,
     @InjectRepository(PostEntity)
     private readonly postsRepository: Repository<PostEntity>,
     @InjectRepository(CategoryEntity)
@@ -32,9 +35,17 @@ export class PostsService {
     private readonly postTagsRepository: Repository<PostTagEntity>,
   ) {}
 
-  async create(authorId: string, dto: CreatePostDto) {
+  async create(
+    authorId: string,
+    dto: CreatePostDto,
+    coverImageFile?: UploadedImageFile,
+  ) {
     await this.validateCategory(dto.categoryId);
     await this.validateTags(dto.tagIds);
+
+    const uploadedCover = coverImageFile
+      ? await this.uploadService.uploadImage(coverImageFile, 'posts')
+      : null;
 
     const post = this.postsRepository.create({
       authorId,
@@ -43,16 +54,21 @@ export class PostsService {
       content: dto.content,
       contentPlain: dto.contentPlain ?? null,
       excerpt: dto.excerpt ?? null,
-      coverImage: dto.coverImage ?? null,
+      coverImage: uploadedCover?.url ?? dto.coverImage ?? null,
       categoryId: dto.categoryId ?? null,
       status: 'draft',
       publishedAt: null,
     });
 
-    const savedPost = await this.postsRepository.save(post);
-    await this.syncTags(savedPost.id, dto.tagIds);
+    try {
+      const savedPost = await this.postsRepository.save(post);
+      await this.syncTags(savedPost.id, dto.tagIds);
 
-    return this.findById(savedPost.id);
+      return this.findById(savedPost.id);
+    } catch (error) {
+      await this.uploadService.removeFileByUrl(uploadedCover?.url);
+      throw error;
+    }
   }
 
   async findAll(query: PostQueryDto) {
@@ -142,6 +158,7 @@ export class PostsService {
     actorId: string,
     role: AppRole,
     dto: UpdatePostDto,
+    coverImageFile?: UploadedImageFile,
   ) {
     const post = await this.findPostOrFail(id);
     this.assertCanManagePost(post, actorId, role);
@@ -152,7 +169,14 @@ export class PostsService {
         dto.content,
         dto.contentPlain,
         dto.excerpt,
+        dto.coverImage,
+        coverImageFile,
       ].some((value) => value !== undefined);
+
+    const uploadedCover = coverImageFile
+      ? await this.uploadService.uploadImage(coverImageFile, 'posts')
+      : null;
+    const previousCoverImage = post.coverImage;
 
     if (dto.categoryId !== undefined) {
       await this.validateCategory(dto.categoryId);
@@ -179,22 +203,38 @@ export class PostsService {
       post.excerpt = dto.excerpt;
     }
 
-    if (dto.coverImage !== undefined) {
-      post.coverImage = dto.coverImage;
+    if (uploadedCover) {
+      post.coverImage = uploadedCover.url;
+    } else if (dto.coverImage !== undefined) {
+      post.coverImage = dto.coverImage ?? null;
     }
 
     await this.validateTags(dto.tagIds);
-    await this.postsRepository.save(post);
 
-    if (dto.tagIds !== undefined) {
-      await this.syncTags(post.id, dto.tagIds);
+    try {
+      await this.postsRepository.save(post);
+
+      if (dto.tagIds !== undefined) {
+        await this.syncTags(post.id, dto.tagIds);
+      }
+
+      if (shouldReindexPublishedPost) {
+        this.queuePostEmbedding(post.id);
+      }
+
+      if (
+        uploadedCover &&
+        previousCoverImage &&
+        previousCoverImage !== uploadedCover.url
+      ) {
+        await this.uploadService.removeFileByUrl(previousCoverImage);
+      }
+
+      return this.findById(post.id);
+    } catch (error) {
+      await this.uploadService.removeFileByUrl(uploadedCover?.url);
+      throw error;
     }
-
-    if (shouldReindexPublishedPost) {
-      this.queuePostEmbedding(post.id);
-    }
-
-    return this.findById(post.id);
   }
 
   async remove(id: string, actorId: string, role: AppRole) {

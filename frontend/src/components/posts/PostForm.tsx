@@ -287,6 +287,10 @@ export function PostForm({ mode, post }: PostFormProps) {
                   handleCoverChange(event.target.files?.[0] ?? null);
                 }}
               />
+              <p className="text-xs leading-5 text-muted-foreground">
+                Ảnh bìa sẽ được upload cùng lúc khi lưu bài viết. Hỗ trợ định dạng phổ biến,
+                tối đa 10MB.
+              </p>
               {coverPreview ? (
                 <div className="overflow-hidden rounded-[1.4rem] border border-border/70">
                   <Image
@@ -391,11 +395,12 @@ export function PostForm({ mode, post }: PostFormProps) {
 
         <Card>
           <CardHeader>
-            <CardTitle>Phù hợp backend hiện tại</CardTitle>
+            <CardTitle>Luồng upload hiện tại</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
             <p>Posts API hiện lưu content ở dạng JSON, nên editor phase 3 giữ nguyên cấu trúc TipTap thay vì HTML thuần.</p>
-            <p>Upload service backend hiện trả presigned URL mock. Frontend vẫn cắm luồng upload để bạn test end-to-end từ form.</p>
+            <p>Ảnh bìa được gửi qua `multipart/form-data` cùng request tạo/cập nhật bài viết, nên không còn cần bước presign riêng.</p>
+            <p>Nút chèn ảnh trong editor cũng dùng chung upload backend để chèn URL ảnh thật vào nội dung bài viết.</p>
             <p>Category/tag chưa có endpoint liệt kê riêng, nên form đang hỗ trợ nhập UUID trực tiếp khi hệ thống đã có seed data.</p>
           </CardContent>
         </Card>

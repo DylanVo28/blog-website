@@ -1,16 +1,30 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { UploadService } from './upload.service';
+import type { UploadedImageFile } from './upload.service';
 
 @Controller('upload')
 export class UploadController {
   constructor(private readonly uploadService: UploadService) {}
 
-  @Post('presign')
-  presign(
-    @Body('fileName') fileName: string,
-    @Body('contentType') contentType = 'application/octet-stream',
-  ) {
-    return this.uploadService.createUploadSession(fileName, contentType);
+  @Post('images')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadImage(@UploadedFile() file?: UploadedImageFile) {
+    const uploadedImage = await this.uploadService.uploadImage(file, 'editor');
+
+    return {
+      url: uploadedImage.url,
+      mode: 'uploaded' as const,
+    };
   }
 
   @Get('config')
