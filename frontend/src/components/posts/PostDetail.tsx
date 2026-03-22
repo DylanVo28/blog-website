@@ -1,7 +1,11 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, FilePenLine } from "lucide-react";
+import { useRef } from "react";
 import { PostMeta } from "@/components/posts/PostMeta";
+import { TextSelectionPopup } from "@/components/posts/TextSelectionPopup";
 import { TagList } from "@/components/posts/TagList";
 import { RichTextRenderer } from "@/components/shared/RichTextRenderer";
 import { Badge } from "@/components/ui/badge";
@@ -10,9 +14,12 @@ import type { Post } from "@/types/post.types";
 
 interface PostDetailProps {
   post: Post;
+  onAskAI?: (selectedText: string) => void;
 }
 
-export function PostDetail({ post }: PostDetailProps) {
+export function PostDetail({ post, onAskAI }: PostDetailProps) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
   return (
     <div className="space-y-8">
       <div className="space-y-4">
@@ -58,20 +65,27 @@ export function PostDetail({ post }: PostDetailProps) {
         </div>
       ) : null}
 
-      <div className="rounded-[2rem] border border-border/70 bg-white/75 px-5 py-6 shadow-sm md:px-8">
+      <div
+        ref={contentRef}
+        className="rounded-[2rem] border border-border/70 bg-white/75 px-5 py-6 shadow-sm md:px-8"
+      >
         <RichTextRenderer content={post.content} />
       </div>
 
       <div className="rounded-[1.6rem] border border-dashed border-border/80 bg-muted/40 px-5 py-4 text-sm leading-6 text-muted-foreground">
         <span className="inline-flex items-center gap-2 font-medium text-foreground">
           <FilePenLine className="size-4 text-primary" />
-          Phase 3 note
+          Gợi ý tương tác
         </span>
         <p className="mt-2">
-          Comment và question sẽ được nối thật ở phase 4. Hiện page detail đã sẵn layout,
-          metadata và content renderer để ghép các section này vào ngay sau đó.
+          Bạn có thể bôi đen một đoạn trong bài để mở shortcut hỏi AI, hoặc kéo xuống phần
+          question để đặt câu hỏi nổi bật cho tác giả.
         </p>
       </div>
+
+      {onAskAI ? (
+        <TextSelectionPopup containerRef={contentRef} onAskAI={onAskAI} />
+      ) : null}
     </div>
   );
 }

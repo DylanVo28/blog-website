@@ -1,10 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { CommentSection } from "@/components/comments/CommentSection";
-import { PostDetail } from "@/components/posts/PostDetail";
-import { QuestionSection } from "@/components/questions/QuestionSection";
-import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PostDetailExperience } from "@/components/posts/PostDetailExperience";
 import { postsApi } from "@/services/api/posts.api";
 
 async function getPost(slug: string) {
@@ -51,29 +47,6 @@ export default async function PostPage({
   }
 
   return (
-    <article className="mx-auto max-w-4xl space-y-8">
-      <PostDetail post={post} />
-
-      <Separator />
-
-      <Tabs defaultValue="questions">
-        <TabsList className="w-full">
-          <TabsTrigger value="questions" className="flex-1">
-            Câu hỏi ({post.questionCount})
-          </TabsTrigger>
-          <TabsTrigger value="comments" className="flex-1">
-            Bình luận ({post.commentCount})
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="questions">
-          <QuestionSection postId={post.id} authorId={post.author.id} />
-        </TabsContent>
-
-        <TabsContent value="comments">
-          <CommentSection postId={post.id} />
-        </TabsContent>
-      </Tabs>
-    </article>
+    <PostDetailExperience post={post} />
   );
 }

@@ -104,9 +104,7 @@ export function PostForm({ mode, post }: PostFormProps) {
   const persistedEditorImageUrlsRef = useRef<Set<string>>(new Set(initialEditorImageUrls));
   const sessionUploadedEditorImageUrlsRef = useRef<Set<string>>(new Set());
   const removedEditorImageUrlsRef = useRef<Set<string>>(new Set());
-  const pendingEditorImageDeletionTimeoutsRef = useRef<
-    Map<string, ReturnType<typeof window.setTimeout>>
-  >(new Map());
+  const pendingEditorImageDeletionTimeoutsRef = useRef<Map<string, number>>(new Map());
 
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postFormSchema),
