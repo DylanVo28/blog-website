@@ -40,6 +40,9 @@ export function LoginForm() {
       const response = await authApi.login(payload);
       return response.data.data;
     },
+    onMutate: () => {
+      form.clearErrors("root");
+    },
     onSuccess: async (session) => {
       login(session);
 
@@ -57,7 +60,13 @@ export function LoginForm() {
       });
     },
     onError: (error) => {
-      toast.error(getApiErrorMessage(error, "Đăng nhập thất bại."));
+      const message = getApiErrorMessage(error, "Đăng nhập thất bại.");
+
+      form.setError("root", {
+        type: "server",
+        message,
+      });
+      toast.error(message);
     },
   });
 
@@ -109,6 +118,15 @@ export function LoginForm() {
           </p>
         ) : null}
       </div>
+
+      {form.formState.errors.root?.message ? (
+        <div
+          role="alert"
+          className="rounded-2xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
+          {form.formState.errors.root.message}
+        </div>
+      ) : null}
 
       <Button type="submit" className="w-full" disabled={mutation.isPending}>
         {mutation.isPending ? "Đang đăng nhập..." : "Đăng nhập"}

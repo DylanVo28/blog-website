@@ -13,8 +13,20 @@ type RetryableRequest = InternalAxiosRequestConfig & {
   _retry?: boolean;
 };
 
+const UNAUTHENTICATED_AUTH_PATHS = [
+  "/auth/login",
+  "/auth/register",
+  "/auth/password/forgot",
+  "/auth/password/reset",
+  "/auth/password/verify-token",
+];
+
 function buildApiUrl(pathname: string) {
   return `${API_URL.replace(/\/$/, "")}/${pathname.replace(/^\//, "")}`;
+}
+
+function isUnauthenticatedAuthRequest(url?: string) {
+  return Boolean(url && UNAUTHENTICATED_AUTH_PATHS.some((path) => url.includes(path)));
 }
 
 const apiClient = axios.create({
@@ -66,12 +78,14 @@ apiClient.interceptors.response.use(
     const originalRequest = error.config as RetryableRequest | undefined;
     const refreshToken = useAuthStore.getState().refreshToken;
     const isRefreshRequest = originalRequest?.url?.includes("/auth/refresh");
+    const shouldBypassUnauthorizedHandler =
+      isRefreshRequest || isUnauthenticatedAuthRequest(originalRequest?.url);
 
     if (
       !originalRequest ||
       error.response?.status !== 401 ||
       originalRequest._retry ||
-      isRefreshRequest
+      shouldBypassUnauthorizedHandler
     ) {
       return Promise.reject(error);
     }
