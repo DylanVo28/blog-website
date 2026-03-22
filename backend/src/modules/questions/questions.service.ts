@@ -77,10 +77,12 @@ export class QuestionsService {
         throw new BadRequestException('Insufficient wallet balance.');
       }
 
-      const receiverWallet =
-        dto.target === 'ai'
-          ? await this.walletService.ensurePlatformSystemWallet(manager)
-          : await this.walletService.ensureWalletForUser(post.authorId, manager);
+      // Hold all question fees in the platform wallet first.
+      // AI questions become revenue immediately, while author questions are settled later
+      // only after the author actually answers.
+      const receiverWallet = await this.walletService.ensurePlatformSystemWallet(
+        manager,
+      );
 
       const lockedReceiverWallet = await manager.getRepository(WalletEntity).findOne({
         where: {
@@ -103,9 +105,11 @@ export class QuestionsService {
       lockedReceiverWallet.balance = String(
         toNumber(lockedReceiverWallet.balance) + fee,
       );
-      lockedReceiverWallet.totalEarned = String(
-        toNumber(lockedReceiverWallet.totalEarned) + fee,
-      );
+      if (dto.target === 'ai') {
+        lockedReceiverWallet.totalEarned = String(
+          toNumber(lockedReceiverWallet.totalEarned) + fee,
+        );
+      }
 
       await manager.save(WalletEntity, lockedSenderWallet);
       await manager.save(WalletEntity, lockedReceiverWallet);
@@ -118,11 +122,13 @@ export class QuestionsService {
           amount: String(fee),
           type:
             dto.target === 'ai' ? 'question_to_ai' : 'question_to_author',
-          status: 'completed',
+          status: dto.target === 'ai' ? 'completed' : 'pending',
           referenceType: 'question',
           metadata: {
             postId,
             target: dto.target,
+            escrowedForAuthorId:
+              dto.target === 'author' ? post.authorId : undefined,
           },
         }),
       );
@@ -283,44 +289,174 @@ export class QuestionsService {
   }
 
   async answer(questionId: string, answeredBy: string, dto: AnswerQuestionDto) {
-    const question = await this.findQuestionOrFail(questionId);
+    const savedQuestion = await this.dataSource.transaction(
+      'SERIALIZABLE',
+      async (manager) => {
+        const questionsRepository = manager.getRepository(QuestionEntity);
+        const postsRepository = manager.getRepository(PostEntity);
+        const transactionsRepository = manager.getRepository(TransactionEntity);
+        const walletsRepository = manager.getRepository(WalletEntity);
 
-    if (question.target !== 'author') {
-      throw new BadRequestException(
-        'Only author-targeted questions can be answered manually.',
-      );
-    }
+        const question = await questionsRepository.findOne({
+          where: {
+            id: questionId,
+          },
+          lock: {
+            mode: 'pessimistic_write',
+          },
+        });
 
-    if (question.status !== 'pending') {
-      throw new BadRequestException('Only pending questions can be answered.');
-    }
+        if (!question) {
+          throw new NotFoundException('Question not found.');
+        }
 
-    if (question.deadlineAt && question.deadlineAt.getTime() < Date.now()) {
-      throw new BadRequestException(
-        'This question has expired and will be refunded automatically.',
-      );
-    }
+        if (question.target !== 'author') {
+          throw new BadRequestException(
+            'Only author-targeted questions can be answered manually.',
+          );
+        }
 
-    const post = await this.postsRepository.findOne({
-      where: {
-        id: question.postId,
+        if (question.status !== 'pending') {
+          throw new BadRequestException('Only pending questions can be answered.');
+        }
+
+        if (question.deadlineAt && question.deadlineAt.getTime() < Date.now()) {
+          throw new BadRequestException(
+            'This question has expired and will be refunded automatically.',
+          );
+        }
+
+        const post = await postsRepository.findOne({
+          where: {
+            id: question.postId,
+          },
+        });
+
+        if (!post) {
+          throw new NotFoundException('Post not found for question.');
+        }
+
+        if (post.authorId !== answeredBy) {
+          throw new ForbiddenException(
+            'Only the post author can answer this question.',
+          );
+        }
+
+        if (!question.transactionId) {
+          throw new NotFoundException(
+            'Question charge transaction was not found.',
+          );
+        }
+
+        const chargeTransaction = await transactionsRepository.findOne({
+          where: {
+            id: question.transactionId,
+          },
+          lock: {
+            mode: 'pessimistic_write',
+          },
+        });
+
+        if (!chargeTransaction) {
+          throw new NotFoundException('Charge transaction not found.');
+        }
+
+        if (chargeTransaction.status === 'refunded') {
+          throw new BadRequestException('This question has already been refunded.');
+        }
+
+        const now = new Date();
+
+        if (chargeTransaction.status === 'pending') {
+          if (!chargeTransaction.receiverId) {
+            throw new BadRequestException('Escrow source user is missing.');
+          }
+
+          const escrowWallet = await this.walletService.ensureWalletForUser(
+            chargeTransaction.receiverId,
+            manager,
+          );
+          const lockedEscrowWallet = await walletsRepository.findOne({
+            where: {
+              id: escrowWallet.id,
+            },
+            lock: {
+              mode: 'pessimistic_write',
+            },
+          });
+
+          const authorWallet = await this.walletService.ensureWalletForUser(
+            answeredBy,
+            manager,
+          );
+          const lockedAuthorWallet = await walletsRepository.findOne({
+            where: {
+              id: authorWallet.id,
+            },
+            lock: {
+              mode: 'pessimistic_write',
+            },
+          });
+
+          if (!lockedEscrowWallet || !lockedAuthorWallet) {
+            throw new NotFoundException(
+              'Unable to lock escrow or author wallet for settlement.',
+            );
+          }
+
+          const payoutAmount = toNumber(question.fee);
+          if (toNumber(lockedEscrowWallet.balance) < payoutAmount) {
+            throw new BadRequestException(
+              'Escrow wallet balance is insufficient for author payout.',
+            );
+          }
+
+          lockedEscrowWallet.balance = String(
+            toNumber(lockedEscrowWallet.balance) - payoutAmount,
+          );
+          lockedAuthorWallet.balance = String(
+            toNumber(lockedAuthorWallet.balance) + payoutAmount,
+          );
+          lockedAuthorWallet.totalEarned = String(
+            toNumber(lockedAuthorWallet.totalEarned) + payoutAmount,
+          );
+
+          await walletsRepository.save(lockedEscrowWallet);
+          await walletsRepository.save(lockedAuthorWallet);
+
+          chargeTransaction.status = 'completed';
+          chargeTransaction.metadata = {
+            ...(chargeTransaction.metadata ?? {}),
+            settledAt: now.toISOString(),
+            settledToAuthorId: answeredBy,
+          };
+          await transactionsRepository.save(chargeTransaction);
+
+          await transactionsRepository.save(
+            transactionsRepository.create({
+              senderId: chargeTransaction.receiverId,
+              receiverId: answeredBy,
+              amount: question.fee,
+              type: 'bonus',
+              status: 'completed',
+              referenceId: question.id,
+              referenceType: 'question',
+              metadata: {
+                source: 'author_question_payout',
+                originalTransactionId: chargeTransaction.id,
+              },
+            }),
+          );
+        }
+
+        question.answer = dto.answer;
+        question.answeredBy = answeredBy;
+        question.answeredAt = now;
+        question.status = 'answered';
+
+        return questionsRepository.save(question);
       },
-    });
-
-    if (!post) {
-      throw new NotFoundException('Post not found for question.');
-    }
-
-    if (post.authorId !== answeredBy) {
-      throw new ForbiddenException('Only the post author can answer this question.');
-    }
-
-    question.answer = dto.answer;
-    question.answeredBy = answeredBy;
-    question.answeredAt = new Date();
-    question.status = 'answered';
-
-    const savedQuestion = await this.questionsRepository.save(question);
+    );
 
     if (savedQuestion.askerId !== answeredBy) {
       void this.jobQueueService.enqueueNotification({

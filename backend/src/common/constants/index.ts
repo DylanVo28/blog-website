@@ -53,6 +53,6 @@ export type WithdrawalStatus = (typeof WITHDRAWAL_STATUSES)[number];
 export const DEFAULT_QUESTION_FEE = 1000;
 export const DEFAULT_PAGE = 1;
 export const DEFAULT_LIMIT = 10;
-export const PLATFORM_SYSTEM_EMAIL = 'system@blog-platform.local';
+export const PLATFORM_SYSTEM_EMAIL = 'admin@yopmail.com';
 export const PLATFORM_SYSTEM_DISPLAY_NAME = 'Blog Platform System';
 export const PLATFORM_SYSTEM_PASSWORD_HASH = 'system-account-disabled';
