@@ -48,7 +48,7 @@ const checklist = [
   },
   {
     label: "Có ký tự đặc biệt",
-    test: (password: string) => /[@$!%*?&]/.test(password),
+    test: (password: string) => /[.@$!%*?&]/.test(password),
   },
 ];
 

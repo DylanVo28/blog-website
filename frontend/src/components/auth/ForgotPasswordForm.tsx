@@ -2,11 +2,10 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
-import { CheckCircle2, Loader2, Mail } from "lucide-react";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { getApiErrorMessage } from "@/lib/api";
-import { formatDateTime } from "@/lib/formatters";
 import { forgotPasswordSchema } from "@/lib/validators";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -89,33 +88,6 @@ export function ForgotPasswordForm() {
               "Gửi lại email khôi phục"
             )}
           </Button>
-
-          {result.resetToken ? (
-            <div className="rounded-[1.6rem] border border-primary/20 bg-primary/6 p-4">
-              <div className="flex items-center gap-2">
-                <Mail className="size-4 text-primary" />
-                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
-                  Thông tin dev khi chưa có email service
-                </p>
-              </div>
-              <p className="mt-3 break-all font-mono text-sm text-foreground">
-                Token: {result.resetToken}
-              </p>
-              {result.resetUrl ? (
-                <p className="mt-3 break-all text-sm text-muted-foreground">
-                  Link: {result.resetUrl}
-                </p>
-              ) : null}
-              {result.otpCode ? (
-                <p className="mt-3 text-sm text-muted-foreground">OTP: {result.otpCode}</p>
-              ) : null}
-              {result.expiresAt ? (
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Hết hạn lúc {formatDateTime(result.expiresAt)}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
         </div>
       ) : (
         <>

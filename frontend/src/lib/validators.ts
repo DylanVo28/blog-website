@@ -14,8 +14,8 @@ export const strongPasswordSchema = z
   .min(8, "Mật khẩu tối thiểu 8 ký tự.")
   .max(50, "Mật khẩu tối đa 50 ký tự.")
   .regex(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/,
-    "Mật khẩu phải có chữ hoa, chữ thường, số và ký tự đặc biệt.",
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[.@$!%*?&])[A-Za-z\d.@$!%*?&]+$/,
+    "Mật khẩu phải có chữ hoa, chữ thường, số và ký tự đặc biệt (co the dung dau cham).",
   );
 
 export const displayNameSchema = z

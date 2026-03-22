@@ -242,7 +242,7 @@ export class AuthService {
     });
 
     const resetUrl = this.buildResetPasswordUrl(resetToken);
-    await this.mailService.sendPasswordResetEmail({
+    void this.mailService.sendPasswordResetEmail({
       to: user.email,
       userName: user.displayName || user.email,
       resetUrl,
@@ -327,7 +327,7 @@ export class AuthService {
       );
     });
 
-    await this.mailService.sendPasswordChangedNotification({
+    void this.mailService.sendPasswordChangedNotification({
       to: user.email,
       userName: user.displayName || user.email,
       changedAt: passwordChangedAt,

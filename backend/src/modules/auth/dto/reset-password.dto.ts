@@ -8,7 +8,7 @@ import {
 } from 'class-validator';
 
 const STRONG_PASSWORD_REGEX =
-  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/;
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[.@$!%*?&])[A-Za-z\d.@$!%*?&]+$/;
 
 export class ResetPasswordDto {
   @IsString()
@@ -21,7 +21,7 @@ export class ResetPasswordDto {
   @MaxLength(50, { message: 'Mật khẩu tối đa 50 ký tự.' })
   @Matches(STRONG_PASSWORD_REGEX, {
     message:
-      'Mật khẩu phải có chữ hoa, chữ thường, số và ký tự đặc biệt.',
+      'Mật khẩu phải có chữ hoa, chữ thường, số và ký tự đặc biệt (có thể dùng dấu chấm).',
   })
   newPassword!: string;
 

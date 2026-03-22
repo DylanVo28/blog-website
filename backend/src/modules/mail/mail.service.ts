@@ -111,6 +111,10 @@ export class MailService {
       auth: user ? { user, pass } : undefined,
       requireTLS: requireTls,
       ignoreTLS: ignoreTls,
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
+      dnsTimeout: 5000,
     });
 
     return this.transporter;
