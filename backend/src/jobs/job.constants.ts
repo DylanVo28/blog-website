@@ -16,6 +16,7 @@ export const JOB_NAMES = {
   sendNotification: 'send-notification',
   processVnpayCallback: 'process-vnpay-callback',
   processMomoCallback: 'process-momo-callback',
+  expireDeposit: 'expire-deposit',
 } as const;
 
 export interface IndexPostEmbeddingsJobData {
@@ -48,3 +49,9 @@ export interface PaymentCallbackJobData {
   provider: 'vnpay' | 'momo';
   callback: PaymentCallbackDto;
 }
+
+export interface ExpireDepositJobData {
+  depositId: string;
+}
+
+export type PaymentJobData = PaymentCallbackJobData | ExpireDepositJobData;

@@ -36,10 +36,16 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
-export const PAYMENT_METHODS = ['vnpay', 'momo'] as const;
+export const PAYMENT_METHODS = ['vnpay', 'momo', 'momo_qr'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
-export const DEPOSIT_STATUSES = ['pending', 'completed', 'failed'] as const;
+export const DEPOSIT_STATUSES = [
+  'pending',
+  'user_confirmed',
+  'completed',
+  'failed',
+  'expired',
+] as const;
 export type DepositStatus = (typeof DEPOSIT_STATUSES)[number];
 
 export const WITHDRAWAL_STATUSES = [

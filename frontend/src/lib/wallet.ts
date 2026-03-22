@@ -115,7 +115,7 @@ function getTransactionDescription(record: BackendTransactionRecord, currentUser
   const direction = getTransactionDirection(record, currentUserId);
   const provider =
     typeof record.metadata?.provider === "string"
-      ? String(record.metadata.provider).toUpperCase()
+      ? formatProviderLabel(String(record.metadata.provider))
       : null;
 
   switch (record.type) {
@@ -140,6 +140,22 @@ function getTransactionDescription(record: BackendTransactionRecord, currentUser
     default:
       return "Giao dịch nội bộ của ví.";
   }
+}
+
+function formatProviderLabel(provider: string) {
+  if (provider === "momo_qr") {
+    return "MoMo QR";
+  }
+
+  if (provider === "vnpay") {
+    return "VNPay";
+  }
+
+  if (provider === "momo") {
+    return "MoMo";
+  }
+
+  return provider.toUpperCase();
 }
 
 export function normalizeTransactionRecord(

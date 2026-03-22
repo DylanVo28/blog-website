@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Job, JobsOptions, Processor, Queue, Worker } from 'bullmq';
 import {
   AiAnswerJobData,
+  ExpireDepositJobData,
   IndexAuthorDocumentEmbeddingsJobData,
   IndexPostEmbeddingsJobData,
   JOB_NAMES,
@@ -152,6 +153,20 @@ export class JobQueueService implements OnModuleDestroy {
     );
   }
 
+  async enqueueDepositExpiry(depositId: string, delay: number) {
+    return this.paymentQueue.add(
+      JOB_NAMES.expireDeposit,
+      {
+        depositId,
+      } satisfies ExpireDepositJobData,
+      this.buildJobOptions({
+        attempts: 3,
+        priority: 4,
+        delay,
+      }),
+    );
+  }
+
   async onModuleDestroy() {
     await Promise.all([
       this.embeddingQueue.close(),
@@ -165,10 +180,12 @@ export class JobQueueService implements OnModuleDestroy {
   private buildJobOptions(input: {
     attempts: number;
     priority: number;
+    delay?: number;
   }): JobsOptions {
     return {
       attempts: input.attempts,
       priority: input.priority,
+      delay: input.delay,
       backoff: {
         type: 'exponential',
         delay: 1000,

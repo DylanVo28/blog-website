@@ -117,7 +117,7 @@ export default function WalletPage() {
                 <CardTitle className="text-2xl">Ghi chú</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
-                <p>Deposit chỉ cộng tiền thật khi backend nhận callback thanh toán thành công.</p>
+                <p>Deposit MoMo QR cần bạn chuyển đúng nội dung và chờ admin xác nhận trước khi cộng ví.</p>
                 <p>Withdraw hiện tạo yêu cầu `pending`, số dư chưa bị trừ cho đến khi admin duyệt.</p>
                 <p>Khoản thu từ câu hỏi tác giả sẽ xuất hiện khi câu hỏi được trả lời và payout được giải ngân.</p>
               </CardContent>
