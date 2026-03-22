@@ -1,0 +1,1826 @@
+🏦 HỆ THỐNG PAYMENT QUA QR VIETCOMBANK (CÁ NHÂN)
+
+  📋 TỔNG QUAN GIẢI PHÁP
+
+  Sử dụng VietQR API (chuẩn NAPAS) + Casso/SePay webhook để tạo QR chuyển khoản ngân hàng cá nhân, tự động xác nhận giao dịch KHÔNG cần đăng ký doanh nghiệp.
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                    FLOW TỔNG QUAN                                    │
+  │                                                                      │
+  │  User bấm "Nạp tiền"                                                │
+  │       │                                                              │
+  │       ▼                                                              │
+  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐     │
+  │  │ Frontend tạo │────▶│ Backend tạo  │────▶│ Trả về QR code   │     │
+  │  │ deposit req  │     │ pending txn  │     │ + nội dung CK    │     │
+  │  └──────────────┘     └──────────────┘     └────────┬─────────┘     │
+  │                                                      │               │
+  │                                                      ▼               │
+  │                                            ┌──────────────────┐     │
+  │                                            │ User quét QR     │     │
+  │                                            │ chuyển khoản VCB │     │
+  │                                            └────────┬─────────┘     │
+  │                                                      │               │
+  │                                                      ▼               │
+  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐     │
+  │  │ Cộng xu vào  │◀────│ Backend xác  │◀────│ Casso/SePay      │     │
+  │  │ ví user      │     │ nhận match   │     │ webhook notify   │     │
+  │  └──────────────┘     └──────────────┘     └──────────────────┘     │
+  │                                                                      │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ---
+  🔧 THÀNH PHẦN HỆ THỐNG
+
+  1. Các dịch vụ bên ngoài (FREE / Rẻ)
+
+  ┌────────────────────────┬───────────────────────────────────┬────────────────────────────────────────────────┐
+  │        Dịch vụ         │             Mục đích              │                    Chi phí                     │
+  ├────────────────────────┼───────────────────────────────────┼────────────────────────────────────────────────┤
+  │ VietQR API (vietqr.io) │ Tạo QR chuyển khoản chuẩn NAPAS   │ FREE (open API)                                │
+  ├────────────────────────┼───────────────────────────────────┼────────────────────────────────────────────────┤
+  │ Casso.vn               │ Webhook tự động khi nhận tiền VCB │ FREE (50 txn/tháng) hoặc 49k/tháng (unlimited) │
+  ├────────────────────────┼───────────────────────────────────┼────────────────────────────────────────────────┤
+  │ SePay.vn (thay thế)    │ Giống Casso, webhook nhận tiền    │ FREE (100 txn/tháng) hoặc tương tự             │
+  ├────────────────────────┼───────────────────────────────────┼────────────────────────────────────────────────┤
+  │ Vietcombank            │ Tài khoản ngân hàng cá nhân       │ FREE                                           │
+  └────────────────────────┴───────────────────────────────────┴────────────────────────────────────────────────┘
+
+  2. Cách hoạt động
+
+                      VietQR.io (API tạo QR)
+                           │
+                           │  GET /image/...
+                           ▼
+                 ┌─────────────────┐
+                 │   QR Code PNG   │ ← Chứa thông tin CK chuẩn NAPAS
+                 │   970436        │    (Mã ngân hàng VCB)
+                 │   0123456789    │    (Số TK)
+                 │   BLOG NAP 1000 │    (Nội dung CK unique)
+                 │   50000         │    (Số tiền)
+                 └─────────────────┘
+                           │
+                      User quét bằng
+                      app ngân hàng bất kỳ
+                           │
+                           ▼
+                 ┌─────────────────┐
+                 │  Vietcombank    │
+                 │  nhận tiền     │
+                 └────────┬────────┘
+                           │
+                      Casso đọc biến động
+                      số dư qua API VCB
+                           │
+                           ▼
+                 ┌─────────────────┐
+                 │  Casso Webhook  │──── POST /api/v1/payment/webhook
+                 │  gửi về server │      { amount, description, ... }
+                 └─────────────────┘
+
+  ---
+  📊 DATABASE SCHEMA
+
+  -- Bảng deposit requests (yêu cầu nạp tiền)
+  CREATE TABLE deposit_requests (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id),
+
+      -- Thông tin giao dịch
+      amount          INTEGER NOT NULL,              -- Số tiền (VND)
+      xu_amount       INTEGER NOT NULL,              -- Số xu sẽ nhận (1.000đ = 1 xu, hoặc 1:1)
+      transfer_code   VARCHAR(20) NOT NULL UNIQUE,   -- Mã nội dung CK unique: "BLOG7A3F2X"
+
+      -- Trạng thái
+      status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+      -- pending | completed | expired | failed
+
+      -- QR Info
+      bank_code       VARCHAR(10) NOT NULL DEFAULT '970436',  -- VCB
+      account_number  VARCHAR(20) NOT NULL,                     -- Số TK nhận
+      account_name    VARCHAR(100) NOT NULL,                    -- Tên TK nhận
+      qr_url          TEXT,                                      -- URL QR image
+
+      -- Matching info (khi Casso webhook về)
+      matched_at      TIMESTAMP,
+      webhook_data    JSONB,                         -- Raw webhook data từ Casso
+      casso_txn_id    VARCHAR(50),                   -- ID giao dịch từ Casso
+
+      -- Timestamps
+      expires_at      TIMESTAMP NOT NULL,            -- Hết hạn sau 15 phút
+      created_at      TIMESTAMP DEFAULT NOW(),
+      updated_at      TIMESTAMP DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_deposit_transfer_code ON deposit_requests(transfer_code);
+  CREATE INDEX idx_deposit_status ON deposit_requests(status, expires_at);
+  CREATE INDEX idx_deposit_user ON deposit_requests(user_id);
+
+  -- Bảng cấu hình tài khoản nhận tiền (admin quản lý)
+  CREATE TABLE payment_accounts (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      bank_code       VARCHAR(10) NOT NULL,          -- 970436 = VCB
+      bank_name       VARCHAR(100) NOT NULL,         -- Vietcombank
+      account_number  VARCHAR(20) NOT NULL,
+      account_name    VARCHAR(100) NOT NULL,
+      is_active       BOOLEAN DEFAULT true,
+      created_at      TIMESTAMP DEFAULT NOW()
+  );
+
+  ---
+  🔙 BACKEND IMPLEMENTATION (NestJS)
+
+  Module Structure
+
+  src/
+  ├── payment/
+  │   ├── payment.module.ts
+  │   ├── payment.controller.ts
+  │   ├── payment.service.ts
+  │   ├── vietqr.service.ts              # Tạo QR
+  │   ├── casso-webhook.service.ts       # Xử lý webhook
+  │   ├── deposit-matcher.service.ts     # Match webhook với deposit
+  │   ├── deposit-expiry.processor.ts    # BullMQ: hết hạn deposit
+  │   │
+  │   ├── dto/
+  │   │   ├── create-deposit.dto.ts
+  │   │   └── webhook-payload.dto.ts
+  │   │
+  │   ├── entities/
+  │   │   ├── deposit-request.entity.ts
+  │   │   └── payment-account.entity.ts
+  │   │
+  │   └── guards/
+  │       └── webhook-signature.guard.ts  # Verify Casso webhook
+
+  3.1 VietQR Service - Tạo QR Code
+
+  // payment/vietqr.service.ts
+  import { Injectable } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+
+  interface VietQRParams {
+    bankCode: string;       // 970436 = VCB
+    accountNumber: string;
+    accountName: string;
+    amount: number;
+    description: string;    // Nội dung chuyển khoản
+    template?: string;      // compact | compact2 | qr_only | print
+  }
+
+  @Injectable()
+  export class VietQRService {
+    private readonly baseUrl = 'https://img.vietqr.io/image';
+
+    /**
+     * Tạo URL QR code từ VietQR API (không cần API key)
+     * Format: https://img.vietqr.io/image/{bankCode}-{accountNo}-{template}.png
+     *         ?amount={}&addInfo={}&accountName={}
+     */
+    generateQRUrl(params: VietQRParams): string {
+      const {
+        bankCode,
+        accountNumber,
+        amount,
+        description,
+        template = 'compact2',
+      } = params;
+
+      const qrUrl = new URL(
+        `${this.baseUrl}/${bankCode}-${accountNumber}-${template}.png`
+      );
+
+      qrUrl.searchParams.set('amount', amount.toString());
+      qrUrl.searchParams.set('addInfo', description);
+      qrUrl.searchParams.set('accountName', params.accountName);
+
+      return qrUrl.toString();
+    }
+
+    /**
+     * Tạo QR data string (chuẩn EMVCo/NAPAS) nếu muốn tự render QR
+     * dùng thư viện qrcode phía frontend
+     */
+    generateQRData(params: VietQRParams): string {
+      // VietQR API cũng hỗ trợ trả về raw QR string
+      // POST https://api.vietqr.io/v2/generate
+      // Nhưng cách trên (URL image) là đơn giản nhất
+      return this.generateQRUrl(params);
+    }
+  }
+
+  3.2 Payment Service - Core Logic
+
+  // payment/payment.service.ts
+  import { Injectable, BadRequestException } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository, DataSource } from 'typeorm';
+  import { nanoid } from 'nanoid';
+  import { InjectQueue } from '@nestjs/bullmq';
+  import { Queue } from 'bullmq';
+
+  import { DepositRequest } from './entities/deposit-request.entity';
+  import { PaymentAccount } from './entities/payment-account.entity';
+  import { VietQRService } from './vietqr.service';
+  import { WalletService } from '../wallet/wallet.service';
+  import { CreateDepositDto } from './dto/create-deposit.dto';
+
+  // Các mệnh giá cho phép nạp (VND)
+  const ALLOWED_AMOUNTS = [
+    10_000,   // 10k
+    20_000,   // 20k
+    50_000,   // 50k
+    100_000,  // 100k
+    200_000,  // 200k
+    500_000,  // 500k
+    1_000_000 // 1M
+  ];
+
+  const DEPOSIT_EXPIRY_MINUTES = 15;
+  const TRANSFER_CODE_PREFIX = 'BLOG';
+
+  @Injectable()
+  export class PaymentService {
+    constructor(
+      @InjectRepository(DepositRequest)
+      private depositRepo: Repository<DepositRequest>,
+      @InjectRepository(PaymentAccount)
+      private paymentAccountRepo: Repository<PaymentAccount>,
+      private vietQRService: VietQRService,
+      private walletService: WalletService,
+      private dataSource: DataSource,
+      @InjectQueue('deposit-expiry')
+      private depositExpiryQueue: Queue,
+    ) {}
+
+    /**
+     * Tạo yêu cầu nạp tiền → trả về QR code
+     */
+    async createDeposit(userId: string, dto: CreateDepositDto) {
+      // 1. Validate số tiền
+      if (!ALLOWED_AMOUNTS.includes(dto.amount)) {
+        throw new BadRequestException(
+          `Số tiền không hợp lệ. Chọn: ${ALLOWED_AMOUNTS.map(a =>
+            this.formatCurrency(a)
+          ).join(', ')}`
+        );
+      }
+
+      // 2. Check xem user có deposit pending nào không (tránh spam)
+      const pendingDeposit = await this.depositRepo.findOne({
+        where: {
+          userId,
+          status: 'pending'
+        },
+        order: { createdAt: 'DESC' }
+      });
+
+      if (pendingDeposit) {
+        // Nếu còn pending chưa hết hạn → trả về QR cũ
+        if (new Date() < pendingDeposit.expiresAt) {
+          return this.formatDepositResponse(pendingDeposit);
+        }
+        // Nếu hết hạn → đánh dấu expired
+        await this.depositRepo.update(pendingDeposit.id, { status: 'expired' });
+      }
+
+      // 3. Lấy tài khoản nhận tiền active
+      const paymentAccount = await this.paymentAccountRepo.findOne({
+        where: { isActive: true, bankCode: '970436' } // VCB
+      });
+
+      if (!paymentAccount) {
+        throw new BadRequestException('Hệ thống nạp tiền đang bảo trì');
+      }
+
+      // 4. Tạo mã chuyển khoản unique
+      const transferCode = this.generateTransferCode();
+
+      // 5. Tạo QR URL
+      const qrUrl = this.vietQRService.generateQRUrl({
+        bankCode: paymentAccount.bankCode,
+        accountNumber: paymentAccount.accountNumber,
+        accountName: paymentAccount.accountName,
+        amount: dto.amount,
+        description: transferCode,
+      });
+
+      // 6. Tính xu nhận được
+      const xuAmount = this.calculateXu(dto.amount);
+
+      // 7. Tạo deposit request
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + DEPOSIT_EXPIRY_MINUTES);
+
+      const deposit = this.depositRepo.create({
+        userId,
+        amount: dto.amount,
+        xuAmount,
+        transferCode,
+        status: 'pending',
+        bankCode: paymentAccount.bankCode,
+        accountNumber: paymentAccount.accountNumber,
+        accountName: paymentAccount.accountName,
+        qrUrl,
+        expiresAt,
+      });
+
+      const saved = await this.depositRepo.save(deposit);
+
+      // 8. Schedule job hết hạn deposit sau 15 phút
+      await this.depositExpiryQueue.add(
+        'expire-deposit',
+        { depositId: saved.id },
+        {
+          delay: DEPOSIT_EXPIRY_MINUTES * 60 * 1000,
+          removeOnComplete: true,
+        }
+      );
+
+      return this.formatDepositResponse(saved);
+    }
+
+    /**
+     * Tạo mã chuyển khoản unique
+     * Format: BLOG + 6 ký tự random = "BLOG7A3F2X"
+     * → Dễ nhận diện + unique để match
+     */
+    private generateTransferCode(): string {
+      const randomPart = nanoid(6).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
+      return `${TRANSFER_CODE_PREFIX}${randomPart}`;
+    }
+
+    /**
+     * Quy đổi VND → Xu
+     * 1.000 VND = 1 xu (hoặc tùy business model)
+     */
+    private calculateXu(amountVnd: number): number {
+      return amountVnd; // 1:1 (1 VND = 1 xu nội bộ, 1 question = 1000 xu = 1000đ)
+    }
+
+    /**
+     * Format response trả về frontend
+     */
+    private formatDepositResponse(deposit: DepositRequest) {
+      return {
+        depositId: deposit.id,
+        qrUrl: deposit.qrUrl,
+        amount: deposit.amount,
+        xuAmount: deposit.xuAmount,
+        transferInfo: {
+          bankName: 'Vietcombank',
+          accountNumber: deposit.accountNumber,
+          accountName: deposit.accountName,
+          amount: deposit.amount,
+          description: deposit.transferCode,
+        },
+        expiresAt: deposit.expiresAt,
+        status: deposit.status,
+      };
+    }
+
+    /**
+     * Check trạng thái deposit (frontend polling)
+     */
+    async getDepositStatus(userId: string, depositId: string) {
+      const deposit = await this.depositRepo.findOne({
+        where: { id: depositId, userId }
+      });
+
+      if (!deposit) {
+        throw new BadRequestException('Không tìm thấy yêu cầu nạp tiền');
+      }
+
+      return {
+        depositId: deposit.id,
+        status: deposit.status,
+        amount: deposit.amount,
+        xuAmount: deposit.xuAmount,
+        matchedAt: deposit.matchedAt,
+      };
+    }
+
+    private formatCurrency(amount: number): string {
+      return new Intl.NumberFormat('vi-VN').format(amount) + 'đ';
+    }
+  }
+
+  3.3 Casso Webhook Handler
+
+  // payment/casso-webhook.service.ts
+  import { Injectable, Logger } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository, DataSource } from 'typeorm';
+  import { DepositRequest } from './entities/deposit-request.entity';
+  import { WalletService } from '../wallet/wallet.service';
+  import { NotificationsService } from '../notifications/notifications.service';
+  import { EventEmitter2 } from '@nestjs/event-emitter';
+
+  /**
+   * Casso webhook payload format
+   * Docs: https://docs.casso.vn/api/webhook
+   */
+  interface CassoWebhookPayload {
+    error: number;
+    data: CassoTransaction[];
+  }
+
+  interface CassoTransaction {
+    id: number;                    // Casso transaction ID
+    tid: string;                   // Mã giao dịch ngân hàng
+    description: string;           // Nội dung chuyển khoản
+    amount: number;                // Số tiền
+    cusum_balance: number;         // Số dư sau GD
+    when: string;                  // Thời gian GD (ISO string)
+    bank_sub_acc_id: string;       // Số TK ngân hàng
+    subAccId: string;              // Sub account ID trong Casso
+    virtualAccount: string;        // Virtual account (nếu có)
+    virtualAccountName: string;
+    corresponsiveName: string;     // Tên người chuyển
+    corresponsiveAccount: string;  // STK người chuyển
+    corresponsiveBankId: string;   // Mã NH người chuyển
+    corresponsiveBankName: string; // Tên NH người chuyển
+  }
+
+  @Injectable()
+  export class CassoWebhookService {
+    private readonly logger = new Logger(CassoWebhookService.name);
+
+    constructor(
+      @InjectRepository(DepositRequest)
+      private depositRepo: Repository<DepositRequest>,
+      private walletService: WalletService,
+      private notificationService: NotificationsService,
+      private dataSource: DataSource,
+      private eventEmitter: EventEmitter2,
+    ) {}
+
+    /**
+     * Xử lý webhook từ Casso khi có biến động số dư
+     */
+    async handleWebhook(payload: CassoWebhookPayload): Promise<void> {
+      if (payload.error !== 0) {
+        this.logger.error(`Casso webhook error: ${payload.error}`);
+        return;
+      }
+
+      for (const transaction of payload.data) {
+        await this.processTransaction(transaction);
+      }
+    }
+
+    /**
+     * Process từng giao dịch
+     */
+    private async processTransaction(txn: CassoTransaction): Promise<void> {
+      this.logger.log(
+        `Processing Casso txn: ${txn.tid} | ` +
+        `Amount: ${txn.amount} | ` +
+        `Desc: "${txn.description}"`
+      );
+
+      // Chỉ xử lý giao dịch NHẬN tiền (amount > 0)
+      if (txn.amount <= 0) {
+        this.logger.debug(`Skipping outgoing transaction: ${txn.tid}`);
+        return;
+      }
+
+      // Tìm transfer code trong nội dung chuyển khoản
+      const transferCode = this.extractTransferCode(txn.description);
+
+      if (!transferCode) {
+        this.logger.warn(
+          `No transfer code found in description: "${txn.description}"`
+        );
+        // Log lại để admin review thủ công
+        await this.logUnmatchedTransaction(txn);
+        return;
+      }
+
+      // Tìm deposit request tương ứng
+      const deposit = await this.depositRepo.findOne({
+        where: {
+          transferCode,
+          status: 'pending',
+        }
+      });
+
+      if (!deposit) {
+        this.logger.warn(
+          `No pending deposit found for code: ${transferCode}`
+        );
+        await this.logUnmatchedTransaction(txn);
+        return;
+      }
+
+      // Verify số tiền khớp
+      if (txn.amount < deposit.amount) {
+        this.logger.warn(
+          `Amount mismatch for ${transferCode}: ` +
+          `expected ${deposit.amount}, got ${txn.amount}`
+        );
+        // Vẫn xử lý nhưng theo số tiền thực nhận
+        // Hoặc có thể reject tùy business logic
+      }
+
+      // === CRITICAL SECTION: Cộng tiền vào ví ===
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction('SERIALIZABLE');
+
+      try {
+        // 1. Lock deposit row (tránh xử lý trùng)
+        const lockedDeposit = await queryRunner.manager
+          .createQueryBuilder(DepositRequest, 'deposit')
+          .setLock('pessimistic_write')
+          .where('id = :id AND status = :status', {
+            id: deposit.id,
+            status: 'pending',
+          })
+          .getOne();
+
+        if (!lockedDeposit) {
+          // Đã được xử lý bởi request khác
+          this.logger.warn(`Deposit ${deposit.id} already processed`);
+          await queryRunner.rollbackTransaction();
+          return;
+        }
+
+        // 2. Tính xu dựa trên số tiền THỰC NHẬN
+        const actualXu = this.calculateActualXu(txn.amount, deposit.amount, deposit.xuAmount);
+
+        // 3. Cộng xu vào ví
+        await this.walletService.addFundsWithTransaction(
+          queryRunner,
+          deposit.userId,
+          actualXu,
+          {
+            type: 'deposit',
+            description: `Nạp ${this.formatCurrency(txn.amount)} qua VCB`,
+            referenceId: deposit.id,
+            referenceType: 'deposit',
+          }
+        );
+
+        // 4. Cập nhật deposit status
+        await queryRunner.manager.update(DepositRequest, deposit.id, {
+          status: 'completed',
+          matchedAt: new Date(),
+          cassoTxnId: txn.tid,
+          webhookData: txn as any,
+        });
+
+        await queryRunner.commitTransaction();
+
+        this.logger.log(
+          `✅ Deposit ${deposit.id} completed: ` +
+          `+${actualXu} xu for user ${deposit.userId}`
+        );
+
+        // 5. Gửi notification real-time cho user
+        this.eventEmitter.emit('deposit.completed', {
+          userId: deposit.userId,
+          amount: txn.amount,
+          xuAmount: actualXu,
+          depositId: deposit.id,
+        });
+
+        await this.notificationService.create({
+          userId: deposit.userId,
+          type: 'deposit_success',
+          title: 'Nạp tiền thành công!',
+          content: `Bạn đã nạp ${this.formatCurrency(txn.amount)} và nhận được ${actualXu.toLocaleString()} xu`,
+          data: { depositId: deposit.id },
+        });
+
+      } catch (error) {
+        await queryRunner.rollbackTransaction();
+        this.logger.error(
+          `Failed to process deposit ${deposit.id}: ${error.message}`,
+          error.stack
+        );
+        throw error;
+      } finally {
+        await queryRunner.release();
+      }
+    }
+
+    /**
+     * Extract transfer code từ nội dung chuyển khoản
+     * Ngân hàng có thể thêm prefix/suffix, ví dụ:
+     * "CT DEN:0123456789 BLOG7A3F2X" hoặc "MBVCB.123456.BLOG7A3F2X.CT"
+     */
+    private extractTransferCode(description: string): string | null {
+      // Tìm pattern BLOG + 6 ký tự alphanumeric
+      const match = description.toUpperCase().match(/BLOG[A-Z0-9]{6}/);
+      return match ? match[0] : null;
+    }
+
+    /**
+     * Tính xu thực nhận
+     * Nếu user chuyển đúng → nhận đúng
+     * Nếu user chuyển DƯ → vẫn nhận theo mệnh giá đã chọn (an toàn)
+     * Nếu user chuyển THIẾU → reject hoặc tính theo thực nhận
+     */
+    private calculateActualXu(
+      actualAmount: number,
+      expectedAmount: number,
+      expectedXu: number
+    ): number {
+      if (actualAmount >= expectedAmount) {
+        // Chuyển đúng hoặc dư → nhận đúng xu đã chọn
+        return expectedXu;
+      }
+      // Chuyển thiếu → tính theo tỷ lệ thực nhận
+      return Math.floor((actualAmount / expectedAmount) * expectedXu);
+    }
+
+    /**
+     * Log giao dịch không match được để admin review
+     */
+    private async logUnmatchedTransaction(txn: CassoTransaction): Promise<void> {
+      // Lưu vào bảng riêng hoặc gửi alert cho admin
+      this.logger.warn(`⚠️  UNMATCHED TRANSACTION: ${JSON.stringify(txn)}`);
+
+      this.eventEmitter.emit('payment.unmatched', {
+        transaction: txn,
+        timestamp: new Date(),
+      });
+    }
+
+    private formatCurrency(amount: number): string {
+      return new Intl.NumberFormat('vi-VN').format(amount) + 'đ';
+    }
+  }
+
+  3.4 Payment Controller
+
+  // payment/payment.controller.ts
+  import {
+    Controller, Post, Get, Body, Param, Query,
+    UseGuards, Headers, HttpCode, RawBodyRequest, Req,
+    UnauthorizedException
+  } from '@nestjs/common';
+  import { Request } from 'express';
+  import * as crypto from 'crypto';
+
+  import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+  import { CurrentUser } from '../auth/decorators/current-user.decorator';
+  import { PaymentService } from './payment.service';
+  import { CassoWebhookService } from './casso-webhook.service';
+  import { CreateDepositDto } from './dto/create-deposit.dto';
+  import { ConfigService } from '@nestjs/config';
+
+  @Controller('api/v1/payment')
+  export class PaymentController {
+    constructor(
+      private paymentService: PaymentService,
+      private cassoWebhookService: CassoWebhookService,
+      private configService: ConfigService,
+    ) {}
+
+    /**
+     * POST /api/v1/payment/deposit
+     * Tạo yêu cầu nạp tiền → trả về QR code
+     */
+    @Post('deposit')
+    @UseGuards(JwtAuthGuard)
+    async createDeposit(
+      @CurrentUser('id') userId: string,
+      @Body() dto: CreateDepositDto,
+    ) {
+      return this.paymentService.createDeposit(userId, dto);
+    }
+
+    /**
+     * GET /api/v1/payment/deposit/:id/status
+     * Check trạng thái nạp tiền (frontend polling mỗi 3-5s)
+     */
+    @Get('deposit/:id/status')
+    @UseGuards(JwtAuthGuard)
+    async getDepositStatus(
+      @CurrentUser('id') userId: string,
+      @Param('id') depositId: string,
+    ) {
+      return this.paymentService.getDepositStatus(userId, depositId);
+    }
+
+    /**
+     * GET /api/v1/payment/deposit/amounts
+     * Lấy danh sách mệnh giá cho phép
+     */
+    @Get('deposit/amounts')
+    getDepositAmounts() {
+      return {
+        amounts: [
+          { value: 10_000,    label: '10.000đ',   xu: 10_000 },
+          { value: 20_000,    label: '20.000đ',   xu: 20_000 },
+          { value: 50_000,    label: '50.000đ',   xu: 50_000 },
+          { value: 100_000,   label: '100.000đ',  xu: 100_000 },
+          { value: 200_000,   label: '200.000đ',  xu: 200_000 },
+          { value: 500_000,   label: '500.000đ',  xu: 500_000 },
+          { value: 1_000_000, label: '1.000.000đ', xu: 1_000_000 },
+        ]
+      };
+    }
+
+    /**
+     * POST /api/v1/payment/webhook/casso
+     * Webhook nhận thông báo từ Casso khi có biến động số dư
+     *
+     * ⚠️  CRITICAL: Phải verify webhook signature
+     */
+    @Post('webhook/casso')
+    @HttpCode(200) // Casso yêu cầu trả 200 OK
+    async handleCassoWebhook(
+      @Headers('secure-token') secureToken: string,
+      @Body() payload: any,
+    ) {
+      // Verify Casso webhook token
+      const expectedToken = this.configService.get('CASSO_WEBHOOK_SECRET');
+
+      if (secureToken !== expectedToken) {
+        throw new UnauthorizedException('Invalid webhook token');
+      }
+
+      // Xử lý async (trả 200 ngay cho Casso, xử lý background)
+      // Hoặc xử lý sync nếu logic nhanh
+      await this.cassoWebhookService.handleWebhook(payload);
+
+      return { success: true };
+    }
+
+    /**
+     * POST /api/v1/payment/webhook/sepay (Alternative)
+     * Webhook từ SePay.vn
+     */
+    @Post('webhook/sepay')
+    @HttpCode(200)
+    async handleSepayWebhook(
+      @Headers('authorization') authHeader: string,
+      @Body() payload: any,
+    ) {
+      const expectedKey = this.configService.get('SEPAY_API_KEY');
+      const token = authHeader?.replace('Apikey ', '');
+
+      if (token !== expectedKey) {
+        throw new UnauthorizedException('Invalid API key');
+      }
+
+      // SePay payload format hơi khác Casso
+      // Transform sang format chung rồi xử lý
+      await this.cassoWebhookService.handleWebhook(
+        this.transformSepayPayload(payload)
+      );
+
+      return { success: true };
+    }
+
+    private transformSepayPayload(sepayPayload: any) {
+      return {
+        error: 0,
+        data: [{
+          id: sepayPayload.id,
+          tid: sepayPayload.referenceNumber,
+          description: sepayPayload.content,
+          amount: sepayPayload.transferAmount,
+          when: sepayPayload.transactionDate,
+          bank_sub_acc_id: sepayPayload.accountNumber,
+          corresponsiveName: sepayPayload.senderName || '',
+          corresponsiveAccount: '',
+          corresponsiveBankId: '',
+          corresponsiveBankName: '',
+          cusum_balance: 0,
+          subAccId: '',
+          virtualAccount: '',
+          virtualAccountName: '',
+        }]
+      };
+    }
+  }
+
+  3.5 DTOs & Entities
+
+  // payment/dto/create-deposit.dto.ts
+  import { IsNumber, IsPositive } from 'class-validator';
+
+  export class CreateDepositDto {
+    @IsNumber()
+    @IsPositive()
+    amount: number; // VND
+  }
+
+  // payment/entities/deposit-request.entity.ts
+  import {
+    Entity, PrimaryGeneratedColumn, Column,
+    CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn
+  } from 'typeorm';
+
+  @Entity('deposit_requests')
+  export class DepositRequest {
+    @PrimaryGeneratedColumn('uuid')
+    id: string;
+
+    @Column({ name: 'user_id' })
+    userId: string;
+
+    @Column()
+    amount: number;
+
+    @Column({ name: 'xu_amount' })
+    xuAmount: number;
+
+    @Column({ name: 'transfer_code', unique: true })
+    transferCode: string;
+
+    @Column({ default: 'pending' })
+    status: 'pending' | 'completed' | 'expired' | 'failed';
+
+    @Column({ name: 'bank_code', default: '970436' })
+    bankCode: string;
+
+    @Column({ name: 'account_number' })
+    accountNumber: string;
+
+    @Column({ name: 'account_name' })
+    accountName: string;
+
+    @Column({ name: 'qr_url', nullable: true })
+    qrUrl: string;
+
+    @Column({ name: 'matched_at', nullable: true })
+    matchedAt: Date;
+
+    @Column({ name: 'webhook_data', type: 'jsonb', nullable: true })
+    webhookData: any;
+
+    @Column({ name: 'casso_txn_id', nullable: true })
+    cassoTxnId: string;
+
+    @Column({ name: 'expires_at' })
+    expiresAt: Date;
+
+    @CreateDateColumn({ name: 'created_at' })
+    createdAt: Date;
+
+    @UpdateDateColumn({ name: 'updated_at' })
+    updatedAt: Date;
+  }
+
+  3.6 Deposit Expiry Job (BullMQ)
+
+  // payment/deposit-expiry.processor.ts
+  import { Processor, WorkerHost } from '@nestjs/bullmq';
+  import { Job } from 'bullmq';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository } from 'typeorm';
+  import { Logger } from '@nestjs/common';
+  import { DepositRequest } from './entities/deposit-request.entity';
+
+  @Processor('deposit-expiry')
+  export class DepositExpiryProcessor extends WorkerHost {
+    private readonly logger = new Logger(DepositExpiryProcessor.name);
+
+    constructor(
+      @InjectRepository(DepositRequest)
+      private depositRepo: Repository<DepositRequest>,
+    ) {
+      super();
+    }
+
+    async process(job: Job<{ depositId: string }>) {
+      const { depositId } = job.data;
+
+      const deposit = await this.depositRepo.findOne({
+        where: { id: depositId }
+      });
+
+      if (!deposit) return;
+
+      // Chỉ expire nếu vẫn đang pending
+      if (deposit.status === 'pending') {
+        await this.depositRepo.update(depositId, { status: 'expired' });
+        this.logger.log(`Deposit ${depositId} expired after 15 minutes`);
+      }
+    }
+  }
+
+  ---
+  🎨 FRONTEND IMPLEMENTATION (Next.js)
+
+  4.1 Deposit Page
+
+  // app/(main)/wallet/deposit/page.tsx
+  'use client';
+
+  import { useState } from 'react';
+  import { useRouter } from 'next/navigation';
+  import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import { Badge } from '@/components/ui/badge';
+  import { QRCodeDisplay } from '@/components/wallet/QRCodeDisplay';
+  import { DepositStatusChecker } from '@/components/wallet/DepositStatusChecker';
+  import { useDeposit } from '@/hooks/useDeposit';
+  import { cn, formatCurrency } from '@/lib/utils';
+  import { Wallet, QrCode, ArrowLeft, Sparkles } from 'lucide-react';
+
+  const DEPOSIT_AMOUNTS = [
+    { value: 10_000,    label: '10K',  popular: false },
+    { value: 20_000,    label: '20K',  popular: false },
+    { value: 50_000,    label: '50K',  popular: true },
+    { value: 100_000,   label: '100K', popular: true },
+    { value: 200_000,   label: '200K', popular: false },
+    { value: 500_000,   label: '500K', popular: false },
+    { value: 1_000_000, label: '1M',   popular: false },
+  ];
+
+  export default function DepositPage() {
+    const [selectedAmount, setSelectedAmount] = useState<number | null>(null);
+    const [step, setStep] = useState<'select' | 'qr' | 'success'>('select');
+
+    const {
+      createDeposit,
+      depositData,
+      isCreating,
+      isCompleted
+    } = useDeposit();
+
+    const handleCreateDeposit = async () => {
+      if (!selectedAmount) return;
+
+      const result = await createDeposit(selectedAmount);
+      if (result) {
+        setStep('qr');
+      }
+    };
+
+    // Khi webhook confirm → chuyển sang success
+    if (isCompleted && step === 'qr') {
+      setStep('success');
+    }
+
+    return (
+      <div className="max-w-lg mx-auto py-8 px-4">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-6">
+          <Button variant="ghost" size="icon" onClick={() => window.history.back()}>
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold">Nạp tiền</h1>
+            <p className="text-muted-foreground">Chuyển khoản qua QR Vietcombank</p>
+          </div>
+        </div>
+
+        {/* Step 1: Chọn mệnh giá */}
+        {step === 'select' && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Wallet className="h-5 w-5" />
+                Chọn số tiền nạp
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Amount Grid */}
+              <div className="grid grid-cols-3 gap-3">
+                {DEPOSIT_AMOUNTS.map(({ value, label, popular }) => (
+                  <Button
+                    key={value}
+                    variant={selectedAmount === value ? 'default' : 'outline'}
+                    className={cn(
+                      'h-20 text-lg font-semibold relative',
+                      selectedAmount === value && 'ring-2 ring-primary'
+                    )}
+                    onClick={() => setSelectedAmount(value)}
+                  >
+                    {popular && (
+                      <Badge
+                        className="absolute -top-2 -right-2 text-[10px]"
+                        variant="secondary"
+                      >
+                        <Sparkles className="h-3 w-3 mr-1" />
+                        Hot
+                      </Badge>
+                    )}
+                    {label}
+                  </Button>
+                ))}
+              </div>
+
+              {/* Summary */}
+              {selectedAmount && (
+                <div className="bg-muted/50 rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Số tiền nạp</span>
+                    <span className="font-medium">
+                      {formatCurrency(selectedAmount)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Xu nhận được</span>
+                    <span className="font-bold text-primary">
+                      +{selectedAmount.toLocaleString()} xu
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">
+                      Đặt được câu hỏi
+                    </span>
+                    <span className="text-muted-foreground">
+                      ≈ {Math.floor(selectedAmount / 1000)} câu
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* CTA Button */}
+              <Button
+                className="w-full h-12 text-lg"
+                disabled={!selectedAmount || isCreating}
+                onClick={handleCreateDeposit}
+              >
+                {isCreating ? (
+                  <>Đang tạo QR...</>
+                ) : (
+                  <>
+                    <QrCode className="mr-2 h-5 w-5" />
+                    Tạo mã QR chuyển khoản
+                  </>
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Step 2: Hiện QR Code */}
+        {step === 'qr' && depositData && (
+          <QRCodeDisplay
+            depositData={depositData}
+            onBack={() => setStep('select')}
+          />
+        )}
+
+        {/* Step 3: Thành công */}
+        {step === 'success' && depositData && (
+          <Card className="border-green-200 bg-green-50">
+            <CardContent className="py-8 text-center space-y-4">
+              <div className="w-16 h-16 mx-auto bg-green-100 rounded-full flex items-center justify-center">
+                <span className="text-3xl">✅</span>
+              </div>
+              <h2 className="text-2xl font-bold text-green-800">
+                Nạp tiền thành công!
+              </h2>
+              <p className="text-green-600">
+                Bạn đã nhận được{' '}
+                <span className="font-bold">
+                  {depositData.xuAmount.toLocaleString()} xu
+                </span>
+              </p>
+              <Button onClick={() => window.location.href = '/wallet'}>
+                Về ví của tôi
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  4.2 QR Code Display Component
+
+  // components/wallet/QRCodeDisplay.tsx
+  'use client';
+
+  import { useState, useEffect, useRef } from 'react';
+  import Image from 'next/image';
+  import { Card, CardContent } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import { Badge } from '@/components/ui/badge';
+  import { Separator } from '@/components/ui/separator';
+  import {
+    Copy, Check, Clock, ArrowLeft,
+    Smartphone, AlertCircle, Loader2
+  } from 'lucide-react';
+  import { formatCurrency } from '@/lib/utils';
+  import { useDepositPolling } from '@/hooks/useDepositPolling';
+  import { toast } from 'sonner';
+
+  interface DepositData {
+    depositId: string;
+    qrUrl: string;
+    amount: number;
+    xuAmount: number;
+    transferInfo: {
+      bankName: string;
+      accountNumber: string;
+      accountName: string;
+      amount: number;
+      description: string;
+    };
+    expiresAt: string;
+    status: string;
+  }
+
+  interface Props {
+    depositData: DepositData;
+    onBack: () => void;
+  }
+
+  export function QRCodeDisplay({ depositData, onBack }: Props) {
+    const [copiedField, setCopiedField] = useState<string | null>(null);
+    const { status, isPolling } = useDepositPolling(depositData.depositId);
+
+    // Countdown timer
+    const [timeLeft, setTimeLeft] = useState<number>(0);
+
+    useEffect(() => {
+      const updateTimer = () => {
+        const now = new Date().getTime();
+        const expiry = new Date(depositData.expiresAt).getTime();
+        const diff = Math.max(0, Math.floor((expiry - now) / 1000));
+        setTimeLeft(diff);
+      };
+
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      return () => clearInterval(interval);
+    }, [depositData.expiresAt]);
+
+    const minutes = Math.floor(timeLeft / 60);
+    const seconds = timeLeft % 60;
+    const isExpired = timeLeft <= 0;
+
+    const copyToClipboard = async (text: string, field: string) => {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      toast.success('Đã sao chép!');
+      setTimeout(() => setCopiedField(null), 2000);
+    };
+
+    const CopyButton = ({ text, field }: { text: string; field: string }) => (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 px-2"
+        onClick={() => copyToClipboard(text, field)}
+      >
+        {copiedField === field ? (
+          <Check className="h-4 w-4 text-green-500" />
+        ) : (
+          <Copy className="h-4 w-4" />
+        )}
+      </Button>
+    );
+
+    return (
+      <div className="space-y-4">
+        {/* Back button */}
+        <Button variant="ghost" onClick={onBack} className="mb-2">
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Chọn lại mệnh giá
+        </Button>
+
+        {/* QR Card */}
+        <Card>
+          <CardContent className="pt-6 space-y-6">
+            {/* Status + Timer */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {status === 'completed' ? (
+                  <Badge variant="default" className="bg-green-500">
+                    ✅ Đã nhận
+                  </Badge>
+                ) : isExpired ? (
+                  <Badge variant="destructive">
+                    Hết hạn
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="animate-pulse">
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    Đang chờ chuyển khoản...
+                  </Badge>
+                )}
+              </div>
+
+              {!isExpired && status !== 'completed' && (
+                <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                  <Clock className="h-4 w-4" />
+                  <span className="font-mono">
+                    {String(minutes).padStart(2, '0')}:
+                    {String(seconds).padStart(2, '0')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* QR Image */}
+            <div className="flex justify-center">
+              <div className={cn(
+                "relative rounded-xl overflow-hidden border-2 p-2",
+                isExpired ? "opacity-40 border-gray-300" : "border-primary"
+              )}>
+                <Image
+                  src={depositData.qrUrl}
+                  alt="QR chuyển khoản Vietcombank"
+                  width={280}
+                  height={280}
+                  className="rounded-lg"
+                  priority
+                />
+                {isExpired && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-white/80">
+                    <p className="text-red-500 font-bold">Đã hết hạn</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Scan instruction */}
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Smartphone className="h-4 w-4" />
+              <span>Mở app ngân hàng bất kỳ → Quét mã QR</span>
+            </div>
+
+            <Separator />
+
+            {/* Transfer Info (manual backup) */}
+            <div className="space-y-3">
+              <p className="text-sm font-medium text-muted-foreground">
+                Hoặc chuyển khoản thủ công:
+              </p>
+
+              <div className="bg-muted/50 rounded-lg p-4 space-y-3">
+                {/* Ngân hàng */}
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Ngân hàng</span>
+                  <span className="font-medium">
+                    {depositData.transferInfo.bankName}
+                  </span>
+                </div>
+
+                {/* Số TK */}
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Số tài khoản</span>
+                  <div className="flex items-center gap-1">
+                    <span className="font-mono font-bold text-lg">
+                      {depositData.transferInfo.accountNumber}
+                    </span>
+                    <CopyButton
+                      text={depositData.transferInfo.accountNumber}
+                      field="account"
+                    />
+                  </div>
+                </div>
+
+                {/* Chủ TK */}
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Chủ tài khoản</span>
+                  <span className="font-medium">
+                    {depositData.transferInfo.accountName}
+                  </span>
+                </div>
+
+                {/* Số tiền */}
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Số tiền</span>
+                  <div className="flex items-center gap-1">
+                    <span className="font-bold text-lg text-primary">
+                      {formatCurrency(depositData.transferInfo.amount)}
+                    </span>
+                    <CopyButton
+                      text={depositData.transferInfo.amount.toString()}
+                      field="amount"
+                    />
+                  </div>
+                </div>
+
+                {/* Nội dung CK - QUAN TRỌNG NHẤT */}
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-yellow-700 font-medium">
+                      ⚠️  Nội dung CK
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="font-mono font-bold text-xl text-yellow-800">
+                        {depositData.transferInfo.description}
+                      </span>
+                      <CopyButton
+                        text={depositData.transferInfo.description}
+                        field="description"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-yellow-600 mt-1">
+                    Nhập CHÍNH XÁC nội dung trên để hệ thống tự động xác nhận
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Warning */}
+            <div className="flex gap-2 p-3 bg-blue-50 rounded-lg">
+              <AlertCircle className="h-5 w-5 text-blue-500 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-blue-700 space-y-1">
+                <p>• Hệ thống tự động xác nhận trong <strong>1-3 phút</strong></p>
+                <p>• Vui lòng KHÔNG đóng trang này khi đang chờ</p>
+                <p>• Nếu quá 5 phút chưa nhận, liên hệ hỗ trợ</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  4.3 Deposit Polling Hook
+
+  // hooks/useDeposit.ts
+  import { useState } from 'react';
+  import { useMutation } from '@tanstack/react-query';
+  import { paymentApi } from '@/services/api/payment.api';
+  import { toast } from 'sonner';
+
+  export function useDeposit() {
+    const [depositData, setDepositData] = useState<any>(null);
+    const [isCompleted, setIsCompleted] = useState(false);
+
+    const createMutation = useMutation({
+      mutationFn: (amount: number) => paymentApi.createDeposit({ amount }),
+      onSuccess: (data) => {
+        setDepositData(data);
+      },
+      onError: (error: any) => {
+        toast.error(error.response?.data?.message || 'Không thể tạo QR nạp tiền');
+      },
+    });
+
+    return {
+      createDeposit: createMutation.mutateAsync,
+      depositData,
+      isCreating: createMutation.isPending,
+      isCompleted,
+      setIsCompleted,
+    };
+  }
+
+  // hooks/useDepositPolling.ts
+  import { useState, useEffect, useCallback, useRef } from 'react';
+  import { paymentApi } from '@/services/api/payment.api';
+  import { useWalletStore } from '@/stores/walletStore';
+  import { toast } from 'sonner';
+
+  const POLL_INTERVAL = 3000; // 3 giây
+  const MAX_POLLS = 300;       // Tối đa 300 lần = 15 phút
+
+  export function useDepositPolling(depositId: string | null) {
+    const [status, setStatus] = useState<string>('pending');
+    const [isPolling, setIsPolling] = useState(false);
+    const pollCount = useRef(0);
+    const intervalRef = useRef<NodeJS.Timeout | null>(null);
+    const { setBalance } = useWalletStore();
+
+    const checkStatus = useCallback(async () => {
+      if (!depositId) return;
+
+      try {
+        const result = await paymentApi.getDepositStatus(depositId);
+        setStatus(result.status);
+
+        if (result.status === 'completed') {
+          // 🎉 Nạp thành công!
+          toast.success(
+            `Nạp tiền thành công! +${result.xuAmount.toLocaleString()} xu`,
+            { duration: 5000 }
+          );
+
+          // Refresh wallet balance
+          const wallet = await paymentApi.getWalletBalance();
+          setBalance(wallet.balance);
+
+          // Dừng polling
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+          }
+          setIsPolling(false);
+          return;
+        }
+
+        if (result.status === 'expired' || result.status === 'failed') {
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+          }
+          setIsPolling(false);
+          return;
+        }
+
+        pollCount.current++;
+        if (pollCount.current >= MAX_POLLS) {
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+          }
+          setIsPolling(false);
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, [depositId, setBalance]);
+
+    useEffect(() => {
+      if (!depositId) return;
+
+      setIsPolling(true);
+      pollCount.current = 0;
+
+      // Poll ngay lần đầu
+      checkStatus();
+
+      // Sau đó poll mỗi 3 giây
+      intervalRef.current = setInterval(checkStatus, POLL_INTERVAL);
+
+      return () => {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+        }
+      };
+    }, [depositId, checkStatus]);
+
+    return { status, isPolling };
+  }
+
+  4.4 Payment API Service
+
+  // services/api/payment.api.ts
+  import apiClient from './client';
+
+  export const paymentApi = {
+    /**
+     * Tạo deposit request, nhận về QR code
+     */
+    createDeposit: async (data: { amount: number }) => {
+      const response = await apiClient.post('/payment/deposit', data);
+      return response.data;
+    },
+
+    /**
+     * Check trạng thái deposit
+     */
+    getDepositStatus: async (depositId: string) => {
+      const response = await apiClient.get(`/payment/deposit/${depositId}/status`);
+      return response.data;
+    },
+
+    /**
+     * Lấy danh sách mệnh giá
+     */
+    getDepositAmounts: async () => {
+      const response = await apiClient.get('/payment/deposit/amounts');
+      return response.data;
+    },
+
+    /**
+     * Lấy số dư ví
+     */
+    getWalletBalance: async () => {
+      const response = await apiClient.get('/wallet/balance');
+      return response.data;
+    },
+  };
+
+  ---
+  🔒 BẢO MẬT & EDGE CASES
+
+  5.1 Webhook Security
+
+  // payment/guards/webhook-signature.guard.ts
+  import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+
+  @Injectable()
+  export class CassoWebhookGuard implements CanActivate {
+    constructor(private configService: ConfigService) {}
+
+    canActivate(context: ExecutionContext): boolean {
+      const request = context.switchToHttp().getRequest();
+
+      // Casso gửi secure-token trong header
+      const secureToken = request.headers['secure-token'];
+      const expectedToken = this.configService.get('CASSO_WEBHOOK_SECRET');
+
+      if (!secureToken || secureToken !== expectedToken) {
+        throw new UnauthorizedException('Invalid webhook signature');
+      }
+
+      // Whitelist IP của Casso (optional nhưng recommended)
+      const clientIp = request.ip || request.connection.remoteAddress;
+      const allowedIps = this.configService.get('CASSO_WEBHOOK_IPS')?.split(',') || [];
+
+      if (allowedIps.length > 0 && !allowedIps.includes(clientIp)) {
+        throw new UnauthorizedException('IP not whitelisted');
+      }
+
+      return true;
+    }
+  }
+
+  5.2 Chống gian lận & Edge Cases
+
+  // payment/deposit-matcher.service.ts - Xử lý edge cases
+
+  /**
+   * EDGE CASE 1: User chuyển ĐÚNG tiền nhưng SAI nội dung CK
+   * → Không match được → Log vào unmatched_transactions
+   * → Admin review thủ công và cộng tiền manual
+   */
+
+  /**
+   * EDGE CASE 2: User chuyển 2 lần cho 1 deposit
+   * → Lần 1: match & complete deposit
+   * → Lần 2: deposit đã completed → log unmatched
+   * → Admin refund lần 2 thủ công
+   */
+
+  /**
+   * EDGE CASE 3: 2 user cùng tạo deposit 50K cùng lúc
+   * → Transfer code KHÁC NHAU (unique) → không bao giờ nhầm
+   * → User A: BLOG7A3F2X, User B: BLOGK9M4PQ
+   */
+
+  /**
+   * EDGE CASE 4: Casso webhook gửi trùng (retry)
+   * → Check cassoTxnId đã tồn tại chưa trước khi xử lý
+   * → Nếu đã có → skip (idempotent)
+   */
+
+  @Injectable()
+  export class DepositMatcherService {
+
+    /**
+     * Check idempotency - tránh xử lý webhook trùng
+     */
+    async isAlreadyProcessed(cassoTxnId: string): Promise<boolean> {
+      const existing = await this.depositRepo.findOne({
+        where: { cassoTxnId }
+      });
+      return !!existing;
+    }
+
+    /**
+     * Admin: Xử lý giao dịch không match tự động
+     */
+    async manualMatch(
+      adminId: string,
+      unmatchedTxnId: string,
+      userId: string,
+      amount: number
+    ) {
+      // Admin xác nhận cộng tiền thủ công cho user
+      // Log đầy đủ cho audit trail
+      await this.walletService.addFunds(userId, amount, {
+        type: 'manual_deposit',
+        description: `Admin ${adminId} cộng tiền thủ công - Unmatched txn: ${unmatchedTxnId}`,
+        referenceType: 'manual_adjustment',
+      });
+    }
+  }
+
+  5.3 Unmatched Transactions Table (Admin review)
+
+  -- Bảng chứa giao dịch không match được
+  CREATE TABLE unmatched_transactions (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+      -- Raw data từ webhook
+      casso_txn_id    VARCHAR(50) UNIQUE,
+      amount          INTEGER NOT NULL,
+      description     TEXT,
+      sender_name     VARCHAR(200),
+      sender_account  VARCHAR(50),
+      sender_bank     VARCHAR(100),
+      transaction_date TIMESTAMP,
+      raw_data        JSONB,
+
+      -- Admin resolution
+      status          VARCHAR(20) DEFAULT 'pending',  -- pending | resolved | ignored
+      resolved_by     UUID REFERENCES users(id),
+      resolved_at     TIMESTAMP,
+      resolution_note TEXT,
+      matched_user_id UUID REFERENCES users(id),
+
+      created_at      TIMESTAMP DEFAULT NOW()
+  );
+
+  ---
+  ⚡ REAL-TIME UPDATE VỚI SOCKET.IO
+
+  Thay vì chỉ polling, kết hợp Socket.IO để thông báo nạp tiền thành công ngay lập tức:
+
+  // Backend: Emit event khi deposit completed
+  // payment/casso-webhook.service.ts (thêm vào sau khi commit transaction)
+
+  // Trong handleWebhook, sau khi commit:
+  this.socketGateway.emitToUser(deposit.userId, 'deposit:completed', {
+    depositId: deposit.id,
+    amount: txn.amount,
+    xuAmount: actualXu,
+    newBalance: updatedBalance,
+  });
+
+  // Frontend: Listen socket event
+  // hooks/useDepositPolling.ts - Enhanced version
+  import { useSocket } from '@/hooks/useSocket';
+
+  export function useDepositPolling(depositId: string | null) {
+    const [status, setStatus] = useState<string>('pending');
+    const socket = useSocket();
+
+    useEffect(() => {
+      if (!socket || !depositId) return;
+
+      // Listen real-time event (nhanh hơn polling)
+      socket.on('deposit:completed', (data: any) => {
+        if (data.depositId === depositId) {
+          setStatus('completed');
+          toast.success(`+${data.xuAmount.toLocaleString()} xu`);
+          setBalance(data.newBalance);
+        }
+      });
+
+      return () => {
+        socket.off('deposit:completed');
+      };
+    }, [socket, depositId]);
+
+    // Vẫn giữ polling làm fallback
+    // (phòng trường hợp socket disconnect)
+    useEffect(() => {
+      // ... polling logic as before ...
+    }, [depositId]);
+
+    return { status };
+  }
+
+  ---
+  📐 ARCHITECTURE DIAGRAM
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                        COMPLETE PAYMENT FLOW                             │
+  │                                                                          │
+  │  ┌──────────┐     ┌──────────┐     ┌──────────────┐                    │
+  │  │ Frontend  │────▶│ Backend  │────▶│ VietQR API   │                    │
+  │  │ User chọn │     │ Tạo      │     │ (Free)       │                    │
+  │  │ mệnh giá  │     │ deposit  │     │ Tạo QR image │                    │
+  │  └──────────┘     │ request  │     └──────┬───────┘                    │
+  │       │           └──────────┘            │                             │
+  │       │                                    │ QR URL                     │
+  │       ◀────────────────────────────────────┘                            │
+  │       │                                                                  │
+  │       │ Hiện QR + thông tin CK                                          │
+  │       ▼                                                                  │
+  │  ┌──────────┐                                                           │
+  │  │ User mở  │                                                           │
+  │  │ app NH   │                                                           │
+  │  │ quét QR  │                                                           │
+  │  └────┬─────┘                                                           │
+  │       │                                                                  │
+  │       ▼                                                                  │
+  │  ┌──────────┐     ┌──────────┐     ┌──────────────┐                    │
+  │  │ Ngân hàng│────▶│ VCB nhận │────▶│ Casso detect │                    │
+  │  │ xử lý CK│     │ tiền     │     │ biến động    │                    │
+  │  └──────────┘     └──────────┘     └──────┬───────┘                    │
+  │                                            │                             │
+  │                                            │ Webhook POST               │
+  │                                            ▼                             │
+  │  ┌──────────┐     ┌──────────┐     ┌──────────────┐                    │
+  │  │ Frontend  │◀───│ Socket   │◀───│ Backend       │                    │
+  │  │ hiện ✅   │    │ emit     │     │ Verify token  │                    │
+  │  │ thành công│    │          │     │ Match deposit │                    │
+  │  └──────────┘    └──────────┘     │ Cộng xu vào   │                    │
+  │                                    │ ví user       │                    │
+  │       │           ┌──────────┐     └──────────────┘                    │
+  │       └──────────▶│ Polling  │                                          │
+  │         (fallback)│ mỗi 3s  │ (backup nếu socket fail)                │
+  │                   └──────────┘                                          │
+  │                                                                          │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ---
+  🛠️  SETUP CASSO / SEPAY
+
+  Casso.vn Setup (Recommended)
+
+  1. Đăng ký tại https://casso.vn (dùng email cá nhân)
+  2. Kết nối tài khoản Vietcombank:
+     - Casso > Ngân hàng > Thêm ngân hàng > Vietcombank
+     - Đăng nhập Internet Banking VCB
+     - Casso sẽ đọc biến động số dư tự động
+
+  3. Cấu hình Webhook:
+     - Casso > Cài đặt > Webhook
+     - URL: https://your-domain.com/api/v1/payment/webhook/casso
+     - Secure Token: [tạo random string dài]
+     - Chọn: Chỉ giao dịch NHẬN tiền
+
+  4. Test:
+     - Chuyển 10.000đ vào TK VCB đã kết nối
+     - Check Casso dashboard → thấy giao dịch
+     - Check server logs → thấy webhook
+
+  SePay.vn Setup (Alternative)
+
+  1. Đăng ký tại https://sepay.vn
+  2. Kết nối VCB (tương tự Casso)
+  3. Webhook URL: https://your-domain.com/api/v1/payment/webhook/sepay
+  4. Auth: API Key (gửi trong header Authorization: Apikey xxx)
+
+  ---
+  📋 ENV VARIABLES
+
+  # .env
+
+  # Tài khoản Vietcombank nhận tiền
+  VCB_ACCOUNT_NUMBER=0123456789
+  VCB_ACCOUNT_NAME=NGUYEN VAN A
+
+  # Casso webhook
+  CASSO_WEBHOOK_SECRET=your-random-secure-token-here-min-32-chars
+  CASSO_WEBHOOK_IPS=113.160.x.x,113.161.x.x  # Optional: IP whitelist
+
+  # SePay (nếu dùng thay Casso)
+  SEPAY_API_KEY=your-sepay-api-key
+
+  # Deposit config
+  DEPOSIT_EXPIRY_MINUTES=15
+  DEPOSIT_MIN_AMOUNT=10000
+  DEPOSIT_MAX_AMOUNT=1000000
+
+  ---
+  📊 ADMIN DASHBOARD - Quản lý giao dịch
+
+  // app/admin/deposits/page.tsx
+  // Admin panel hiển thị:
+  // 1. Tất cả deposit requests (pending/completed/expired)
+  // 2. Unmatched transactions (cần review thủ công)
+  // 3. Nút "Manual Match" để cộng tiền thủ công cho user
+  // 4. Thống kê: Tổng nạp hôm nay / tuần / tháng
+  // 5. Alert khi có unmatched txn > 50K
+
+  ---
+  ✅ CHECKLIST TRIỂN KHAI
+
+  Phase 1: Setup (1-2 ngày)
+  [ ] Tạo TK Vietcombank (hoặc dùng TK sẵn có)
+  [ ] Đăng ký Casso.vn, kết nối VCB
+  [ ] Cấu hình webhook trên Casso
+  [ ] Tạo DB tables: deposit_requests, payment_accounts, unmatched_transactions
+  [ ] Seed payment_accounts với thông tin TK VCB
+
+  Phase 2: Backend (2-3 ngày)
+  [ ] VietQR Service - tạo QR URL
+  [ ] Payment Controller - endpoints deposit/status/webhook
+  [ ] Casso Webhook Handler - parse & match
+  [ ] Transaction logic - SERIALIZABLE isolation
+  [ ] Deposit expiry job (BullMQ)
+  [ ] Unmatched transaction logging
+
+  Phase 3: Frontend (2-3 ngày)
+  [ ] Deposit page - chọn mệnh giá
+  [ ] QR display component - hiện QR + info CK
+  [ ] Polling hook - check status mỗi 3s
+  [ ] Socket listener - real-time update
+  [ ] Success/expired states
+
+  Phase 4: Testing (1-2 ngày)
+  [ ] Test chuyển khoản thật 10K → verify full flow
+  [ ] Test expired deposit
+  [ ] Test duplicate webhook (idempotency)
+  [ ] Test wrong amount
+  [ ] Test concurrent deposits from same user
+  [ ] Test wrong transfer description → unmatched
+
+  Phase 5: Admin (1 ngày)
+  [ ] Admin deposit list page
+  [ ] Unmatched transactions page
+  [ ] Manual match feature
+  [ ] Stats dashboard
+
+  ---
+  💰 CHI PHÍ VẬN HÀNH
+
+  ┌─────────────────┬────────────────┬────────────────┐
+  │    Hạng mục     │    Chi phí     │    Ghi chú     │
+  ├─────────────────┼────────────────┼────────────────┤
+  │ VietQR API      │ FREE           │ Không giới hạn │
+  ├─────────────────┼────────────────┼────────────────┤
+  │ Casso Free tier │ FREE           │ 50 txn/tháng   │
+  ├─────────────────┼────────────────┼────────────────┤
+  │ Casso Basic     │ 49.000đ/tháng  │ Unlimited txn  │
+  ├─────────────────┼────────────────┼────────────────┤
+  │ Vietcombank     │ FREE           │ TK cá nhân     │
+  ├─────────────────┼────────────────┼────────────────┤
+  │ TỔNG            │ 0đ - 49K/tháng │                │
+  └─────────────────┴────────────────┴────────────────┘
+
+  So sánh: VNPay/MoMo Business = 1.5-2% phí mỗi giao dịch + phí setup doanh nghiệp.
+
+  ▎ Kết luận: Giải pháp QR VCB + Casso webhook là tối ưu nhất cho giai đoạn MVP khi chưa có doanh nghiệp. Khi scale lên, có thể migrate sang VNPay/MoMo chính thức mà chỉ cần thay payment gateway layer, không ảnh hưởng đến wallet logic.

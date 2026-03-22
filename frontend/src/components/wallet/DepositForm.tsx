@@ -366,6 +366,9 @@ export function DepositForm() {
                   <p className="mt-3 text-sm leading-6 text-muted-foreground">
                     Đây là mã đối soát duy nhất. Nếu đổi nội dung này, admin sẽ khó xác nhận chính xác giao dịch.
                   </p>
+                  <p className="mt-2 text-sm leading-6 text-amber-700">
+                    Lưu ý: QR MoMo cá nhân có thể chỉ tự điền người nhận và số tiền. Nếu app MoMo chưa hiện nội dung, hãy dán mã này thủ công vào ô lời nhắn/nội dung chuyển khoản.
+                  </p>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -461,7 +464,7 @@ export function DepositForm() {
                   )}
                 </div>
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Hãy kiểm tra đúng người nhận và giữ nguyên nội dung trước khi xác nhận chuyển tiền.
+                  Hãy kiểm tra đúng người nhận. Nếu MoMo chưa tự điền nội dung, hãy dán mã `NAP...` ở bên trái vào ô lời nhắn rồi mới chuyển tiền.
                 </p>
               </div>
             </CardContent>

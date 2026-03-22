@@ -93,17 +93,17 @@ export class PaymentService {
     });
 
     if (existingDeposit) {
-      return this.formatManualDepositResponse(existingDeposit);
+      const refreshedDeposit = await this.refreshManualMomoQrDeposit(
+        existingDeposit,
+        config,
+      );
+      return this.formatManualDepositResponse(refreshedDeposit);
     }
 
     const depositCode = await this.depositCodeService.generateUniqueCode();
-    const deepLink = this.momoQrService.generateDeepLink({
+    const qrPayload = this.momoQrService.generateScanPayload({
       phone: config.phone,
-      amount: dto.amount,
-      comment: depositCode,
-    });
-    const qrPayload = this.momoQrService.generateSimpleQrPayload({
-      phone: config.phone,
+      name: config.name,
       amount: dto.amount,
       comment: depositCode,
     });
@@ -120,7 +120,7 @@ export class PaymentService {
         receiverPhone: config.phone,
         receiverName: config.name,
         qrData: JSON.stringify({
-          deepLink,
+          deepLink: null,
           raw: qrPayload,
         }),
         qrImageUrl,
@@ -626,7 +626,7 @@ export class PaymentService {
         instructions: [
           'Mở ứng dụng MoMo và quét QR bên dưới.',
           'Kiểm tra đúng số tiền hiển thị trên màn hình.',
-          `Giữ nguyên nội dung chuyển khoản: ${deposit.depositCode}.`,
+          `Nếu MoMo không tự điền nội dung, hãy dán mã ${deposit.depositCode} vào ô lời nhắn/nội dung chuyển khoản.`,
           'Sau khi chuyển xong, quay lại và bấm "Tôi đã chuyển tiền".',
         ],
       },
@@ -654,6 +654,44 @@ export class PaymentService {
         raw: input,
       };
     }
+  }
+
+  private async refreshManualMomoQrDeposit(
+    deposit: DepositEntity,
+    config: {
+      phone: string;
+      name: string;
+      minAmount: number;
+      maxAmount: number;
+      expireMinutes: number;
+    },
+  ) {
+    const parsedQrData = this.parseQrData(deposit.qrData);
+    const nextQrPayload = this.momoQrService.generateScanPayload({
+      phone: config.phone,
+      name: config.name,
+      amount: toNumber(deposit.amount),
+      comment: deposit.depositCode ?? '',
+    });
+    const shouldRefreshQr =
+      deposit.receiverPhone !== config.phone ||
+      deposit.receiverName !== config.name ||
+      parsedQrData.raw !== nextQrPayload ||
+      !deposit.qrImageUrl;
+
+    if (!shouldRefreshQr) {
+      return deposit;
+    }
+
+    deposit.receiverPhone = config.phone;
+    deposit.receiverName = config.name;
+    deposit.qrData = JSON.stringify({
+      deepLink: null,
+      raw: nextQrPayload,
+    });
+    deposit.qrImageUrl = await this.momoQrService.generateQrDataUrl(nextQrPayload);
+
+    return this.depositsRepository.save(deposit);
   }
 
   private toDepositResponse(deposit: DepositEntity) {

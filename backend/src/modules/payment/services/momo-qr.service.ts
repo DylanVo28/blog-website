@@ -3,23 +3,16 @@ import * as QRCode from 'qrcode';
 
 interface MomoQrInput {
   phone: string;
+  name?: string;
   amount: number;
   comment: string;
 }
 
 @Injectable()
 export class MomoQrService {
-  generateDeepLink(input: MomoQrInput) {
-    const params = new URLSearchParams({
-      amount: String(input.amount),
-      comment: input.comment,
-    });
-
-    return `https://me.momo.vn/${input.phone}?${params.toString()}`;
-  }
-
-  generateSimpleQrPayload(input: MomoQrInput) {
-    return `2|99|${input.phone}|||0|0|${input.amount}|${input.comment}`;
+  generateScanPayload(input: MomoQrInput) {
+    const receiverName = input.name?.trim() || '';
+    return `2|99|${input.phone}|${receiverName}||0|0|${input.amount}||transfer_myqr`;
   }
 
   async generateQrDataUrl(payload: string) {
