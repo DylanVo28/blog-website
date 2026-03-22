@@ -1,0 +1,1953 @@
+ 📋 THIẾT KẾ HỆ THỐNG: EMAIL VERIFICATION TRƯỚC KHI TẠO ACCOUNT
+
+  🎯 TỔNG QUAN FLOW
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                    FLOW: VERIFY EMAIL TRƯỚC → TẠO ACCOUNT          │
+  ├─────────────────────────────────────────────────────────────────────┤
+  │                                                                     │
+  │  1. User nhập email                                                │
+  │         │                                                           │
+  │         ▼                                                           │
+  │  2. Backend gửi OTP/Link verify → Email                            │
+  │         │                                                           │
+  │         ▼                                                           │
+  │  3. User verify (nhập OTP hoặc click link)                         │
+  │         │                                                           │
+  │         ▼                                                           │
+  │  4. Backend trả verification_token (JWT tạm, TTL 15 phút)         │
+  │         │                                                           │
+  │         ▼                                                           │
+  │  5. User điền form đăng ký (password, displayName, username...)    │
+  │         │  (kèm verification_token)                                │
+  │         ▼                                                           │
+  │  6. Backend verify token → Tạo account → Login luôn               │
+  │                                                                     │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ---
+  🗄️  BACKEND: DATABASE SCHEMA
+
+  Bảng email_verifications
+
+  -- Migration: create_email_verifications_table
+
+  CREATE TABLE email_verifications (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email           VARCHAR(255) NOT NULL,
+      otp_code        VARCHAR(6) NOT NULL,           -- 6 chữ số
+      otp_hash        VARCHAR(255) NOT NULL,          -- bcrypt hash của OTP
+      attempts        INT DEFAULT 0,                  -- Số lần nhập sai
+      max_attempts    INT DEFAULT 5,                  -- Tối đa 5 lần thử
+      is_verified     BOOLEAN DEFAULT FALSE,
+      expires_at      TIMESTAMP NOT NULL,             -- OTP hết hạn sau 5 phút
+      verified_at     TIMESTAMP NULL,
+      created_at      TIMESTAMP DEFAULT NOW(),
+
+      -- Chống spam: 1 email chỉ có 1 OTP active tại 1 thời điểm
+      CONSTRAINT uq_email_active UNIQUE (email)
+          WHERE is_verified = FALSE AND expires_at > NOW()
+  );
+
+  -- Index cho cleanup job
+  CREATE INDEX idx_email_verifications_expires
+      ON email_verifications(expires_at)
+      WHERE is_verified = FALSE;
+
+  -- Index tìm kiếm nhanh
+  CREATE INDEX idx_email_verifications_email
+      ON email_verifications(email, is_verified);
+
+  Bảng users (bổ sung field)
+
+  -- Thêm vào bảng users hiện tại
+  ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMP NOT NULL;
+  -- email_verified_at bắt buộc NOT NULL → đảm bảo mọi user đều đã verify
+
+  ---
+  🔧 BACKEND: API DESIGN
+
+  Endpoint Overview
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                     AUTH ENDPOINTS                                │
+  ├──────────┬──────────────────────────────┬────────────────────────┤
+  │  Method  │  Endpoint                    │  Mô tả                │
+  ├──────────┼──────────────────────────────┼────────────────────────┤
+  │  POST    │  /auth/send-verification     │  Gửi OTP đến email    │
+  │  POST    │  /auth/verify-email          │  Xác thực OTP         │
+  │  POST    │  /auth/resend-otp            │  Gửi lại OTP          │
+  │  POST    │  /auth/register              │  Đăng ký (cần token)  │
+  │  POST    │  /auth/login                 │  Đăng nhập             │
+  └──────────┴──────────────────────────────┴────────────────────────┘
+
+  ---
+  API 1: POST /auth/send-verification
+
+  Mục đích: Nhận email, kiểm tra chưa tồn tại, gửi OTP
+
+  // ────────────────────────────────────────────
+  // DTOs
+  // ────────────────────────────────────────────
+
+  // dto/send-verification.dto.ts
+  export class SendVerificationDto {
+    @IsEmail({}, { message: 'Email không hợp lệ' })
+    @IsNotEmpty()
+    @Transform(({ value }) => value.toLowerCase().trim())
+    email: string;
+  }
+
+  // Response
+  {
+    "success": true,
+    "message": "Mã xác thực đã được gửi đến email của bạn",
+    "data": {
+      "email": "user@example.com",
+      "expires_in": 300,           // 5 phút (giây)
+      "retry_after": 60            // Có thể gửi lại sau 60 giây
+    }
+  }
+
+  // Error responses
+  // 409: { "message": "Email đã được đăng ký" }
+  // 429: { "message": "Vui lòng đợi 60 giây trước khi gửi lại" }
+
+  Logic xử lý:
+
+  // auth/auth.service.ts
+
+  async sendVerification(dto: SendVerificationDto) {
+    const { email } = dto;
+
+    // 1. Check email đã tồn tại trong bảng users chưa
+    const existingUser = await this.usersRepo.findOne({
+      where: { email }
+    });
+    if (existingUser) {
+      throw new ConflictException('Email đã được đăng ký');
+    }
+
+    // 2. Check rate limit: đã gửi OTP trong 60 giây gần đây chưa
+    const recentOtp = await this.emailVerificationRepo.findOne({
+      where: {
+        email,
+        createdAt: MoreThan(new Date(Date.now() - 60 * 1000)),
+      },
+    });
+    if (recentOtp) {
+      const retryAfter = Math.ceil(
+        (recentOtp.createdAt.getTime() + 60000 - Date.now()) / 1000
+      );
+      throw new TooManyRequestsException(
+        `Vui lòng đợi ${retryAfter} giây trước khi gửi lại`
+      );
+    }
+
+    // 3. Invalidate tất cả OTP cũ của email này
+    await this.emailVerificationRepo.update(
+      { email, isVerified: false },
+      { expiresAt: new Date() }  // Force expire
+    );
+
+    // 4. Generate OTP 6 số
+    const otpCode = this.generateOTP(); // "384719"
+    const otpHash = await bcrypt.hash(otpCode, 10);
+
+    // 5. Lưu vào DB
+    const verification = this.emailVerificationRepo.create({
+      email,
+      otpCode, // chỉ dùng để log/debug, production nên bỏ
+      otpHash,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 phút
+    });
+    await this.emailVerificationRepo.save(verification);
+
+    // 6. Gửi email (qua BullMQ queue để không block request)
+    await this.emailQueue.add('send-otp', {
+      to: email,
+      otpCode,
+      expiresInMinutes: 5,
+    });
+
+    return {
+      email,
+      expires_in: 300,
+      retry_after: 60,
+    };
+  }
+
+  private generateOTP(): string {
+    // Crypto-secure random 6 digits
+    const buffer = crypto.randomBytes(3);
+    const num = buffer.readUIntBE(0, 3) % 1000000;
+    return num.toString().padStart(6, '0');
+  }
+
+  ---
+  API 2: POST /auth/verify-email
+
+  Mục đích: Xác thực OTP, trả về verification_token
+
+  // dto/verify-email.dto.ts
+  export class VerifyEmailDto {
+    @IsEmail()
+    @Transform(({ value }) => value.toLowerCase().trim())
+    email: string;
+
+    @IsString()
+    @Length(6, 6, { message: 'Mã OTP phải có 6 chữ số' })
+    @Matches(/^\d{6}$/, { message: 'Mã OTP chỉ chứa số' })
+    otp: string;
+  }
+
+  // Response thành công
+  {
+    "success": true,
+    "message": "Email đã được xác thực",
+    "data": {
+      "verification_token": "eyJhbGciOiJIUzI1NiIs...",  // JWT tạm
+      "email": "user@example.com",
+      "token_expires_in": 900    // 15 phút để hoàn tất đăng ký
+    }
+  }
+
+  // Error responses
+  // 400: { "message": "Mã OTP không đúng. Còn 3 lần thử" }
+  // 410: { "message": "Mã OTP đã hết hạn. Vui lòng gửi lại" }
+  // 423: { "message": "Quá nhiều lần thử sai. Vui lòng gửi OTP mới" }
+
+  Logic xử lý:
+
+  // auth/auth.service.ts
+
+  async verifyEmail(dto: VerifyEmailDto) {
+    const { email, otp } = dto;
+
+    // 1. Tìm OTP mới nhất, chưa verify, chưa hết hạn
+    const verification = await this.emailVerificationRepo.findOne({
+      where: {
+        email,
+        isVerified: false,
+        expiresAt: MoreThan(new Date()),
+      },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!verification) {
+      throw new GoneException('Mã OTP đã hết hạn. Vui lòng gửi lại');
+    }
+
+    // 2. Check số lần thử
+    if (verification.attempts >= verification.maxAttempts) {
+      throw new HttpException(
+        'Quá nhiều lần thử sai. Vui lòng gửi OTP mới',
+        HttpStatus.LOCKED  // 423
+      );
+    }
+
+    // 3. Verify OTP
+    const isValid = await bcrypt.compare(otp, verification.otpHash);
+
+    if (!isValid) {
+      // Tăng attempts
+      verification.attempts += 1;
+      await this.emailVerificationRepo.save(verification);
+
+      const remaining = verification.maxAttempts - verification.attempts;
+
+      if (remaining === 0) {
+        throw new HttpException(
+          'Quá nhiều lần thử sai. Vui lòng gửi OTP mới',
+          HttpStatus.LOCKED
+        );
+      }
+
+      throw new BadRequestException(
+        `Mã OTP không đúng. Còn ${remaining} lần thử`
+      );
+    }
+
+    // 4. Đánh dấu đã verify
+    verification.isVerified = true;
+    verification.verifiedAt = new Date();
+    await this.emailVerificationRepo.save(verification);
+
+    // 5. Tạo verification_token (JWT tạm, 15 phút)
+    const verificationToken = this.jwtService.sign(
+      {
+        email,
+        type: 'email_verification',
+        verificationId: verification.id,
+      },
+      {
+        secret: this.configService.get('JWT_VERIFICATION_SECRET'),
+        expiresIn: '15m',
+      }
+    );
+
+    return {
+      verification_token: verificationToken,
+      email,
+      token_expires_in: 900,
+    };
+  }
+
+  ---
+  API 3: POST /auth/resend-otp
+
+  Mục đích: Gửi lại OTP mới
+
+  // dto/resend-otp.dto.ts
+  export class ResendOtpDto {
+    @IsEmail()
+    @Transform(({ value }) => value.toLowerCase().trim())
+    email: string;
+  }
+
+  // Logic: Giống send-verification nhưng thêm check
+  // - Tối đa 5 lần gửi OTP / email / 1 giờ (chống abuse)
+  // - Rate limit 60 giây giữa các lần gửi
+
+  async resendOtp(dto: ResendOtpDto) {
+    const { email } = dto;
+
+    // Check: đã gửi quá 5 lần trong 1 giờ chưa
+    const recentCount = await this.emailVerificationRepo.count({
+      where: {
+        email,
+        createdAt: MoreThan(new Date(Date.now() - 60 * 60 * 1000)),
+      },
+    });
+
+    if (recentCount >= 5) {
+      throw new TooManyRequestsException(
+        'Đã gửi quá nhiều lần. Vui lòng thử lại sau 1 giờ'
+      );
+    }
+
+    // Tiếp tục giống sendVerification...
+    return this.sendVerification(dto);
+  }
+
+  ---
+  API 4: POST /auth/register (CẬP NHẬT)
+
+  Mục đích: Đăng ký account — BẮT BUỘC kèm verification_token
+
+  // dto/register.dto.ts
+  export class RegisterDto {
+    @IsString()
+    @IsNotEmpty({ message: 'Cần có verification token' })
+    verification_token: string;   // ← BẮT BUỘC
+
+    @IsString()
+    @MinLength(8, { message: 'Mật khẩu ít nhất 8 ký tự' })
+    @MaxLength(100)
+    @Matches(
+      /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/,
+      { message: 'Mật khẩu cần có chữ hoa, chữ thường, số và ký tự đặc biệt' }
+    )
+    password: string;
+
+    @IsString()
+    @MinLength(2)
+    @MaxLength(50)
+    displayName: string;
+
+    @IsString()
+    @MinLength(3)
+    @MaxLength(30)
+    @Matches(/^[a-zA-Z0-9_-]+$/, {
+      message: 'Username chỉ chứa chữ, số, dấu gạch ngang và gạch dưới'
+    })
+    username: string;
+  }
+
+  // Response thành công → Login luôn
+  {
+    "success": true,
+    "message": "Đăng ký thành công",
+    "data": {
+      "user": {
+        "id": "uuid",
+        "email": "user@example.com",
+        "displayName": "Nguyễn Văn A",
+        "username": "nguyenvana",
+        "role": "user",
+        "emailVerifiedAt": "2026-03-22T10:00:00Z"
+      },
+      "accessToken": "eyJhbGciOi...",
+      "refreshToken": "eyJhbGciOi..."
+    }
+  }
+
+  // Error responses
+  // 401: { "message": "Token xác thực không hợp lệ hoặc đã hết hạn" }
+  // 409: { "message": "Username đã tồn tại" }
+  // 409: { "message": "Email đã được đăng ký" }
+
+  Logic xử lý:
+
+  // auth/auth.service.ts
+
+  async register(dto: RegisterDto) {
+    // 1. Verify verification_token
+    let payload: VerificationPayload;
+    try {
+      payload = this.jwtService.verify(dto.verification_token, {
+        secret: this.configService.get('JWT_VERIFICATION_SECRET'),
+      });
+    } catch (error) {
+      throw new UnauthorizedException(
+        'Token xác thực không hợp lệ hoặc đã hết hạn. Vui lòng verify email lại'
+      );
+    }
+
+    // 2. Validate token type
+    if (payload.type !== 'email_verification') {
+      throw new UnauthorizedException('Token không hợp lệ');
+    }
+
+    // 3. Check verification record còn valid không
+    const verification = await this.emailVerificationRepo.findOne({
+      where: {
+        id: payload.verificationId,
+        email: payload.email,
+        isVerified: true,
+      },
+    });
+
+    if (!verification) {
+      throw new UnauthorizedException(
+        'Xác thực email không hợp lệ. Vui lòng verify lại'
+      );
+    }
+
+    // 4. Double check: email chưa có trong users
+    const existingEmail = await this.usersRepo.findOne({
+      where: { email: payload.email },
+    });
+    if (existingEmail) {
+      throw new ConflictException('Email đã được đăng ký');
+    }
+
+    // 5. Check username unique
+    const existingUsername = await this.usersRepo.findOne({
+      where: { username: dto.username },
+    });
+    if (existingUsername) {
+      throw new ConflictException('Username đã tồn tại');
+    }
+
+    // 6. Hash password
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+
+    // 7. Tạo user + wallet trong transaction
+    const result = await this.dataSource.transaction(async (manager) => {
+      // Tạo user
+      const user = manager.create(User, {
+        email: payload.email,
+        passwordHash,
+        displayName: dto.displayName,
+        username: dto.username,
+        role: 'user',
+        emailVerifiedAt: verification.verifiedAt, // ← Đã verify
+      });
+      const savedUser = await manager.save(user);
+
+      // Tạo wallet
+      const wallet = manager.create(Wallet, {
+        userId: savedUser.id,
+        balance: 0,
+      });
+      await manager.save(wallet);
+
+      // Đánh dấu verification đã dùng (soft delete hoặc flag)
+      await manager.update(EmailVerification, verification.id, {
+        // Có thể thêm field usedAt hoặc xóa luôn
+      });
+
+      return savedUser;
+    });
+
+    // 8. Generate JWT tokens → Login luôn
+    const { accessToken, refreshToken } = this.generateTokens(result);
+
+    return {
+      user: this.sanitizeUser(result),
+      accessToken,
+      refreshToken,
+    };
+  }
+
+  ---
+  Email Template (OTP)
+
+  // mail/templates/otp-verification.template.ts
+
+  export const otpVerificationTemplate = (otp: string, expiresMinutes: number) => `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <style>
+      .container { max-width: 480px; margin: 0 auto; font-family: sans-serif; }
+      .otp-box {
+        background: #f3f4f6;
+        border-radius: 12px;
+        padding: 24px;
+        text-align: center;
+        margin: 24px 0;
+      }
+      .otp-code {
+        font-size: 36px;
+        font-weight: bold;
+        letter-spacing: 8px;
+        color: #1f2937;
+        font-family: 'Courier New', monospace;
+      }
+      .warning { color: #6b7280; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Xác thực email của bạn</h2>
+      <p>Nhập mã bên dưới để xác thực email:</p>
+
+      <div class="otp-box">
+        <div class="otp-code">${otp}</div>
+      </div>
+
+      <p class="warning">
+        ⏰ Mã có hiệu lực trong ${expiresMinutes} phút.<br/>
+        🔒 Không chia sẻ mã này với bất kỳ ai.<br/>
+        Nếu bạn không yêu cầu mã này, vui lòng bỏ qua email này.
+      </p>
+    </div>
+  </body>
+  </html>
+  `;
+
+  ---
+  Background Job: Cleanup expired OTPs
+
+  // jobs/cleanup-expired-otp.processor.ts
+
+  @Processor('cleanup-queue')
+  export class CleanupExpiredOtpProcessor {
+
+    @Cron('0 */30 * * * *')  // Mỗi 30 phút
+    async handleCleanup() {
+      // Xóa OTP đã hết hạn > 24 giờ
+      await this.emailVerificationRepo.delete({
+        expiresAt: LessThan(new Date(Date.now() - 24 * 60 * 60 * 1000)),
+      });
+    }
+  }
+
+  ---
+  🎨 FRONTEND: THIẾT KẾ UI + LOGIC
+
+  Flow UI (3 bước)
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                 │
+  │  STEP 1: Nhập Email          STEP 2: Nhập OTP                 │
+  │  ┌───────────────────┐       ┌───────────────────┐             │
+  │  │                   │       │                   │             │
+  │  │  📧 Email         │  ──▶  │  🔢 _ _ _ _ _ _  │             │
+  │  │  [user@email.com] │       │                   │             │
+  │  │                   │       │  Gửi lại OTP (45s)│             │
+  │  │  [Tiếp tục    →]  │       │  [Xác nhận     →] │             │
+  │  │                   │       │                   │             │
+  │  └───────────────────┘       └───────────────────┘             │
+  │                                       │                         │
+  │                                       ▼                         │
+  │                              STEP 3: Đăng ký                   │
+  │                              ┌───────────────────┐             │
+  │                              │ ✅ user@email.com │             │
+  │                              │                   │             │
+  │                              │  Tên hiển thị     │             │
+  │                              │  [Nguyễn Văn A ]  │             │
+  │                              │                   │             │
+  │                              │  Username          │             │
+  │                              │  [nguyenvana    ]  │             │
+  │                              │                   │             │
+  │                              │  Mật khẩu         │             │
+  │                              │  [••••••••••••  ]  │             │
+  │                              │                   │             │
+  │                              │  Nhập lại mật khẩu│             │
+  │                              │  [••••••••••••  ]  │             │
+  │                              │                   │             │
+  │                              │  [Tạo tài khoản →]│             │
+  │                              └───────────────────┘             │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ---
+  Cấu trúc file Frontend
+
+  src/
+  ├── app/(auth)/
+  │   └── register/
+  │       └── page.tsx                    # Register page wrapper
+  │
+  ├── components/auth/
+  │   ├── RegisterWizard.tsx              # Container quản lý 3 steps
+  │   ├── EmailStep.tsx                   # Step 1: Nhập email
+  │   ├── OtpStep.tsx                     # Step 2: Nhập OTP
+  │   ├── RegisterStep.tsx               # Step 3: Form đăng ký
+  │   ├── OtpInput.tsx                   # Component 6 ô input OTP
+  │   ├── ResendOtpButton.tsx            # Nút gửi lại có countdown
+  │   └── StepIndicator.tsx             # Thanh progress 3 bước
+  │
+  ├── hooks/
+  │   └── useRegister.ts                 # Hook quản lý flow đăng ký
+  │
+  ├── services/api/
+  │   └── auth.api.ts                    # API calls (bổ sung)
+  │
+  ├── lib/
+  │   └── validators.ts                  # Zod schemas (bổ sung)
+  │
+  └── types/
+      └── auth.types.ts                  # Types (bổ sung)
+
+  ---
+  Types
+
+  // types/auth.types.ts
+
+  // ── Request Types ──
+  export interface SendVerificationRequest {
+    email: string;
+  }
+
+  export interface VerifyEmailRequest {
+    email: string;
+    otp: string;
+  }
+
+  export interface ResendOtpRequest {
+    email: string;
+  }
+
+  export interface RegisterRequest {
+    verification_token: string;
+    password: string;
+    displayName: string;
+    username: string;
+  }
+
+  // ── Response Types ──
+  export interface SendVerificationResponse {
+    email: string;
+    expires_in: number;     // giây
+    retry_after: number;    // giây
+  }
+
+  export interface VerifyEmailResponse {
+    verification_token: string;
+    email: string;
+    token_expires_in: number;  // giây
+  }
+
+  export interface RegisterResponse {
+    user: User;
+    accessToken: string;
+    refreshToken: string;
+  }
+
+  // ── UI State ──
+  export type RegisterStep = 'email' | 'otp' | 'register';
+
+  export interface RegisterWizardState {
+    currentStep: RegisterStep;
+    email: string;
+    verificationToken: string | null;
+    tokenExpiresAt: Date | null;
+  }
+
+  ---
+  Zod Validators
+
+  // lib/validators.ts (bổ sung)
+
+  import { z } from 'zod';
+
+  export const emailStepSchema = z.object({
+    email: z
+      .string()
+      .min(1, 'Vui lòng nhập email')
+      .email('Email không hợp lệ')
+      .transform((v) => v.toLowerCase().trim()),
+  });
+
+  export const otpStepSchema = z.object({
+    otp: z
+      .string()
+      .length(6, 'Mã OTP phải có 6 chữ số')
+      .regex(/^\d{6}$/, 'Mã OTP chỉ chứa số'),
+  });
+
+  export const registerStepSchema = z
+    .object({
+      displayName: z
+        .string()
+        .min(2, 'Tên hiển thị ít nhất 2 ký tự')
+        .max(50, 'Tên hiển thị tối đa 50 ký tự'),
+      username: z
+        .string()
+        .min(3, 'Username ít nhất 3 ký tự')
+        .max(30, 'Username tối đa 30 ký tự')
+        .regex(
+          /^[a-zA-Z0-9_-]+$/,
+          'Username chỉ chứa chữ, số, dấu gạch ngang và gạch dưới'
+        ),
+      password: z
+        .string()
+        .min(8, 'Mật khẩu ít nhất 8 ký tự')
+        .max(100)
+        .regex(
+          /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/,
+          'Mật khẩu cần có chữ hoa, chữ thường, số và ký tự đặc biệt'
+        ),
+      confirmPassword: z.string(),
+    })
+    .refine((data) => data.password === data.confirmPassword, {
+      message: 'Mật khẩu xác nhận không khớp',
+      path: ['confirmPassword'],
+    });
+
+  export type EmailStepData = z.infer<typeof emailStepSchema>;
+  export type OtpStepData = z.infer<typeof otpStepSchema>;
+  export type RegisterStepData = z.infer<typeof registerStepSchema>;
+
+  ---
+  API Service
+
+  // services/api/auth.api.ts (bổ sung)
+
+  import apiClient from './client';
+  import type {
+    SendVerificationRequest,
+    SendVerificationResponse,
+    VerifyEmailRequest,
+    VerifyEmailResponse,
+    RegisterRequest,
+    RegisterResponse,
+    ResendOtpRequest,
+  } from '@/types/auth.types';
+
+  export const authApi = {
+    // Step 1: Gửi OTP
+    sendVerification: (data: SendVerificationRequest) =>
+      apiClient.post<ApiResponse<SendVerificationResponse>>(
+        '/auth/send-verification',
+        data
+      ),
+
+    // Step 2: Xác thực OTP
+    verifyEmail: (data: VerifyEmailRequest) =>
+      apiClient.post<ApiResponse<VerifyEmailResponse>>(
+        '/auth/verify-email',
+        data
+      ),
+
+    // Gửi lại OTP
+    resendOtp: (data: ResendOtpRequest) =>
+      apiClient.post<ApiResponse<SendVerificationResponse>>(
+        '/auth/resend-otp',
+        data
+      ),
+
+    // Step 3: Đăng ký
+    register: (data: RegisterRequest) =>
+      apiClient.post<ApiResponse<RegisterResponse>>(
+        '/auth/register',
+        data
+      ),
+
+    // ... login, refresh, etc. giữ nguyên
+  };
+
+  ---
+  Hook: useRegister
+
+  // hooks/useRegister.ts
+
+  import { useState, useCallback } from 'react';
+  import { useMutation } from '@tanstack/react-query';
+  import { authApi } from '@/services/api/auth.api';
+  import { useAuthStore } from '@/stores/authStore';
+  import { useRouter } from 'next/navigation';
+  import type { RegisterStep, RegisterWizardState } from '@/types/auth.types';
+  import type { EmailStepData, OtpStepData, RegisterStepData } from '@/lib/validators';
+
+  export function useRegister() {
+    const router = useRouter();
+    const login = useAuthStore((s) => s.login);
+
+    const [state, setState] = useState<RegisterWizardState>({
+      currentStep: 'email',
+      email: '',
+      verificationToken: null,
+      tokenExpiresAt: null,
+    });
+
+    const [retryAfter, setRetryAfter] = useState(0);
+
+    // ── Step 1: Gửi OTP ──
+    const sendVerificationMutation = useMutation({
+      mutationFn: authApi.sendVerification,
+      onSuccess: (res) => {
+        const data = res.data.data;
+        setState((prev) => ({
+          ...prev,
+          email: data.email,
+          currentStep: 'otp',
+        }));
+        setRetryAfter(data.retry_after);
+      },
+    });
+
+    const handleEmailSubmit = useCallback(
+      (data: EmailStepData) => {
+        sendVerificationMutation.mutate({ email: data.email });
+      },
+      [sendVerificationMutation]
+    );
+
+    // ── Step 2: Verify OTP ──
+    const verifyEmailMutation = useMutation({
+      mutationFn: authApi.verifyEmail,
+      onSuccess: (res) => {
+        const data = res.data.data;
+        setState((prev) => ({
+          ...prev,
+          verificationToken: data.verification_token,
+          tokenExpiresAt: new Date(Date.now() + data.token_expires_in * 1000),
+          currentStep: 'register',
+        }));
+      },
+    });
+
+    const handleOtpSubmit = useCallback(
+      (data: OtpStepData) => {
+        verifyEmailMutation.mutate({
+          email: state.email,
+          otp: data.otp,
+        });
+      },
+      [verifyEmailMutation, state.email]
+    );
+
+    // ── Resend OTP ──
+    const resendOtpMutation = useMutation({
+      mutationFn: authApi.resendOtp,
+      onSuccess: (res) => {
+        setRetryAfter(res.data.data.retry_after);
+      },
+    });
+
+    const handleResendOtp = useCallback(() => {
+      resendOtpMutation.mutate({ email: state.email });
+    }, [resendOtpMutation, state.email]);
+
+    // ── Step 3: Register ──
+    const registerMutation = useMutation({
+      mutationFn: authApi.register,
+      onSuccess: (res) => {
+        const { user, accessToken, refreshToken } = res.data.data;
+        login(user, accessToken, refreshToken);
+        router.push('/');
+      },
+    });
+
+    const handleRegisterSubmit = useCallback(
+      (data: RegisterStepData) => {
+        if (!state.verificationToken) return;
+
+        // Check token chưa hết hạn
+        if (state.tokenExpiresAt && new Date() > state.tokenExpiresAt) {
+          // Token hết hạn → quay lại step email
+          setState((prev) => ({
+            ...prev,
+            currentStep: 'email',
+            verificationToken: null,
+            tokenExpiresAt: null,
+          }));
+          return;
+        }
+
+        registerMutation.mutate({
+          verification_token: state.verificationToken,
+          password: data.password,
+          displayName: data.displayName,
+          username: data.username,
+        });
+      },
+      [registerMutation, state.verificationToken, state.tokenExpiresAt]
+    );
+
+    // ── Navigation ──
+    const goBack = useCallback(() => {
+      setState((prev) => {
+        if (prev.currentStep === 'otp') return { ...prev, currentStep: 'email' };
+        if (prev.currentStep === 'register') return { ...prev, currentStep: 'otp' };
+        return prev;
+      });
+    }, []);
+
+    return {
+      // State
+      currentStep: state.currentStep,
+      email: state.email,
+      tokenExpiresAt: state.tokenExpiresAt,
+      retryAfter,
+
+      // Actions
+      handleEmailSubmit,
+      handleOtpSubmit,
+      handleResendOtp,
+      handleRegisterSubmit,
+      goBack,
+
+      // Loading states
+      isSubmitting:
+        sendVerificationMutation.isPending ||
+        verifyEmailMutation.isPending ||
+        registerMutation.isPending,
+
+      // Errors
+      emailError: sendVerificationMutation.error,
+      otpError: verifyEmailMutation.error,
+      registerError: registerMutation.error,
+
+      // Individual loading
+      isSendingOtp: sendVerificationMutation.isPending,
+      isVerifyingOtp: verifyEmailMutation.isPending,
+      isRegistering: registerMutation.isPending,
+      isResending: resendOtpMutation.isPending,
+    };
+  }
+
+  ---
+  Component: RegisterWizard
+
+  // components/auth/RegisterWizard.tsx
+
+  'use client';
+
+  import { useRegister } from '@/hooks/useRegister';
+  import { EmailStep } from './EmailStep';
+  import { OtpStep } from './OtpStep';
+  import { RegisterStep } from './RegisterStep';
+  import { StepIndicator } from './StepIndicator';
+
+  const STEPS = [
+    { key: 'email', label: 'Email' },
+    { key: 'otp', label: 'Xác thực' },
+    { key: 'register', label: 'Tạo tài khoản' },
+  ] as const;
+
+  export function RegisterWizard() {
+    const {
+      currentStep,
+      email,
+      tokenExpiresAt,
+      retryAfter,
+      handleEmailSubmit,
+      handleOtpSubmit,
+      handleResendOtp,
+      handleRegisterSubmit,
+      goBack,
+      isSendingOtp,
+      isVerifyingOtp,
+      isRegistering,
+      isResending,
+      emailError,
+      otpError,
+      registerError,
+    } = useRegister();
+
+    return (
+      <div className="mx-auto w-full max-w-md space-y-8">
+        {/* Header */}
+        <div className="text-center">
+          <h1 className="text-2xl font-bold tracking-tight">
+            Tạo tài khoản
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {currentStep === 'email' && 'Nhập email để bắt đầu'}
+            {currentStep === 'otp' && `Kiểm tra email ${email}`}
+            {currentStep === 'register' && 'Hoàn tất thông tin đăng ký'}
+          </p>
+        </div>
+
+        {/* Step Indicator */}
+        <StepIndicator steps={STEPS} currentStep={currentStep} />
+
+        {/* Step Content */}
+        <div className="rounded-lg border bg-card p-6 shadow-sm">
+          {currentStep === 'email' && (
+            <EmailStep
+              onSubmit={handleEmailSubmit}
+              isLoading={isSendingOtp}
+              error={emailError}
+            />
+          )}
+
+          {currentStep === 'otp' && (
+            <OtpStep
+              email={email}
+              onSubmit={handleOtpSubmit}
+              onResend={handleResendOtp}
+              onBack={goBack}
+              isLoading={isVerifyingOtp}
+              isResending={isResending}
+              retryAfter={retryAfter}
+              error={otpError}
+            />
+          )}
+
+          {currentStep === 'register' && (
+            <RegisterStep
+              email={email}
+              tokenExpiresAt={tokenExpiresAt}
+              onSubmit={handleRegisterSubmit}
+              onBack={goBack}
+              isLoading={isRegistering}
+              error={registerError}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  ---
+  Component: StepIndicator
+
+  // components/auth/StepIndicator.tsx
+
+  import { Check } from 'lucide-react';
+  import { cn } from '@/lib/utils';
+  import type { RegisterStep } from '@/types/auth.types';
+
+  interface Step {
+    key: string;
+    label: string;
+  }
+
+  interface StepIndicatorProps {
+    steps: readonly Step[];
+    currentStep: RegisterStep;
+  }
+
+  const STEP_ORDER: RegisterStep[] = ['email', 'otp', 'register'];
+
+  export function StepIndicator({ steps, currentStep }: StepIndicatorProps) {
+    const currentIndex = STEP_ORDER.indexOf(currentStep);
+
+    return (
+      <div className="flex items-center justify-between">
+        {steps.map((step, index) => {
+          const isCompleted = index < currentIndex;
+          const isCurrent = index === currentIndex;
+
+          return (
+            <div key={step.key} className="flex items-center">
+              {/* Circle */}
+              <div className="flex flex-col items-center">
+                <div
+                  className={cn(
+                    'flex h-10 w-10 items-center justify-center rounded-full border-2 text-sm font-semibold transition-all',
+                    isCompleted && 'border-primary bg-primary text-primary-foreground',
+                    isCurrent && 'border-primary bg-background text-primary',
+                    !isCompleted && !isCurrent && 'border-muted-foreground/30 text-muted-foreground/50'
+                  )}
+                >
+                  {isCompleted ? <Check className="h-5 w-5" /> : index + 1}
+                </div>
+                <span
+                  className={cn(
+                    'mt-2 text-xs',
+                    isCurrent ? 'font-semibold text-foreground' : 'text-muted-foreground'
+                  )}
+                >
+                  {step.label}
+                </span>
+              </div>
+
+              {/* Connector line */}
+              {index < steps.length - 1 && (
+                <div
+                  className={cn(
+                    'mx-3 h-0.5 w-16 transition-all',
+                    index < currentIndex ? 'bg-primary' : 'bg-muted-foreground/20'
+                  )}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  ---
+  Component: EmailStep
+
+  // components/auth/EmailStep.tsx
+
+  'use client';
+
+  import { useForm } from 'react-hook-form';
+  import { zodResolver } from '@hookform/resolvers/zod';
+  import { emailStepSchema, type EmailStepData } from '@/lib/validators';
+  import { Button } from '@/components/ui/button';
+  import { Input } from '@/components/ui/input';
+  import { Mail, ArrowRight, Loader2 } from 'lucide-react';
+  import { getErrorMessage } from '@/lib/utils';
+  import Link from 'next/link';
+
+  interface EmailStepProps {
+    onSubmit: (data: EmailStepData) => void;
+    isLoading: boolean;
+    error: Error | null;
+  }
+
+  export function EmailStep({ onSubmit, isLoading, error }: EmailStepProps) {
+    const {
+      register,
+      handleSubmit,
+      formState: { errors },
+    } = useForm<EmailStepData>({
+      resolver: zodResolver(emailStepSchema),
+    });
+
+    return (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        {/* Email Input */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="email">
+            Địa chỉ email
+          </label>
+          <div className="relative">
+            <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              className="pl-10"
+              disabled={isLoading}
+              {...register('email')}
+            />
+          </div>
+          {errors.email && (
+            <p className="text-sm text-destructive">{errors.email.message}</p>
+          )}
+        </div>
+
+        {/* API Error */}
+        {error && (
+          <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            {getErrorMessage(error)}
+          </div>
+        )}
+
+        {/* Submit */}
+        <Button type="submit" className="w-full" disabled={isLoading}>
+          {isLoading ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <ArrowRight className="mr-2 h-4 w-4" />
+          )}
+          Tiếp tục
+        </Button>
+
+        {/* Login link */}
+        <p className="text-center text-sm text-muted-foreground">
+          Đã có tài khoản?{' '}
+          <Link href="/login" className="font-medium text-primary hover:underline">
+            Đăng nhập
+          </Link>
+        </p>
+      </form>
+    );
+  }
+
+  ---
+  Component: OtpInput (6 ô riêng biệt)
+
+  // components/auth/OtpInput.tsx
+
+  'use client';
+
+  import { useRef, useState, useCallback, KeyboardEvent, ClipboardEvent } from 'react';
+  import { cn } from '@/lib/utils';
+
+  interface OtpInputProps {
+    length?: number;
+    value: string;
+    onChange: (value: string) => void;
+    disabled?: boolean;
+    hasError?: boolean;
+  }
+
+  export function OtpInput({
+    length = 6,
+    value,
+    onChange,
+    disabled = false,
+    hasError = false,
+  }: OtpInputProps) {
+    const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+    const [focusIndex, setFocusIndex] = useState(-1);
+
+    const digits = value.split('').concat(Array(length).fill('')).slice(0, length);
+
+    const focusInput = (index: number) => {
+      if (index >= 0 && index < length) {
+        inputRefs.current[index]?.focus();
+      }
+    };
+
+    const handleChange = useCallback(
+      (index: number, char: string) => {
+        if (!/^\d$/.test(char)) return;
+
+        const newDigits = [...digits];
+        newDigits[index] = char;
+        const newValue = newDigits.join('').slice(0, length);
+        onChange(newValue);
+
+        // Auto-focus next
+        if (index < length - 1) {
+          focusInput(index + 1);
+        }
+      },
+      [digits, length, onChange]
+    );
+
+    const handleKeyDown = useCallback(
+      (index: number, e: KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Backspace') {
+          e.preventDefault();
+          const newDigits = [...digits];
+
+          if (digits[index]) {
+            newDigits[index] = '';
+            onChange(newDigits.join(''));
+          } else if (index > 0) {
+            newDigits[index - 1] = '';
+            onChange(newDigits.join(''));
+            focusInput(index - 1);
+          }
+        }
+
+        if (e.key === 'ArrowLeft' && index > 0) {
+          focusInput(index - 1);
+        }
+        if (e.key === 'ArrowRight' && index < length - 1) {
+          focusInput(index + 1);
+        }
+      },
+      [digits, length, onChange]
+    );
+
+    // Paste handler: paste "384719" → fill tất cả ô
+    const handlePaste = useCallback(
+      (e: ClipboardEvent<HTMLInputElement>) => {
+        e.preventDefault();
+        const pasted = e.clipboardData
+          .getData('text')
+          .replace(/\D/g, '')
+          .slice(0, length);
+
+        if (pasted.length > 0) {
+          onChange(pasted);
+          focusInput(Math.min(pasted.length, length - 1));
+        }
+      },
+      [length, onChange]
+    );
+
+    return (
+      <div className="flex justify-center gap-2">
+        {digits.map((digit, index) => (
+          <input
+            key={index}
+            ref={(el) => {
+              inputRefs.current[index] = el;
+            }}
+            type="text"
+            inputMode="numeric"
+            maxLength={1}
+            value={digit}
+            disabled={disabled}
+            className={cn(
+              'h-14 w-12 rounded-lg border-2 bg-background text-center text-xl font-bold',
+              'transition-all duration-150',
+              'focus:outline-none focus:ring-2 focus:ring-primary/20',
+              focusIndex === index && 'border-primary',
+              hasError && 'border-destructive',
+              !hasError && focusIndex !== index && 'border-input',
+              disabled && 'opacity-50'
+            )}
+            onChange={(e) => handleChange(index, e.target.value)}
+            onKeyDown={(e) => handleKeyDown(index, e)}
+            onFocus={() => setFocusIndex(index)}
+            onBlur={() => setFocusIndex(-1)}
+            onPaste={handlePaste}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  ---
+  Component: OtpStep
+
+  // components/auth/OtpStep.tsx
+
+  'use client';
+
+  import { useState, useEffect } from 'react';
+  import { OtpInput } from './OtpInput';
+  import { ResendOtpButton } from './ResendOtpButton';
+  import { Button } from '@/components/ui/button';
+  import { ArrowLeft, ArrowRight, Loader2, Mail } from 'lucide-react';
+  import { getErrorMessage } from '@/lib/utils';
+
+  interface OtpStepProps {
+    email: string;
+    onSubmit: (data: { otp: string }) => void;
+    onResend: () => void;
+    onBack: () => void;
+    isLoading: boolean;
+    isResending: boolean;
+    retryAfter: number;
+    error: Error | null;
+  }
+
+  export function OtpStep({
+    email,
+    onSubmit,
+    onResend,
+    onBack,
+    isLoading,
+    isResending,
+    retryAfter,
+    error,
+  }: OtpStepProps) {
+    const [otp, setOtp] = useState('');
+
+    // Auto submit khi nhập đủ 6 số
+    useEffect(() => {
+      if (otp.length === 6) {
+        onSubmit({ otp });
+      }
+    }, [otp, onSubmit]);
+
+    // Reset OTP khi có lỗi (để user nhập lại)
+    useEffect(() => {
+      if (error) {
+        setOtp('');
+      }
+    }, [error]);
+
+    return (
+      <div className="space-y-6">
+        {/* Email indicator */}
+        <div className="flex items-center justify-center gap-2 rounded-md bg-muted px-4 py-2">
+          <Mail className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">{email}</span>
+        </div>
+
+        {/* OTP description */}
+        <p className="text-center text-sm text-muted-foreground">
+          Nhập mã 6 chữ số đã gửi đến email của bạn
+        </p>
+
+        {/* OTP Input */}
+        <OtpInput
+          value={otp}
+          onChange={setOtp}
+          disabled={isLoading}
+          hasError={!!error}
+        />
+
+        {/* Error */}
+        {error && (
+          <div className="rounded-md bg-destructive/10 p-3 text-center text-sm text-destructive">
+            {getErrorMessage(error)}
+          </div>
+        )}
+
+        {/* Loading indicator */}
+        {isLoading && (
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Đang xác thực...
+          </div>
+        )}
+
+        {/* Resend */}
+        <div className="text-center">
+          <ResendOtpButton
+            onResend={onResend}
+            isResending={isResending}
+            retryAfter={retryAfter}
+          />
+        </div>
+
+        {/* Back button */}
+        <Button
+          variant="ghost"
+          onClick={onBack}
+          className="w-full"
+          disabled={isLoading}
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Đổi email khác
+        </Button>
+      </div>
+    );
+  }
+
+  ---
+  Component: ResendOtpButton
+
+  // components/auth/ResendOtpButton.tsx
+
+  'use client';
+
+  import { useState, useEffect } from 'react';
+  import { Button } from '@/components/ui/button';
+  import { Loader2, RotateCw } from 'lucide-react';
+
+  interface ResendOtpButtonProps {
+    onResend: () => void;
+    isResending: boolean;
+    retryAfter: number; // giây
+  }
+
+  export function ResendOtpButton({
+    onResend,
+    isResending,
+    retryAfter,
+  }: ResendOtpButtonProps) {
+    const [countdown, setCountdown] = useState(retryAfter);
+
+    // Reset countdown khi retryAfter thay đổi (sau mỗi lần resend)
+    useEffect(() => {
+      setCountdown(retryAfter);
+    }, [retryAfter]);
+
+    // Countdown timer
+    useEffect(() => {
+      if (countdown <= 0) return;
+
+      const timer = setInterval(() => {
+        setCountdown((prev) => Math.max(0, prev - 1));
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }, [countdown]);
+
+    const canResend = countdown === 0 && !isResending;
+
+    return (
+      <Button
+        type="button"
+        variant="link"
+        size="sm"
+        onClick={onResend}
+        disabled={!canResend}
+        className="text-sm"
+      >
+        {isResending ? (
+          <>
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            Đang gửi...
+          </>
+        ) : countdown > 0 ? (
+          <>Gửi lại mã sau {countdown}s</>
+        ) : (
+          <>
+            <RotateCw className="mr-1 h-3 w-3" />
+            Gửi lại mã xác thực
+          </>
+        )}
+      </Button>
+    );
+  }
+
+  ---
+  Component: RegisterStep
+
+  // components/auth/RegisterStep.tsx
+
+  'use client';
+
+  import { useForm } from 'react-hook-form';
+  import { zodResolver } from '@hookform/resolvers/zod';
+  import { registerStepSchema, type RegisterStepData } from '@/lib/validators';
+  import { Button } from '@/components/ui/button';
+  import { Input } from '@/components/ui/input';
+  import {
+    ArrowLeft,
+    Check,
+    Eye,
+    EyeOff,
+    Loader2,
+    Lock,
+    ShieldCheck,
+    User,
+    AtSign,
+  } from 'lucide-react';
+  import { useState, useEffect } from 'react';
+  import { getErrorMessage } from '@/lib/utils';
+
+  interface RegisterStepProps {
+    email: string;
+    tokenExpiresAt: Date | null;
+    onSubmit: (data: RegisterStepData) => void;
+    onBack: () => void;
+    isLoading: boolean;
+    error: Error | null;
+  }
+
+  export function RegisterStep({
+    email,
+    tokenExpiresAt,
+    onSubmit,
+    onBack,
+    isLoading,
+    error,
+  }: RegisterStepProps) {
+    const [showPassword, setShowPassword] = useState(false);
+    const [showConfirm, setShowConfirm] = useState(false);
+    const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+    const {
+      register,
+      handleSubmit,
+      formState: { errors },
+      watch,
+    } = useForm<RegisterStepData>({
+      resolver: zodResolver(registerStepSchema),
+    });
+
+    const password = watch('password', '');
+
+    // Password strength indicator
+    const getPasswordStrength = (pwd: string) => {
+      let score = 0;
+      if (pwd.length >= 8) score++;
+      if (/[a-z]/.test(pwd)) score++;
+      if (/[A-Z]/.test(pwd)) score++;
+      if (/\d/.test(pwd)) score++;
+      if (/[@$!%*?&]/.test(pwd)) score++;
+      return score;
+    };
+
+    const strength = getPasswordStrength(password);
+    const strengthLabels = ['', 'Rất yếu', 'Yếu', 'Trung bình', 'Mạnh', 'Rất mạnh'];
+    const strengthColors = ['', 'bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-blue-500', 'bg-green-500'];
+
+    // Token countdown
+    useEffect(() => {
+      if (!tokenExpiresAt) return;
+
+      const timer = setInterval(() => {
+        const remaining = Math.max(
+          0,
+          Math.floor((tokenExpiresAt.getTime() - Date.now()) / 1000)
+        );
+        setTimeLeft(remaining);
+
+        if (remaining === 0) {
+          clearInterval(timer);
+        }
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }, [tokenExpiresAt]);
+
+    return (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        {/* Verified email badge */}
+        <div className="flex items-center gap-2 rounded-md bg-green-50 px-4 py-2 dark:bg-green-950/20">
+          <ShieldCheck className="h-4 w-4 text-green-600" />
+          <span className="text-sm font-medium text-green-700 dark:text-green-400">
+            {email}
+          </span>
+          <Check className="ml-auto h-4 w-4 text-green-600" />
+        </div>
+
+        {/* Token expiry warning */}
+        {timeLeft !== null && timeLeft < 300 && timeLeft > 0 && (
+          <div className="rounded-md bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:bg-amber-950/20">
+            ⏰ Bạn còn {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')} để hoàn tất đăng ký
+          </div>
+        )}
+
+        {/* Display Name */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="displayName">
+            Tên hiển thị
+          </label>
+          <div className="relative">
+            <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="displayName"
+              placeholder="Nguyễn Văn A"
+              className="pl-10"
+              disabled={isLoading}
+              {...register('displayName')}
+            />
+          </div>
+          {errors.displayName && (
+            <p className="text-sm text-destructive">{errors.displayName.message}</p>
+          )}
+        </div>
+
+        {/* Username */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="username">
+            Username
+          </label>
+          <div className="relative">
+            <AtSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="username"
+              placeholder="nguyenvana"
+              className="pl-10"
+              disabled={isLoading}
+              {...register('username')}
+            />
+          </div>
+          {errors.username && (
+            <p className="text-sm text-destructive">{errors.username.message}</p>
+          )}
+        </div>
+
+        {/* Password */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="password">
+            Mật khẩu
+          </label>
+          <div className="relative">
+            <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="password"
+              type={showPassword ? 'text' : 'password'}
+              placeholder="••••••••"
+              className="pl-10 pr-10"
+              disabled={isLoading}
+              {...register('password')}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+
+          {/* Password strength bar */}
+          {password.length > 0 && (
+            <div className="space-y-1">
+              <div className="flex gap-1">
+                {[1, 2, 3, 4, 5].map((level) => (
+                  <div
+                    key={level}
+                    className={`h-1.5 flex-1 rounded-full transition-all ${
+                      level <= strength ? strengthColors[strength] : 'bg-muted'
+                    }`}
+                  />
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Độ mạnh: {strengthLabels[strength]}
+              </p>
+            </div>
+          )}
+
+          {errors.password && (
+            <p className="text-sm text-destructive">{errors.password.message}</p>
+          )}
+        </div>
+
+        {/* Confirm Password */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="confirmPassword">
+            Nhập lại mật khẩu
+          </label>
+          <div className="relative">
+            <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="confirmPassword"
+              type={showConfirm ? 'text' : 'password'}
+              placeholder="••••••••"
+              className="pl-10 pr-10"
+              disabled={isLoading}
+              {...register('confirmPassword')}
+            />
+            <button
+              type="button"
+              onClick={() => setShowConfirm(!showConfirm)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          {errors.confirmPassword && (
+            <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
+          )}
+        </div>
+
+        {/* API Error */}
+        {error && (
+          <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            {getErrorMessage(error)}
+          </div>
+        )}
+
+        {/* Submit */}
+        <Button type="submit" className="w-full" disabled={isLoading || timeLeft === 0}>
+          {isLoading ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Check className="mr-2 h-4 w-4" />
+          )}
+          Tạo tài khoản
+        </Button>
+
+        {/* Back */}
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onBack}
+          className="w-full"
+          disabled={isLoading}
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Quay lại
+        </Button>
+      </form>
+    );
+  }
+
+  ---
+  Page: Register
+
+  // app/(auth)/register/page.tsx
+
+  import { RegisterWizard } from '@/components/auth/RegisterWizard';
+  import type { Metadata } from 'next';
+
+  export const metadata: Metadata = {
+    title: 'Đăng ký - Blog',
+    description: 'Tạo tài khoản mới',
+  };
+
+  export default function RegisterPage() {
+    return (
+      <div className="flex min-h-screen items-center justify-center px-4 py-12">
+        <RegisterWizard />
+      </div>
+    );
+  }
+
+  ---
+  🔒 SECURITY CONSIDERATIONS
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                     SECURITY CHECKLIST                               │
+  ├─────────────────────────────────────────────────────────────────────┤
+  │                                                                     │
+  │  ✅ OTP được hash bằng bcrypt trước khi lưu DB                    │
+  │     → Dù DB bị leak, attacker không biết OTP                      │
+  │                                                                     │
+  │  ✅ Rate limiting đa tầng:                                          │
+  │     → 60s giữa các lần gửi OTP                                    │
+  │     → Tối đa 5 lần gửi OTP / email / giờ                          │
+  │     → Tối đa 5 lần nhập sai OTP / verification                    │
+  │     → Global rate limit: 20 req/min cho auth endpoints             │
+  │                                                                     │
+  │  ✅ Verification token (JWT) có:                                    │
+  │     → TTL ngắn (15 phút)                                           │
+  │     → Secret key riêng (JWT_VERIFICATION_SECRET)                   │
+  │     → Type claim để không dùng lại cho mục đích khác              │
+  │     → Gắn verificationId → chỉ dùng 1 lần                        │
+  │                                                                     │
+  │  ✅ OTP 6 số crypto-secure (crypto.randomBytes)                    │
+  │     → Không dùng Math.random()                                     │
+  │                                                                     │
+  │  ✅ Email normalize: toLowerCase().trim()                           │
+  │     → Tránh bypass bằng "User@Email.COM "                          │
+  │                                                                     │
+  │  ✅ Timing attack prevention:                                       │
+  │     → Dùng bcrypt.compare (constant-time) cho OTP                  │
+  │     → Không expose "email chưa đăng ký" trong verify endpoint     │
+  │                                                                     │
+  │  ✅ Cleanup expired OTPs:                                           │
+  │     → Cron job mỗi 30 phút xóa OTP hết hạn > 24h                 │
+  │     → Tránh bảng email_verifications phình to                     │
+  │                                                                     │
+  │  ✅ One-time use:                                                    │
+  │     → Mỗi verification_token chỉ tạo được 1 account              │
+  │     → Check verificationId tồn tại + isVerified = true            │
+  │                                                                     │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ---
+  🔄 FULL SEQUENCE DIAGRAM
+
+  ┌──────┐        ┌──────────┐       ┌──────────┐      ┌───────┐     ┌───────┐
+  │ User │        │ Frontend │       │ Backend  │      │ Redis │     │ Email │
+  │(Browser)      │ (Next.js)│       │(NestJS)  │      │       │     │Service│
+  └──┬───┘        └────┬─────┘       └────┬─────┘      └───┬───┘     └───┬───┘
+     │                 │                  │                 │             │
+     │ 1. Nhập email   │                  │                 │             │
+     │ ──────────────▶ │                  │                 │             │
+     │                 │                  │                 │             │
+     │                 │ 2. POST          │                 │             │
+     │                 │  /send-verif.    │                 │             │
+     │                 │ ───────────────▶ │                 │             │
+     │                 │                  │                 │             │
+     │                 │                  │ 3. Check email  │             │
+     │                 │                  │    not exists   │             │
+     │                 │                  │ ──────────────▶ │             │
+     │                 │                  │ ◀────(rate ok)──│             │
+     │                 │                  │                 │             │
+     │                 │                  │ 4. Generate OTP │             │
+     │                 │                  │    Hash + Save  │             │
+     │                 │                  │                 │             │
+     │                 │                  │ 5. Queue email  │             │
+     │                 │                  │ ────────────────┼───────────▶ │
+     │                 │                  │                 │             │
+     │                 │ 6. { expires_in, │                 │             │
+     │                 │    retry_after } │                 │             │
+     │                 │ ◀─────────────── │                 │             │
+     │                 │                  │                 │             │
+     │ 7. Show OTP UI  │                  │                 │   8. Send   │
+     │ ◀────────────── │                  │                 │   email OTP │
+     │                 │                  │                 │   ────────▶ │
+     │                 │                  │                 │             │ → 📧
+     │                 │                  │                 │             │
+     │ 9. User nhập    │                  │                 │             │
+     │    OTP "384719"  │                  │                 │             │
+     │ ──────────────▶ │                  │                 │             │
+     │                 │ 10. POST         │                 │             │
+     │                 │  /verify-email   │                 │             │
+     │                 │ ───────────────▶ │                 │             │
+     │                 │                  │                 │             │
+     │                 │                  │ 11. Verify OTP  │             │
+     │                 │                  │  bcrypt.compare │             │
+     │                 │                  │  ✅ Match!      │             │
+     │                 │                  │                 │             │
+     │                 │                  │ 12. Sign JWT    │             │
+     │                 │                  │  verification   │             │
+     │                 │                  │  _token (15m)   │             │
+     │                 │                  │                 │             │
+     │                 │ 13. { verif.     │                 │             │
+     │                 │    _token }      │                 │             │
+     │                 │ ◀─────────────── │                 │             │
+     │                 │                  │                 │             │
+     │ 14. Show        │                  │                 │             │
+     │  Register Form  │                  │                 │             │
+     │ ◀────────────── │                  │                 │             │
+     │                 │                  │                 │             │
+     │ 15. Fill form   │                  │                 │             │
+     │  + Submit       │                  │                 │             │
+     │ ──────────────▶ │                  │                 │             │
+     │                 │ 16. POST         │                 │             │
+     │                 │  /register       │                 │             │
+     │                 │  + verif._token  │                 │             │
+     │                 │ ───────────────▶ │                 │             │
+     │                 │                  │                 │             │
+     │                 │                  │ 17. Verify JWT  │             │
+     │                 │                  │ 18. Create user │             │
+     │                 │                  │ 19. Create wallt│             │
+     │                 │                  │ 20. Sign auth   │             │
+     │                 │                  │     tokens      │             │
+     │                 │                  │                 │             │
+     │                 │ 21. { user,      │                 │             │
+     │                 │  accessToken,    │                 │             │
+     │                 │  refreshToken }  │                 │             │
+     │                 │ ◀─────────────── │                 │             │
+     │                 │                  │                 │             │
+     │ 22. Redirect    │                  │                 │             │
+     │    to Home 🎉   │                  │                 │             │
+     │ ◀────────────── │                  │                 │             │
+     │                 │                  │                 │             │
+
+  ---
+  📊 ERROR HANDLING MAP
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Endpoint              │ Code │ Khi nào              │ UI Action │
+  ├────────────────────────┼──────┼──────────────────────┼───────────┤
+  │ /send-verification     │ 409  │ Email đã đăng ký     │ Hiện msg  │
+  │                        │      │                      │ + link    │
+  │                        │      │                      │ "Đăng nhập│
+  │                        │      │                      │  tại đây" │
+  │                        │ 429  │ Gửi quá nhanh        │ Hiện      │
+  │                        │      │                      │ countdown │
+  ├────────────────────────┼──────┼──────────────────────┼───────────┤
+  │ /verify-email          │ 400  │ OTP sai              │ Clear OTP │
+  │                        │      │                      │ input,    │
+  │                        │      │                      │ show "Còn │
+  │                        │      │                      │  X lần"   │
+  │                        │ 410  │ OTP hết hạn          │ Show      │
+  │                        │      │                      │ "Gửi lại" │
+  │                        │ 423  │ Quá nhiều lần sai    │ Force     │
+  │                        │      │                      │ resend OTP│
+  ├────────────────────────┼──────┼──────────────────────┼───────────┤
+  │ /register              │ 401  │ Token hết hạn/sai    │ Quay lại  │
+  │                        │      │                      │ step email│
+  │                        │ 409  │ Username trùng       │ Highlight │
+  │                        │      │                      │ field     │
+  │                        │ 409  │ Email đã đăng ký     │ Quay lại  │
+  │                        │      │ (race condition)     │ step email│
+  └────────────────────────┴──────┴──────────────────────┴───────────┘
+
+  ---
+  ✅ CHECKLIST IMPLEMENTATION
+
+  Backend:
+    [ ] Migration: tạo bảng email_verifications
+    [ ] Migration: thêm email_verified_at vào users (NOT NULL)
+    [ ] Entity: EmailVerification
+    [ ] DTO: SendVerificationDto, VerifyEmailDto, ResendOtpDto
+    [ ] DTO: RegisterDto (thêm verification_token)
+    [ ] Service: sendVerification()
+    [ ] Service: verifyEmail() → trả verification_token
+    [ ] Service: resendOtp()
+    [ ] Service: register() → validate verification_token
+    [ ] Email template: OTP verification
+    [ ] BullMQ: send-otp job
+    [ ] Cron: cleanup expired OTPs
+    [ ] Rate limiting: auth endpoints
+    [ ] ENV: JWT_VERIFICATION_SECRET
+
+  Frontend:
+    [ ] Types: auth.types.ts (bổ sung)
+    [ ] Validators: emailStepSchema, otpStepSchema, registerStepSchema
+    [ ] API: auth.api.ts (bổ sung 3 endpoints)
+    [ ] Hook: useRegister.ts
+    [ ] Component: RegisterWizard.tsx
+    [ ] Component: StepIndicator.tsx
+    [ ] Component: EmailStep.tsx
+    [ ] Component: OtpInput.tsx
+    [ ] Component: OtpStep.tsx
+    [ ] Component: ResendOtpButton.tsx
+    [ ] Component: RegisterStep.tsx
+    [ ] Page: app/(auth)/register/page.tsx
+    [ ] Responsive: Mobile-friendly cho tất cả steps
