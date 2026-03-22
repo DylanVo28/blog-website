@@ -1,0 +1,2749 @@
+ Thiết kế Hệ Thống Payment MoMo QR - Cá Nhân (Không Cần Đăng Ký Doanh Nghiệp)
+
+  📋 Tổng Quan Kiến Trúc
+
+  Vì không đăng ký doanh nghiệp → không dùng được MoMo Business API chính thức. Ta sẽ xây dựng hệ thống "Semi-Automatic Payment" dựa trên:
+
+  1. Tạo QR MoMo cá nhân với nội dung chuyển khoản có mã định danh
+  2. User quét QR → chuyển tiền với đúng nội dung
+  3. Xác nhận thủ công bởi Admin HOẶC tự động qua webhook kiểm tra MoMo notification (nâng cao)
+
+  ---
+  🏗️  KIẾN TRÚC HỆ THỐNG
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                        PAYMENT FLOW                             │
+  │                                                                 │
+  │  User Frontend          Backend (NestJS)         Admin Panel    │
+  │  ┌───────────┐         ┌──────────────┐        ┌────────────┐  │
+  │  │ 1. Nhập   │────────>│ 2. Tạo       │        │            │  │
+  │  │  số tiền   │         │  deposit     │        │ 6. Admin   │  │
+  │  │           │<────────│  + mã code   │        │  xác nhận  │  │
+  │  │ 3. Hiển   │         │              │        │  (hoặc tự  │  │
+  │  │  thị QR   │         │ 4. Pending   │<───────│   động)    │  │
+  │  │  MoMo     │         │  deposit     │        │            │  │
+  │  │           │         │              │────────>│ 5. Thông   │  │
+  │  │ 7. Nhận   │<────────│ 8. Cộng      │        │  báo mới   │  │
+  │  │  thông báo│  socket │  balance     │        │            │  │
+  │  └───────────┘         └──────────────┘        └────────────┘  │
+  │                              │                                  │
+  │                              │ BullMQ                           │
+  │                        ┌─────▼──────┐                          │
+  │                        │ Auto-expire │                          │
+  │                        │ sau 30 phút │                          │
+  │                        └────────────┘                          │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ---
+  📦 PHASE 1: DATABASE SCHEMA
+
+  -- ============================================
+  -- DEPOSITS (Cập nhật lại cho MoMo QR cá nhân)
+  -- ============================================
+  CREATE TABLE deposits (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id),
+      amount          BIGINT NOT NULL CHECK (amount >= 10000), -- tối thiểu 10.000đ
+
+      -- Mã giao dịch nội bộ (user ghi vào nội dung chuyển khoản)
+      deposit_code    VARCHAR(20) UNIQUE NOT NULL,  -- VD: "NAP-A1B2C3"
+
+      payment_method  VARCHAR(50) DEFAULT 'momo_qr', -- 'momo_qr' | 'bank_transfer'
+
+      -- Thông tin MoMo người nhận (admin)
+      receiver_phone  VARCHAR(15),      -- SĐT MoMo admin
+      receiver_name   VARCHAR(100),     -- Tên tài khoản MoMo admin
+
+      -- QR data
+      qr_data         TEXT,             -- Deep link MoMo hoặc QR raw data
+      qr_image_url    VARCHAR(500),     -- URL ảnh QR đã generate
+
+      -- Trạng thái
+      status          VARCHAR(20) DEFAULT 'pending',
+      -- 'pending' | 'user_confirmed' | 'completed' | 'failed' | 'expired'
+
+      -- User tự xác nhận đã chuyển (kèm ảnh)
+      user_confirmed_at   TIMESTAMPTZ,
+      transfer_proof_url  VARCHAR(500),     -- Ảnh chụp màn hình chuyển khoản
+
+      -- Admin xác nhận
+      admin_confirmed_by  UUID REFERENCES users(id),
+      admin_note          TEXT,
+
+      expires_at      TIMESTAMPTZ NOT NULL, -- Hết hạn sau 30 phút
+      completed_at    TIMESTAMPTZ,
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX idx_deposits_code ON deposits(deposit_code);
+  CREATE INDEX idx_deposits_status ON deposits(status);
+  CREATE INDEX idx_deposits_user ON deposits(user_id);
+  CREATE INDEX idx_deposits_expires ON deposits(expires_at) WHERE status = 'pending';
+
+  -- ============================================
+  -- PAYMENT_CONFIGS (Cấu hình thanh toán - Admin quản lý)
+  -- ============================================
+  CREATE TABLE payment_configs (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      method          VARCHAR(50) UNIQUE NOT NULL, -- 'momo' | 'bank_transfer'
+      is_active       BOOLEAN DEFAULT TRUE,
+      config          JSONB NOT NULL,
+      -- MoMo: { phone, name, qr_template }
+      -- Bank: { bank_name, account_number, account_name }
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  -- Seed data
+  INSERT INTO payment_configs (method, config) VALUES
+  ('momo', '{
+      "phone": "0909123456",
+      "name": "NGUYEN VAN A",
+      "min_amount": 10000,
+      "max_amount": 5000000
+  }'),
+  ('bank_transfer', '{
+      "bank_name": "MB Bank",
+      "account_number": "0909123456789",
+      "account_name": "NGUYEN VAN A",
+      "min_amount": 10000,
+      "max_amount": 50000000
+  }');
+
+  ---
+  📦 PHASE 2: BACKEND - NestJS
+
+  2.1: MoMo QR Generator Service
+
+  // src/modules/payment/services/momo-qr.service.ts
+
+  import { Injectable } from '@nestjs/common';
+  import * as QRCode from 'qrcode';
+
+  export interface MoMoQRData {
+    phone: string;
+    name: string;
+    amount: number;
+    comment: string; // nội dung chuyển khoản
+  }
+
+  export interface GeneratedQR {
+    deepLink: string;
+    qrDataUrl: string; // base64 image
+    qrImageBuffer: Buffer;
+  }
+
+  @Injectable()
+  export class MoMoQRService {
+    /**
+     * Tạo MoMo Deep Link - khi user click sẽ mở app MoMo
+     * với thông tin đã điền sẵn
+     *
+     * Format MoMo Deep Link (Personal Transfer):
+     * https://me.momo.vn/{phone}
+     *
+     * Hoặc dùng QR format 2 (EMVCo):
+     * Đây là format chuẩn mà app MoMo scan được
+     */
+    generateMoMoDeepLink(data: MoMoQRData): string {
+      // Deep link đơn giản - mở trang MoMo cá nhân
+      // User sẽ thấy thông tin người nhận, tự nhập số tiền
+      const baseUrl = `https://me.momo.vn/${data.phone}`;
+
+      // Một số version MoMo hỗ trợ thêm params:
+      const params = new URLSearchParams({
+        amount: data.amount.toString(),
+        comment: data.comment,
+      });
+
+      return `${baseUrl}?${params.toString()}`;
+    }
+
+    /**
+     * Generate MoMo QR theo chuẩn VietQR / EMVCo
+     * App MoMo scan QR này sẽ tự điền thông tin
+     */
+    generateMoMoEMVCoQR(data: MoMoQRData): string {
+      // EMVCo QR Code format cho MoMo
+      // Reference: https://www.emvco.com/emv-technologies/qrcodes/
+
+      const parts: string[] = [];
+
+      // Payload Format Indicator
+      parts.push(this.tlv('00', '01'));
+
+      // Point of Initiation (12 = dynamic)
+      parts.push(this.tlv('01', '12'));
+
+      // Merchant Account Information - MoMo
+      // Tag 38 cho MoMo
+      const momoData = [
+        this.tlv('00', 'A000000727'), // MoMo AID
+        this.tlv('01', data.phone),    // Phone number
+        this.tlv('02', data.comment),  // Transfer content
+      ].join('');
+      parts.push(this.tlv('38', momoData));
+
+      // Transaction Currency (704 = VND)
+      parts.push(this.tlv('53', '704'));
+
+      // Transaction Amount
+      parts.push(this.tlv('54', data.amount.toString()));
+
+      // Country Code
+      parts.push(this.tlv('58', 'VN'));
+
+      // Merchant Name
+      parts.push(this.tlv('59', data.name));
+
+      // Merchant City
+      parts.push(this.tlv('60', 'Ho Chi Minh'));
+
+      // Additional Data
+      const additionalData = this.tlv('08', data.comment);
+      parts.push(this.tlv('62', additionalData));
+
+      // Compute CRC
+      const payload = parts.join('') + '6304';
+      const crc = this.computeCRC16(payload);
+
+      return payload + crc;
+    }
+
+    /**
+     * Tạo QR đơn giản hơn - chỉ chứa link MoMo
+     * Phù hợp nhất cho cá nhân, không cần EMVCo phức tạp
+     */
+    generateSimpleQR(data: MoMoQRData): string {
+      // Format: 2|99|{phone}|{name}|{comment}|0|0|{amount}
+      // Đây là format nội bộ MoMo cho transfer cá nhân
+      return `2|99|${data.phone}|||0|0|${data.amount}|${data.comment}`;
+    }
+
+    /**
+     * Generate QR Code image từ data string
+     */
+    async generateQRImage(qrData: string): Promise<{
+      dataUrl: string;    // base64 để hiển thị trực tiếp
+      buffer: Buffer;     // buffer để upload S3
+    }> {
+      const options: QRCode.QRCodeToDataURLOptions = {
+        type: 'image/png',
+        width: 400,
+        margin: 2,
+        color: {
+          dark: '#000000',
+          light: '#FFFFFF',
+        },
+        errorCorrectionLevel: 'M',
+      };
+
+      const dataUrl = await QRCode.toDataURL(qrData, options);
+      const buffer = await QRCode.toBuffer(qrData, {
+        ...options,
+        type: 'png',
+      });
+
+      return { dataUrl, buffer };
+    }
+
+    // ---- Helper functions ----
+
+    private tlv(tag: string, value: string): string {
+      const length = value.length.toString().padStart(2, '0');
+      return `${tag}${length}${value}`;
+    }
+
+    private computeCRC16(data: string): string {
+      let crc = 0xFFFF;
+      for (let i = 0; i < data.length; i++) {
+        crc ^= data.charCodeAt(i) << 8;
+        for (let j = 0; j < 8; j++) {
+          if (crc & 0x8000) {
+            crc = (crc << 1) ^ 0x1021;
+          } else {
+            crc <<= 1;
+          }
+          crc &= 0xFFFF;
+        }
+      }
+      return crc.toString(16).toUpperCase().padStart(4, '0');
+    }
+  }
+
+  2.2: Deposit Code Generator
+
+  // src/modules/payment/services/deposit-code.service.ts
+
+  import { Injectable } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository } from 'typeorm';
+  import { Deposit } from '../entities/deposit.entity';
+  import { customAlphabet } from 'nanoid';
+
+  @Injectable()
+  export class DepositCodeService {
+    // Tạo mã ngắn, dễ nhập, không nhầm lẫn (bỏ 0, O, I, l)
+    private generateCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
+
+    constructor(
+      @InjectRepository(Deposit)
+      private depositRepo: Repository<Deposit>,
+    ) {}
+
+    /**
+     * Generate mã nạp tiền unique
+     * Format: NAP-XXXXXX (6 ký tự)
+     * VD: NAP-A1B2C3, NAP-XY7K9M
+     */
+    async generateUniqueCode(): Promise<string> {
+      let attempts = 0;
+      const maxAttempts = 10;
+
+      while (attempts < maxAttempts) {
+        const code = `NAP${this.generateCode()}`;
+
+        // Check uniqueness
+        const existing = await this.depositRepo.findOne({
+          where: { depositCode: code },
+        });
+
+        if (!existing) {
+          return code;
+        }
+
+        attempts++;
+      }
+
+      // Fallback: thêm timestamp
+      const timestamp = Date.now().toString(36).toUpperCase();
+      return `NAP${timestamp.slice(-6)}`;
+    }
+
+    /**
+     * Parse deposit code từ nội dung chuyển khoản
+     * Hỗ trợ nhiều format user có thể nhập:
+     * - "NAP-A1B2C3"
+     * - "NAPA1B2C3"
+     * - "nap a1b2c3"
+     * - "Nap tien NAP-A1B2C3 xin cam on"
+     */
+    parseDepositCode(transferContent: string): string | null {
+      if (!transferContent) return null;
+
+      const normalized = transferContent.toUpperCase().replace(/[\s-]/g, '');
+
+      // Tìm pattern NAP + 6 ký tự
+      const match = normalized.match(/NAP([A-Z0-9]{6})/);
+
+      if (match) {
+        return `NAP${match[1]}`;
+      }
+
+      return null;
+    }
+  }
+
+  2.3: Payment Service (Core)
+
+  // src/modules/payment/payment.service.ts
+
+  import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository, DataSource, LessThan } from 'typeorm';
+  import { InjectQueue } from '@nestjs/bullmq';
+  import { Queue } from 'bullmq';
+  import { Deposit } from './entities/deposit.entity';
+  import { PaymentConfig } from './entities/payment-config.entity';
+  import { WalletService } from '../wallet/wallet.service';
+  import { MoMoQRService } from './services/momo-qr.service';
+  import { DepositCodeService } from './services/deposit-code.service';
+  import { NotificationsGateway } from '../notifications/notifications.gateway';
+  import { CreateDepositDto } from './dto/create-deposit.dto';
+  import { ConfirmDepositDto } from './dto/confirm-deposit.dto';
+
+  @Injectable()
+  export class PaymentService {
+    constructor(
+      @InjectRepository(Deposit)
+      private depositRepo: Repository<Deposit>,
+      @InjectRepository(PaymentConfig)
+      private paymentConfigRepo: Repository<PaymentConfig>,
+      private dataSource: DataSource,
+      private walletService: WalletService,
+      private momoQRService: MoMoQRService,
+      private depositCodeService: DepositCodeService,
+      private notificationsGateway: NotificationsGateway,
+      @InjectQueue('deposit')
+      private depositQueue: Queue,
+    ) {}
+
+    /**
+     * STEP 1: User tạo yêu cầu nạp tiền
+     * → Generate mã deposit + QR code
+     */
+    async createDeposit(userId: string, dto: CreateDepositDto) {
+      // Validate amount
+      const config = await this.getPaymentConfig('momo');
+      const minAmount = config?.config?.min_amount || 10000;
+      const maxAmount = config?.config?.max_amount || 5000000;
+
+      if (dto.amount < minAmount) {
+        throw new BadRequestException(
+          `Số tiền tối thiểu là ${minAmount.toLocaleString('vi-VN')}đ`
+        );
+      }
+      if (dto.amount > maxAmount) {
+        throw new BadRequestException(
+          `Số tiền tối đa là ${maxAmount.toLocaleString('vi-VN')}đ`
+        );
+      }
+
+      // Check xem user có pending deposit không
+      const pendingDeposit = await this.depositRepo.findOne({
+        where: {
+          userId,
+          status: 'pending',
+        },
+      });
+
+      if (pendingDeposit) {
+        // Nếu chưa hết hạn, trả lại deposit cũ
+        if (new Date(pendingDeposit.expiresAt) > new Date()) {
+          return this.formatDepositResponse(pendingDeposit, config);
+        }
+        // Nếu hết hạn, đánh dấu expired
+        pendingDeposit.status = 'expired';
+        await this.depositRepo.save(pendingDeposit);
+      }
+
+      // Generate unique deposit code
+      const depositCode = await this.depositCodeService.generateUniqueCode();
+
+      // Generate QR
+      const momoPhone = config.config.phone;
+      const momoName = config.config.name;
+
+      const qrData = this.momoQRService.generateSimpleQR({
+        phone: momoPhone,
+        name: momoName,
+        amount: dto.amount,
+        comment: depositCode,
+      });
+
+      const deepLink = this.momoQRService.generateMoMoDeepLink({
+        phone: momoPhone,
+        name: momoName,
+        amount: dto.amount,
+        comment: depositCode,
+      });
+
+      const { dataUrl: qrDataUrl } = await this.momoQRService.generateQRImage(qrData);
+
+      // Tạo deposit record
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + 30); // 30 phút
+
+      const deposit = this.depositRepo.create({
+        userId,
+        amount: dto.amount,
+        depositCode,
+        paymentMethod: dto.paymentMethod || 'momo_qr',
+        receiverPhone: momoPhone,
+        receiverName: momoName,
+        qrData: JSON.stringify({ deepLink, qrRaw: qrData }),
+        qrImageUrl: qrDataUrl, // Hoặc upload S3 rồi lưu URL
+        status: 'pending',
+        expiresAt,
+      });
+
+      const saved = await this.depositRepo.save(deposit);
+
+      // Schedule auto-expire job
+      await this.depositQueue.add(
+        'expire-deposit',
+        { depositId: saved.id },
+        {
+          delay: 30 * 60 * 1000, // 30 phút
+          removeOnComplete: true,
+        },
+      );
+
+      // Notify admins có deposit mới
+      this.notificationsGateway.notifyAdmins('deposit:new', {
+        depositId: saved.id,
+        userId,
+        amount: dto.amount,
+        depositCode,
+      });
+
+      return this.formatDepositResponse(saved, config);
+    }
+
+    /**
+     * STEP 2: User xác nhận đã chuyển tiền (kèm ảnh proof)
+     */
+    async userConfirmTransfer(userId: string, dto: ConfirmDepositDto) {
+      const deposit = await this.depositRepo.findOne({
+        where: {
+          id: dto.depositId,
+          userId,
+          status: 'pending',
+        },
+      });
+
+      if (!deposit) {
+        throw new NotFoundException('Không tìm thấy giao dịch nạp tiền');
+      }
+
+      if (new Date(deposit.expiresAt) < new Date()) {
+        deposit.status = 'expired';
+        await this.depositRepo.save(deposit);
+        throw new BadRequestException('Giao dịch đã hết hạn. Vui lòng tạo mới.');
+      }
+
+      deposit.status = 'user_confirmed';
+      deposit.userConfirmedAt = new Date();
+      deposit.transferProofUrl = dto.proofImageUrl || null;
+
+      await this.depositRepo.save(deposit);
+
+      // Notify admins cần duyệt
+      this.notificationsGateway.notifyAdmins('deposit:user_confirmed', {
+        depositId: deposit.id,
+        userId,
+        amount: deposit.amount,
+        depositCode: deposit.depositCode,
+        proofUrl: dto.proofImageUrl,
+      });
+
+      return {
+        message: 'Đã xác nhận chuyển tiền. Admin sẽ duyệt trong vài phút.',
+        deposit: {
+          id: deposit.id,
+          status: deposit.status,
+          amount: deposit.amount,
+          depositCode: deposit.depositCode,
+        },
+      };
+    }
+
+    /**
+     * STEP 3: Admin xác nhận đã nhận tiền → Cộng balance
+     */
+    async adminConfirmDeposit(
+      adminId: string,
+      depositId: string,
+      approved: boolean,
+      note?: string,
+    ) {
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      try {
+        const deposit = await queryRunner.manager.findOne(Deposit, {
+          where: { id: depositId },
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (!deposit) {
+          throw new NotFoundException('Deposit not found');
+        }
+
+        if (!['pending', 'user_confirmed'].includes(deposit.status)) {
+          throw new BadRequestException(
+            `Deposit đang ở trạng thái "${deposit.status}", không thể duyệt`
+          );
+        }
+
+        if (approved) {
+          // ✅ Approved → Cộng tiền
+          deposit.status = 'completed';
+          deposit.adminConfirmedBy = adminId;
+          deposit.adminNote = note;
+          deposit.completedAt = new Date();
+
+          await queryRunner.manager.save(deposit);
+
+          // Cộng balance + tạo transaction log
+          await this.walletService.creditBalance(
+            deposit.userId,
+            deposit.amount,
+            {
+              type: 'deposit',
+              referenceId: deposit.id,
+              referenceType: 'deposit',
+              metadata: {
+                depositCode: deposit.depositCode,
+                paymentMethod: deposit.paymentMethod,
+                approvedBy: adminId,
+              },
+            },
+            queryRunner,
+          );
+
+          await queryRunner.commitTransaction();
+
+          // Notify user qua Socket
+          this.notificationsGateway.notifyUser(deposit.userId, 'deposit:completed', {
+            depositId: deposit.id,
+            amount: deposit.amount,
+            message: `Nạp ${deposit.amount.toLocaleString('vi-VN')}đ thành công!`,
+          });
+
+          // Update wallet balance real-time
+          const wallet = await this.walletService.getWallet(deposit.userId);
+          this.notificationsGateway.notifyUser(deposit.userId, 'wallet:balance_updated', {
+            balance: wallet.balance,
+          });
+        } else {
+          // ❌ Rejected
+          deposit.status = 'failed';
+          deposit.adminConfirmedBy = adminId;
+          deposit.adminNote = note || 'Admin từ chối. Không tìm thấy giao dịch khớp.';
+
+          await queryRunner.manager.save(deposit);
+          await queryRunner.commitTransaction();
+
+          // Notify user
+          this.notificationsGateway.notifyUser(deposit.userId, 'deposit:failed', {
+            depositId: deposit.id,
+            amount: deposit.amount,
+            reason: deposit.adminNote,
+          });
+        }
+
+        return { success: true, status: deposit.status };
+      } catch (error) {
+        await queryRunner.rollbackTransaction();
+        throw error;
+      } finally {
+        await queryRunner.release();
+      }
+    }
+
+    /**
+     * Lấy danh sách deposits pending cho admin
+     */
+    async getPendingDeposits(page = 1, limit = 20) {
+      return this.depositRepo.find({
+        where: [
+          { status: 'pending' },
+          { status: 'user_confirmed' },
+        ],
+        relations: ['user'],
+        order: {
+          status: 'DESC', // user_confirmed lên trước
+          createdAt: 'DESC'
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+      });
+    }
+
+    /**
+     * Lấy deposit history của user
+     */
+    async getUserDeposits(userId: string, page = 1, limit = 20) {
+      return this.depositRepo.find({
+        where: { userId },
+        order: { createdAt: 'DESC' },
+        skip: (page - 1) * limit,
+        take: limit,
+      });
+    }
+
+    /**
+     * Check deposit status (polling từ frontend)
+     */
+    async getDepositStatus(userId: string, depositId: string) {
+      const deposit = await this.depositRepo.findOne({
+        where: { id: depositId, userId },
+      });
+
+      if (!deposit) {
+        throw new NotFoundException('Deposit not found');
+      }
+
+      return {
+        id: deposit.id,
+        status: deposit.status,
+        amount: deposit.amount,
+        depositCode: deposit.depositCode,
+        createdAt: deposit.createdAt,
+        expiresAt: deposit.expiresAt,
+        completedAt: deposit.completedAt,
+      };
+    }
+
+    // ---- Private helpers ----
+
+    private async getPaymentConfig(method: string) {
+      const config = await this.paymentConfigRepo.findOne({
+        where: { method, isActive: true },
+      });
+      if (!config) {
+        throw new BadRequestException(`Phương thức thanh toán ${method} chưa được cấu hình`);
+      }
+      return config;
+    }
+
+    private formatDepositResponse(deposit: Deposit, config: PaymentConfig) {
+      const qrParsed = JSON.parse(deposit.qrData || '{}');
+
+      return {
+        deposit: {
+          id: deposit.id,
+          amount: deposit.amount,
+          depositCode: deposit.depositCode,
+          status: deposit.status,
+          expiresAt: deposit.expiresAt,
+          createdAt: deposit.createdAt,
+        },
+        payment: {
+          method: 'momo_qr',
+          receiver: {
+            phone: deposit.receiverPhone,
+            name: deposit.receiverName,
+          },
+          qr: {
+            imageUrl: deposit.qrImageUrl,
+            deepLink: qrParsed.deepLink,
+          },
+          transferContent: deposit.depositCode,
+          instructions: [
+            'Mở ứng dụng MoMo',
+            `Quét mã QR hoặc chuyển tiền đến SĐT ${deposit.receiverPhone}`,
+            `Nhập số tiền: ${deposit.amount.toLocaleString('vi-VN')}đ`,
+            `Nhập nội dung: ${deposit.depositCode}`,
+            'Xác nhận chuyển tiền',
+            'Quay lại đây bấm "Tôi đã chuyển tiền"',
+          ],
+        },
+      };
+    }
+  }
+
+  2.4: Deposit Queue Processor
+
+  // src/modules/payment/processors/deposit.processor.ts
+
+  import { Processor, WorkerHost } from '@nestjs/bullmq';
+  import { Job } from 'bullmq';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository } from 'typeorm';
+  import { Deposit } from '../entities/deposit.entity';
+  import { Logger } from '@nestjs/common';
+
+  @Processor('deposit')
+  export class DepositProcessor extends WorkerHost {
+    private readonly logger = new Logger(DepositProcessor.name);
+
+    constructor(
+      @InjectRepository(Deposit)
+      private depositRepo: Repository<Deposit>,
+    ) {
+      super();
+    }
+
+    async process(job: Job) {
+      switch (job.name) {
+        case 'expire-deposit':
+          return this.handleExpireDeposit(job);
+        default:
+          this.logger.warn(`Unknown job: ${job.name}`);
+      }
+    }
+
+    private async handleExpireDeposit(job: Job) {
+      const { depositId } = job.data;
+
+      const deposit = await this.depositRepo.findOne({
+        where: { id: depositId },
+      });
+
+      if (!deposit) return;
+
+      // Chỉ expire nếu vẫn đang pending
+      if (deposit.status === 'pending') {
+        deposit.status = 'expired';
+        deposit.updatedAt = new Date();
+        await this.depositRepo.save(deposit);
+        this.logger.log(`Deposit ${depositId} expired (code: ${deposit.depositCode})`);
+      }
+    }
+  }
+
+  2.5: Payment Controller
+
+  // src/modules/payment/payment.controller.ts
+
+  import {
+    Controller, Post, Get, Body, Param, Query,
+    UseGuards, Patch,
+  } from '@nestjs/common';
+  import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+  import { RolesGuard } from '../../common/guards/roles.guard';
+  import { Roles } from '../../common/decorators/roles.decorator';
+  import { CurrentUser } from '../../common/decorators/current-user.decorator';
+  import { PaymentService } from './payment.service';
+  import { CreateDepositDto } from './dto/create-deposit.dto';
+  import { ConfirmDepositDto } from './dto/confirm-deposit.dto';
+  import { AdminConfirmDepositDto } from './dto/admin-confirm-deposit.dto';
+
+  @Controller('api/v1/payment')
+  @UseGuards(JwtAuthGuard)
+  export class PaymentController {
+    constructor(private paymentService: PaymentService) {}
+
+    /**
+     * POST /api/v1/payment/deposits
+     * User tạo yêu cầu nạp tiền → nhận QR code
+     */
+    @Post('deposits')
+    async createDeposit(
+      @CurrentUser('id') userId: string,
+      @Body() dto: CreateDepositDto,
+    ) {
+      return this.paymentService.createDeposit(userId, dto);
+    }
+
+    /**
+     * POST /api/v1/payment/deposits/:id/confirm
+     * User xác nhận đã chuyển tiền
+     */
+    @Post('deposits/:id/confirm')
+    async confirmTransfer(
+      @CurrentUser('id') userId: string,
+      @Param('id') depositId: string,
+      @Body() dto: ConfirmDepositDto,
+    ) {
+      return this.paymentService.userConfirmTransfer(userId, {
+        ...dto,
+        depositId,
+      });
+    }
+
+    /**
+     * GET /api/v1/payment/deposits/:id/status
+     * Check trạng thái deposit (polling)
+     */
+    @Get('deposits/:id/status')
+    async getDepositStatus(
+      @CurrentUser('id') userId: string,
+      @Param('id') depositId: string,
+    ) {
+      return this.paymentService.getDepositStatus(userId, depositId);
+    }
+
+    /**
+     * GET /api/v1/payment/deposits
+     * Lịch sử nạp tiền của user
+     */
+    @Get('deposits')
+    async getMyDeposits(
+      @CurrentUser('id') userId: string,
+      @Query('page') page = 1,
+    ) {
+      return this.paymentService.getUserDeposits(userId, page);
+    }
+
+    /**
+     * GET /api/v1/payment/methods
+     * Lấy danh sách phương thức thanh toán
+     */
+    @Get('methods')
+    async getPaymentMethods() {
+      return this.paymentService.getAvailablePaymentMethods();
+    }
+
+    // ============ ADMIN ROUTES ============
+
+    /**
+     * GET /api/v1/payment/admin/deposits/pending
+     * Admin xem deposits cần duyệt
+     */
+    @Get('admin/deposits/pending')
+    @UseGuards(RolesGuard)
+    @Roles('admin')
+    async getPendingDeposits(@Query('page') page = 1) {
+      return this.paymentService.getPendingDeposits(page);
+    }
+
+    /**
+     * PATCH /api/v1/payment/admin/deposits/:id
+     * Admin duyệt/từ chối deposit
+     */
+    @Patch('admin/deposits/:id')
+    @UseGuards(RolesGuard)
+    @Roles('admin')
+    async adminConfirmDeposit(
+      @CurrentUser('id') adminId: string,
+      @Param('id') depositId: string,
+      @Body() dto: AdminConfirmDepositDto,
+    ) {
+      return this.paymentService.adminConfirmDeposit(
+        adminId,
+        depositId,
+        dto.approved,
+        dto.note,
+      );
+    }
+  }
+
+  2.6: DTOs
+
+  // src/modules/payment/dto/create-deposit.dto.ts
+  import { IsNumber, IsOptional, IsString, Min, Max } from 'class-validator';
+
+  export class CreateDepositDto {
+    @IsNumber()
+    @Min(10000, { message: 'Số tiền tối thiểu 10.000đ' })
+    @Max(5000000, { message: 'Số tiền tối đa 5.000.000đ' })
+    amount: number;
+
+    @IsOptional()
+    @IsString()
+    paymentMethod?: string; // 'momo_qr' | 'bank_transfer'
+  }
+
+  // src/modules/payment/dto/confirm-deposit.dto.ts
+  import { IsOptional, IsString, IsUUID } from 'class-validator';
+
+  export class ConfirmDepositDto {
+    @IsUUID()
+    depositId: string;
+
+    @IsOptional()
+    @IsString()
+    proofImageUrl?: string; // URL ảnh chụp màn hình
+  }
+
+  // src/modules/payment/dto/admin-confirm-deposit.dto.ts
+  import { IsBoolean, IsOptional, IsString } from 'class-validator';
+
+  export class AdminConfirmDepositDto {
+    @IsBoolean()
+    approved: boolean;
+
+    @IsOptional()
+    @IsString()
+    note?: string;
+  }
+
+  2.7: Bank Transfer Support (Bonus)
+
+  // src/modules/payment/services/bank-qr.service.ts
+
+  import { Injectable } from '@nestjs/common';
+  import * as QRCode from 'qrcode';
+
+  /**
+   * Tạo QR theo chuẩn VietQR (Napas)
+   * Hỗ trợ hầu hết ngân hàng VN
+   * Ref: https://www.vietqr.io/
+   */
+  @Injectable()
+  export class BankQRService {
+
+    // Danh sách BIN ngân hàng
+    private readonly bankBins: Record<string, string> = {
+      'MB':       '970422',
+      'VCB':      '970436',
+      'TCB':      '970407', // Techcombank
+      'ACB':      '970416',
+      'BIDV':     '970418',
+      'VPB':      '970432', // VPBank
+      'TPB':      '970423', // TPBank
+      'STB':      '970403', // Sacombank
+      'VIB':      '970441',
+      'MSB':      '970426',
+      'CAKE':     '546034',
+      // Thêm các ngân hàng khác...
+    };
+
+    /**
+     * Tạo VietQR data string theo chuẩn EMVCo
+     */
+    generateVietQR(params: {
+      bankCode: string;     // 'MB', 'VCB', etc.
+      accountNumber: string;
+      accountName: string;
+      amount: number;
+      description: string;  // nội dung chuyển khoản
+    }): string {
+      const bankBin = this.bankBins[params.bankCode];
+      if (!bankBin) throw new Error(`Unsupported bank: ${params.bankCode}`);
+
+      const parts: string[] = [];
+
+      // 00 - Payload Format Indicator
+      parts.push(this.tlv('00', '01'));
+
+      // 01 - Point of Initiation Method (12 = Dynamic QR)
+      parts.push(this.tlv('01', '12'));
+
+      // 38 - Merchant Account Info (NAPAS)
+      const guid = this.tlv('00', 'A000000727');        // Napas AID
+      const bankInfo = this.tlv('01', bankBin);          // BIN ngân hàng
+      const accNum = this.tlv('02', params.accountNumber);
+      const napasData = guid + bankInfo + accNum;
+      parts.push(this.tlv('38', napasData));
+
+      // 53 - Transaction Currency (704 = VND)
+      parts.push(this.tlv('53', '704'));
+
+      // 54 - Transaction Amount
+      if (params.amount > 0) {
+        parts.push(this.tlv('54', params.amount.toString()));
+      }
+
+      // 58 - Country Code
+      parts.push(this.tlv('58', 'VN'));
+
+      // 59 - Merchant Name (Account Name)
+      parts.push(this.tlv('59', params.accountName.substring(0, 25)));
+
+      // 60 - Merchant City
+      parts.push(this.tlv('60', 'Ho Chi Minh'));
+
+      // 62 - Additional Data
+      const purposeOfTx = this.tlv('08', params.description);
+      parts.push(this.tlv('62', purposeOfTx));
+
+      // 63 - CRC
+      const dataWithoutCRC = parts.join('') + '6304';
+      const crc = this.computeCRC16(dataWithoutCRC);
+
+      return dataWithoutCRC + crc;
+    }
+
+    /**
+     * Tạo URL VietQR (dùng API miễn phí của vietqr.io)
+     * Không cần đăng ký, tạo QR trực tiếp qua URL
+     */
+    generateVietQRUrl(params: {
+      bankCode: string;
+      accountNumber: string;
+      accountName: string;
+      amount: number;
+      description: string;
+      template?: 'compact' | 'compact2' | 'qr_only' | 'print';
+    }): string {
+      const bankBin = this.bankBins[params.bankCode];
+      const template = params.template || 'compact2';
+
+      // API miễn phí, không cần key
+      const url = `https://img.vietqr.io/image/${bankBin}-${params.accountNumber}-${template}.png`;
+      const queryParams = new URLSearchParams({
+        amount: params.amount.toString(),
+        addInfo: params.description,
+        accountName: params.accountName,
+      });
+
+      return `${url}?${queryParams.toString()}`;
+    }
+
+    async generateQRImage(qrData: string) {
+      const dataUrl = await QRCode.toDataURL(qrData, {
+        width: 400,
+        margin: 2,
+        errorCorrectionLevel: 'M',
+      });
+      return { dataUrl };
+    }
+
+    private tlv(tag: string, value: string): string {
+      const length = value.length.toString().padStart(2, '0');
+      return `${tag}${length}${value}`;
+    }
+
+    private computeCRC16(data: string): string {
+      let crc = 0xFFFF;
+      for (let i = 0; i < data.length; i++) {
+        crc ^= data.charCodeAt(i) << 8;
+        for (let j = 0; j < 8; j++) {
+          crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+          crc &= 0xFFFF;
+        }
+      }
+      return crc.toString(16).toUpperCase().padStart(4, '0');
+    }
+  }
+
+  ---
+  📦 PHASE 3: FRONTEND - Next.js
+
+  3.1: API Service
+
+  // services/api/payment.api.ts
+
+  import { apiClient } from './client';
+
+  export const paymentApi = {
+    // Tạo deposit → nhận QR
+    createDeposit: (data: { amount: number; paymentMethod?: string }) =>
+      apiClient.post('/payment/deposits', data),
+
+    // User xác nhận đã chuyển
+    confirmTransfer: (depositId: string, proofImageUrl?: string) =>
+      apiClient.post(`/payment/deposits/${depositId}/confirm`, {
+        proofImageUrl,
+      }),
+
+    // Check status (polling)
+    getDepositStatus: (depositId: string) =>
+      apiClient.get(`/payment/deposits/${depositId}/status`),
+
+    // Lịch sử
+    getMyDeposits: (page = 1) =>
+      apiClient.get(`/payment/deposits?page=${page}`),
+
+    // Lấy payment methods
+    getPaymentMethods: () =>
+      apiClient.get('/payment/methods'),
+  };
+
+  3.2: Deposit Page (Trang nạp tiền)
+
+  // app/(main)/wallet/deposit/page.tsx
+
+  'use client';
+
+  import { useState } from 'react';
+  import { DepositAmountStep } from '@/components/payment/DepositAmountStep';
+  import { DepositQRStep } from '@/components/payment/DepositQRStep';
+  import { DepositConfirmStep } from '@/components/payment/DepositConfirmStep';
+  import { DepositSuccessStep } from '@/components/payment/DepositSuccessStep';
+
+  type DepositStep = 'amount' | 'qr' | 'confirm' | 'success';
+
+  export default function DepositPage() {
+    const [step, setStep] = useState<DepositStep>('amount');
+    const [depositData, setDepositData] = useState<any>(null);
+
+    return (
+      <div className="max-w-lg mx-auto py-8 px-4">
+        {/* Progress Steps */}
+        <DepositProgress currentStep={step} />
+
+        {/* Step Content */}
+        {step === 'amount' && (
+          <DepositAmountStep
+            onNext={(data) => {
+              setDepositData(data);
+              setStep('qr');
+            }}
+          />
+        )}
+
+        {step === 'qr' && depositData && (
+          <DepositQRStep
+            depositData={depositData}
+            onConfirmed={() => setStep('confirm')}
+            onBack={() => setStep('amount')}
+          />
+        )}
+
+        {step === 'confirm' && depositData && (
+          <DepositConfirmStep
+            depositData={depositData}
+            onSuccess={() => setStep('success')}
+          />
+        )}
+
+        {step === 'success' && (
+          <DepositSuccessStep
+            amount={depositData?.deposit?.amount}
+            onDone={() => window.location.href = '/wallet'}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Progress indicator
+  function DepositProgress({ currentStep }: { currentStep: DepositStep }) {
+    const steps = [
+      { key: 'amount', label: 'Số tiền' },
+      { key: 'qr', label: 'Chuyển khoản' },
+      { key: 'confirm', label: 'Xác nhận' },
+      { key: 'success', label: 'Hoàn tất' },
+    ];
+
+    const currentIdx = steps.findIndex(s => s.key === currentStep);
+
+    return (
+      <div className="flex items-center justify-between mb-8">
+        {steps.map((s, i) => (
+          <div key={s.key} className="flex items-center">
+            <div className={`
+              w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium
+              ${i <= currentIdx
+                ? 'bg-pink-500 text-white'
+                : 'bg-gray-200 text-gray-500 dark:bg-gray-700'
+              }
+            `}>
+              {i < currentIdx ? '✓' : i + 1}
+            </div>
+            <span className={`ml-2 text-sm hidden sm:block ${
+              i <= currentIdx ? 'text-pink-600 font-medium' : 'text-gray-400'
+            }`}>
+              {s.label}
+            </span>
+            {i < steps.length - 1 && (
+              <div className={`w-8 sm:w-16 h-0.5 mx-2 ${
+                i < currentIdx ? 'bg-pink-500' : 'bg-gray-200 dark:bg-gray-700'
+              }`} />
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  3.3: Amount Selection Step
+
+  // components/payment/DepositAmountStep.tsx
+
+  'use client';
+
+  import { useState } from 'react';
+  import { useMutation } from '@tanstack/react-query';
+  import { paymentApi } from '@/services/api/payment.api';
+  import { Card } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import { Input } from '@/components/ui/input';
+  import { Wallet, Smartphone, Building2 } from 'lucide-react';
+  import { formatCurrency } from '@/lib/formatters';
+  import { toast } from 'sonner';
+
+  const PRESET_AMOUNTS = [
+    { value: 20000, label: '20.000đ' },
+    { value: 50000, label: '50.000đ' },
+    { value: 100000, label: '100.000đ' },
+    { value: 200000, label: '200.000đ' },
+    { value: 500000, label: '500.000đ' },
+    { value: 1000000, label: '1.000.000đ' },
+  ];
+
+  type PaymentMethod = 'momo_qr' | 'bank_transfer';
+
+  interface Props {
+    onNext: (data: any) => void;
+  }
+
+  export function DepositAmountStep({ onNext }: Props) {
+    const [amount, setAmount] = useState<number>(0);
+    const [customAmount, setCustomAmount] = useState('');
+    const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('momo_qr');
+
+    const createDepositMutation = useMutation({
+      mutationFn: () => paymentApi.createDeposit({
+        amount: amount || parseInt(customAmount),
+        paymentMethod
+      }),
+      onSuccess: (res) => {
+        onNext(res.data);
+      },
+      onError: (err: any) => {
+        toast.error(err.response?.data?.message || 'Có lỗi xảy ra');
+      },
+    });
+
+    const selectedAmount = amount || parseInt(customAmount) || 0;
+    const isValid = selectedAmount >= 10000;
+
+    return (
+      <div className="space-y-6">
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Wallet className="w-5 h-5 text-pink-500" />
+            Chọn số tiền nạp
+          </h2>
+
+          {/* Preset amounts */}
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            {PRESET_AMOUNTS.map((preset) => (
+              <button
+                key={preset.value}
+                onClick={() => {
+                  setAmount(preset.value);
+                  setCustomAmount('');
+                }}
+                className={`
+                  p-3 rounded-xl border-2 text-center font-medium transition-all
+                  ${amount === preset.value
+                    ? 'border-pink-500 bg-pink-50 text-pink-700 dark:bg-pink-950 dark:text-pink-300'
+                    : 'border-gray-200 hover:border-pink-300 dark:border-gray-700'
+                  }
+                `}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Custom amount */}
+          <div className="relative">
+            <Input
+              type="text"
+              inputMode="numeric"
+              placeholder="Hoặc nhập số tiền khác..."
+              value={customAmount}
+              onChange={(e) => {
+                const val = e.target.value.replace(/[^0-9]/g, '');
+                setCustomAmount(val);
+                setAmount(0); // deselect preset
+              }}
+              className="pr-12 text-lg"
+            />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">
+              VNĐ
+            </span>
+          </div>
+
+          {customAmount && parseInt(customAmount) < 10000 && (
+            <p className="text-red-500 text-sm mt-1">Tối thiểu 10.000đ</p>
+          )}
+
+          {selectedAmount > 0 && (
+            <div className="mt-3 p-3 bg-pink-50 dark:bg-pink-950 rounded-lg">
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                Số tiền nạp: <span className="font-bold text-pink-600 text-lg">
+                  {formatCurrency(selectedAmount)}
+                </span>
+              </p>
+            </div>
+          )}
+        </Card>
+
+        {/* Payment Method */}
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold mb-4">Phương thức thanh toán</h2>
+
+          <div className="space-y-3">
+            {/* MoMo */}
+            <button
+              onClick={() => setPaymentMethod('momo_qr')}
+              className={`
+                w-full p-4 rounded-xl border-2 flex items-center gap-4 transition-all
+                ${paymentMethod === 'momo_qr'
+                  ? 'border-pink-500 bg-pink-50 dark:bg-pink-950'
+                  : 'border-gray-200 hover:border-pink-300 dark:border-gray-700'
+                }
+              `}
+            >
+              <div className="w-12 h-12 bg-pink-500 rounded-xl flex items-center justify-center">
+                <Smartphone className="w-6 h-6 text-white" />
+              </div>
+              <div className="text-left">
+                <p className="font-semibold">Ví MoMo</p>
+                <p className="text-sm text-gray-500">Quét mã QR bằng app MoMo</p>
+              </div>
+              {paymentMethod === 'momo_qr' && (
+                <div className="ml-auto w-6 h-6 bg-pink-500 rounded-full flex items-center justify-center">
+                  <span className="text-white text-xs">✓</span>
+                </div>
+              )}
+            </button>
+
+            {/* Bank Transfer */}
+            <button
+              onClick={() => setPaymentMethod('bank_transfer')}
+              className={`
+                w-full p-4 rounded-xl border-2 flex items-center gap-4 transition-all
+                ${paymentMethod === 'bank_transfer'
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
+                  : 'border-gray-200 hover:border-blue-300 dark:border-gray-700'
+                }
+              `}
+            >
+              <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center">
+                <Building2 className="w-6 h-6 text-white" />
+              </div>
+              <div className="text-left">
+                <p className="font-semibold">Chuyển khoản ngân hàng</p>
+                <p className="text-sm text-gray-500">Quét mã VietQR bằng app ngân hàng</p>
+              </div>
+              {paymentMethod === 'bank_transfer' && (
+                <div className="ml-auto w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center">
+                  <span className="text-white text-xs">✓</span>
+                </div>
+              )}
+            </button>
+          </div>
+        </Card>
+
+        {/* Submit */}
+        <Button
+          onClick={() => createDepositMutation.mutate()}
+          disabled={!isValid || createDepositMutation.isPending}
+          className="w-full h-12 text-lg bg-pink-500 hover:bg-pink-600"
+          size="lg"
+        >
+          {createDepositMutation.isPending ? (
+            <span className="flex items-center gap-2">
+              <span className="animate-spin">⏳</span> Đang tạo...
+            </span>
+          ) : (
+            `Tiếp tục nạp ${selectedAmount > 0 ? formatCurrency(selectedAmount) : ''}`
+          )}
+        </Button>
+      </div>
+    );
+  }
+
+  3.4: QR Code Display Step (⭐ CORE UI)
+
+  // components/payment/DepositQRStep.tsx
+
+  'use client';
+
+  import { useState, useEffect, useCallback } from 'react';
+  import { useQuery } from '@tanstack/react-query';
+  import { paymentApi } from '@/services/api/payment.api';
+  import { Card } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import { Badge } from '@/components/ui/badge';
+  import {
+    Copy, CheckCircle2, Clock, Smartphone,
+    ArrowLeft, ExternalLink, AlertTriangle,
+    Image as ImageIcon
+  } from 'lucide-react';
+  import { formatCurrency } from '@/lib/formatters';
+  import { toast } from 'sonner';
+  import { cn } from '@/lib/utils';
+
+  interface Props {
+    depositData: {
+      deposit: {
+        id: string;
+        amount: number;
+        depositCode: string;
+        status: string;
+        expiresAt: string;
+      };
+      payment: {
+        method: string;
+        receiver: { phone: string; name: string };
+        qr: { imageUrl: string; deepLink: string };
+        transferContent: string;
+        instructions: string[];
+      };
+    };
+    onConfirmed: () => void;
+    onBack: () => void;
+  }
+
+  export function DepositQRStep({ depositData, onConfirmed, onBack }: Props) {
+    const { deposit, payment } = depositData;
+    const [copied, setCopied] = useState<string | null>(null);
+    const [timeLeft, setTimeLeft] = useState('');
+
+    // ⏱️  Countdown timer
+    useEffect(() => {
+      const timer = setInterval(() => {
+        const now = new Date();
+        const expires = new Date(deposit.expiresAt);
+        const diff = expires.getTime() - now.getTime();
+
+        if (diff <= 0) {
+          setTimeLeft('Hết hạn');
+          clearInterval(timer);
+          return;
+        }
+
+        const minutes = Math.floor(diff / 60000);
+        const seconds = Math.floor((diff % 60000) / 1000);
+        setTimeLeft(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }, [deposit.expiresAt]);
+
+    // 🔄 Polling check status (mỗi 5 giây)
+    const { data: statusData } = useQuery({
+      queryKey: ['deposit-status', deposit.id],
+      queryFn: () => paymentApi.getDepositStatus(deposit.id),
+      refetchInterval: 5000, // poll mỗi 5s
+      enabled: deposit.status === 'pending',
+    });
+
+    // Nếu admin đã duyệt (auto-detect)
+    useEffect(() => {
+      if (statusData?.data?.status === 'completed') {
+        onConfirmed();
+      }
+    }, [statusData]);
+
+    // 📋 Copy to clipboard
+    const copyToClipboard = useCallback((text: string, field: string) => {
+      navigator.clipboard.writeText(text);
+      setCopied(field);
+      toast.success('Đã sao chép!');
+      setTimeout(() => setCopied(null), 2000);
+    }, []);
+
+    // 📱 Open MoMo app
+    const openMoMoApp = () => {
+      window.location.href = payment.qr.deepLink;
+    };
+
+    const isExpired = timeLeft === 'Hết hạn';
+
+    return (
+      <div className="space-y-4">
+        {/* Back button */}
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Quay lại
+        </button>
+
+        {/* Timer Warning */}
+        <div className={cn(
+          'flex items-center justify-between p-3 rounded-lg',
+          isExpired
+            ? 'bg-red-50 dark:bg-red-950'
+            : 'bg-amber-50 dark:bg-amber-950'
+        )}>
+          <div className="flex items-center gap-2">
+            <Clock className={cn('w-4 h-4', isExpired ? 'text-red-500' : 'text-amber-500')} />
+            <span className="text-sm font-medium">
+              {isExpired ? 'Giao dịch đã hết hạn' : 'Thời gian còn lại'}
+            </span>
+          </div>
+          <Badge variant={isExpired ? 'destructive' : 'secondary'} className="text-lg font-mono">
+            {timeLeft}
+          </Badge>
+        </div>
+
+        {isExpired && (
+          <div className="text-center p-4">
+            <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-2" />
+            <p className="text-red-600 font-medium">Giao dịch đã hết hạn</p>
+            <Button onClick={onBack} className="mt-3" variant="outline">
+              Tạo giao dịch mới
+            </Button>
+          </div>
+        )}
+
+        {!isExpired && (
+          <>
+            {/* QR Code Card */}
+            <Card className="p-6 text-center">
+              <div className="mb-4">
+                <p className="text-sm text-gray-500 mb-1">Số tiền cần chuyển</p>
+                <p className="text-3xl font-bold text-pink-600">
+                  {formatCurrency(deposit.amount)}
+                </p>
+              </div>
+
+              {/* QR Image */}
+              <div className="relative inline-block mb-4">
+                <div className="bg-white p-4 rounded-2xl shadow-lg inline-block">
+                  <img
+                    src={payment.qr.imageUrl}
+                    alt="MoMo QR Code"
+                    className="w-64 h-64 mx-auto"
+                  />
+                </div>
+                {/* MoMo Logo overlay */}
+                <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-pink-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-md">
+                  {payment.method === 'momo_qr' ? '💜 MoMo' : '🏦 VietQR'}
+                </div>
+              </div>
+
+              {/* Receiver Info */}
+              <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 text-left space-y-3">
+                {/* Phone */}
+                <InfoRow
+                  label="Số điện thoại"
+                  value={payment.receiver.phone}
+                  onCopy={() => copyToClipboard(payment.receiver.phone, 'phone')}
+                  copied={copied === 'phone'}
+                />
+
+                {/* Name */}
+                <InfoRow
+                  label="Tên tài khoản"
+                  value={payment.receiver.name}
+                  onCopy={() => copyToClipboard(payment.receiver.name, 'name')}
+                  copied={copied === 'name'}
+                />
+
+                {/* Amount */}
+                <InfoRow
+                  label="Số tiền"
+                  value={formatCurrency(deposit.amount)}
+                  onCopy={() => copyToClipboard(deposit.amount.toString(), 'amount')}
+                  copied={copied === 'amount'}
+                  highlight
+                />
+
+                {/* Transfer Content - IMPORTANT */}
+                <div className="pt-2 border-t">
+                  <InfoRow
+                    label="Nội dung chuyển khoản"
+                    value={deposit.depositCode}
+                    onCopy={() => copyToClipboard(deposit.depositCode, 'code')}
+                    copied={copied === 'code'}
+                    highlight
+                    important
+                  />
+                  <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    BẮT BUỘC nhập đúng nội dung này để hệ thống nhận diện
+                  </p>
+                </div>
+              </div>
+            </Card>
+
+            {/* Open MoMo App Button */}
+            {payment.method === 'momo_qr' && (
+              <Button
+                onClick={openMoMoApp}
+                className="w-full h-12 bg-[#ae2070] hover:bg-[#9a1b63] text-white"
+                size="lg"
+              >
+                <Smartphone className="w-5 h-5 mr-2" />
+                Mở ứng dụng MoMo
+                <ExternalLink className="w-4 h-4 ml-2" />
+              </Button>
+            )}
+
+            {/* Instructions */}
+            <Card className="p-4">
+              <h3 className="font-semibold mb-3 text-sm">📋 Hướng dẫn</h3>
+              <ol className="space-y-2">
+                {payment.instructions.map((instruction, i) => (
+                  <li key={i} className="flex gap-3 text-sm text-gray-600 dark:text-gray-300">
+                    <span className="flex-shrink-0 w-6 h-6 bg-pink-100 dark:bg-pink-900 text-pink-600 rounded-full flex items-center justify-center text-xs font-bold">
+                      {i + 1}
+                    </span>
+                    {instruction}
+                  </li>
+                ))}
+              </ol>
+            </Card>
+
+            {/* Confirm Button */}
+            <Button
+              onClick={onConfirmed}
+              className="w-full h-12 text-lg"
+              size="lg"
+              variant="default"
+            >
+              <CheckCircle2 className="w-5 h-5 mr-2" />
+              Tôi đã chuyển tiền
+            </Button>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // Helper component
+  function InfoRow({
+    label, value, onCopy, copied, highlight, important
+  }: {
+    label: string;
+    value: string;
+    onCopy: () => void;
+    copied: boolean;
+    highlight?: boolean;
+    important?: boolean;
+  }) {
+    return (
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs text-gray-500">{label}</p>
+          <p className={cn(
+            'font-medium',
+            highlight && 'text-pink-600 font-bold',
+            important && 'text-lg font-mono bg-yellow-100 dark:bg-yellow-900 px-2 py-0.5 rounded'
+          )}>
+            {value}
+          </p>
+        </div>
+        <button
+          onClick={onCopy}
+          className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+        >
+          {copied ? (
+            <CheckCircle2 className="w-4 h-4 text-green-500" />
+          ) : (
+            <Copy className="w-4 h-4 text-gray-400" />
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  3.5: Confirm Step (Upload Proof)
+
+  // components/payment/DepositConfirmStep.tsx
+
+  'use client';
+
+  import { useState, useCallback } from 'react';
+  import { useMutation, useQuery } from '@tanstack/react-query';
+  import { paymentApi } from '@/services/api/payment.api';
+  import { uploadApi } from '@/services/api/upload.api';
+  import { Card } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import {
+    Upload, CheckCircle2, Clock, Loader2,
+    Image as ImageIcon, X
+  } from 'lucide-react';
+  import { toast } from 'sonner';
+  import { useDropzone } from 'react-dropzone';
+
+  interface Props {
+    depositData: {
+      deposit: { id: string; amount: number; depositCode: string };
+    };
+    onSuccess: () => void;
+  }
+
+  export function DepositConfirmStep({ depositData, onSuccess }: Props) {
+    const [proofUrl, setProofUrl] = useState<string | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [confirmed, setConfirmed] = useState(false);
+
+    // Upload ảnh proof
+    const onDrop = useCallback(async (acceptedFiles: File[]) => {
+      const file = acceptedFiles[0];
+      if (!file) return;
+
+      setUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await uploadApi.uploadImage(formData);
+        setProofUrl(res.data.url);
+        toast.success('Đã tải ảnh lên');
+      } catch (err) {
+        toast.error('Lỗi tải ảnh');
+      } finally {
+        setUploading(false);
+      }
+    }, []);
+
+    const { getRootProps, getInputProps, isDragActive } = useDropzone({
+      onDrop,
+      accept: { 'image/*': ['.png', '.jpg', '.jpeg'] },
+      maxFiles: 1,
+      maxSize: 5 * 1024 * 1024, // 5MB
+    });
+
+    // Submit confirmation
+    const confirmMutation = useMutation({
+      mutationFn: () => paymentApi.confirmTransfer(
+        depositData.deposit.id,
+        proofUrl || undefined,
+      ),
+      onSuccess: () => {
+        setConfirmed(true);
+      },
+      onError: (err: any) => {
+        toast.error(err.response?.data?.message || 'Có lỗi xảy ra');
+      },
+    });
+
+    // Polling status sau khi confirm
+    const { data: statusData } = useQuery({
+      queryKey: ['deposit-status', depositData.deposit.id],
+      queryFn: () => paymentApi.getDepositStatus(depositData.deposit.id),
+      refetchInterval: confirmed ? 5000 : false, // poll mỗi 5s sau khi confirm
+    });
+
+    // Auto redirect khi completed
+    if (statusData?.data?.status === 'completed') {
+      onSuccess();
+      return null;
+    }
+
+    if (confirmed) {
+      return (
+        <Card className="p-8 text-center">
+          <div className="w-16 h-16 bg-amber-100 dark:bg-amber-900 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Clock className="w-8 h-8 text-amber-500" />
+          </div>
+          <h3 className="text-xl font-semibold mb-2">Đang chờ xác nhận</h3>
+          <p className="text-gray-500 mb-4">
+            Admin sẽ kiểm tra và xác nhận giao dịch trong vài phút.
+            <br />
+            Bạn sẽ nhận được thông báo khi hoàn tất.
+          </p>
+
+          <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 mb-4">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Mã giao dịch</span>
+              <span className="font-mono font-bold">{depositData.deposit.depositCode}</span>
+            </div>
+          </div>
+
+          {/* Loading animation */}
+          <div className="flex items-center justify-center gap-2 text-gray-400">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-sm">Đang kiểm tra...</span>
+          </div>
+
+          <p className="text-xs text-gray-400 mt-4">
+            Trang sẽ tự động cập nhật khi giao dịch được xác nhận
+          </p>
+        </Card>
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        <Card className="p-6">
+          <h3 className="font-semibold mb-4">Xác nhận đã chuyển tiền</h3>
+
+          <p className="text-sm text-gray-500 mb-4">
+            Bạn có thể tải ảnh chụp màn hình giao dịch để Admin xác nhận nhanh hơn
+            (không bắt buộc).
+          </p>
+
+          {/* Upload area */}
+          <div
+            {...getRootProps()}
+            className={`
+              border-2 border-dashed rounded-xl p-6 text-center cursor-pointer
+              transition-colors mb-4
+              ${isDragActive
+                ? 'border-pink-500 bg-pink-50 dark:bg-pink-950'
+                : 'border-gray-300 hover:border-pink-400 dark:border-gray-600'
+              }
+            `}
+          >
+            <input {...getInputProps()} />
+
+            {uploading ? (
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="w-8 h-8 animate-spin text-pink-500" />
+                <p className="text-sm text-gray-500">Đang tải lên...</p>
+              </div>
+            ) : proofUrl ? (
+              <div className="relative inline-block">
+                <img
+                  src={proofUrl}
+                  alt="Transfer proof"
+                  className="max-h-48 rounded-lg"
+                />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProofUrl(null);
+                  }}
+                  className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2">
+                <Upload className="w-8 h-8 text-gray-400" />
+                <p className="text-sm text-gray-500">
+                  Kéo thả hoặc click để tải ảnh chụp giao dịch
+                </p>
+                <p className="text-xs text-gray-400">PNG, JPG • Tối đa 5MB</p>
+              </div>
+            )}
+          </div>
+
+          {/* Info */}
+          <div className="bg-blue-50 dark:bg-blue-950 rounded-lg p-3 text-sm mb-4">
+            <p className="text-blue-700 dark:text-blue-300">
+              💡 <strong>Lưu ý:</strong> Hệ thống sẽ đối chiếu dựa trên mã{' '}
+              <span className="font-mono font-bold">{depositData.deposit.depositCode}</span>{' '}
+              trong nội dung chuyển khoản.
+            </p>
+          </div>
+        </Card>
+
+        <Button
+          onClick={() => confirmMutation.mutate()}
+          disabled={confirmMutation.isPending}
+          className="w-full h-12 text-lg bg-green-600 hover:bg-green-700"
+          size="lg"
+        >
+          {confirmMutation.isPending ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Đang xử lý...
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5" />
+              Xác nhận đã chuyển tiền
+            </span>
+          )}
+        </Button>
+      </div>
+    );
+  }
+
+  3.6: Success Step
+
+  // components/payment/DepositSuccessStep.tsx
+
+  'use client';
+
+  import { useEffect } from 'react';
+  import { Card } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import { CheckCircle2, Wallet, ArrowRight } from 'lucide-react';
+  import { formatCurrency } from '@/lib/formatters';
+  import confetti from 'canvas-confetti';
+
+  interface Props {
+    amount: number;
+    onDone: () => void;
+  }
+
+  export function DepositSuccessStep({ amount, onDone }: Props) {
+    // 🎉 Confetti effect
+    useEffect(() => {
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#ec4899', '#f472b6', '#fbbf24', '#34d399'],
+      });
+    }, []);
+
+    return (
+      <Card className="p-8 text-center">
+        {/* Success Icon */}
+        <div className="w-20 h-20 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center mx-auto mb-6 animate-bounce">
+          <CheckCircle2 className="w-10 h-10 text-green-500" />
+        </div>
+
+        <h2 className="text-2xl font-bold mb-2">Nạp tiền thành công! 🎉</h2>
+
+        <p className="text-gray-500 mb-6">
+          Số dư của bạn đã được cộng thêm
+        </p>
+
+        <div className="bg-green-50 dark:bg-green-950 rounded-2xl p-6 mb-6">
+          <p className="text-sm text-gray-500 mb-1">Số tiền đã nạp</p>
+          <p className="text-4xl font-bold text-green-600">
+            +{formatCurrency(amount)}
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <Button
+            onClick={onDone}
+            className="w-full h-12"
+            size="lg"
+          >
+            <Wallet className="w-5 h-5 mr-2" />
+            Xem ví của tôi
+          </Button>
+
+          <Button
+            onClick={() => window.location.href = '/'}
+            variant="ghost"
+            className="w-full"
+          >
+            Về trang chủ
+            <ArrowRight className="w-4 h-4 ml-2" />
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  ---
+  📦 PHASE 4: ADMIN PANEL - Duyệt Nạp Tiền
+
+  4.1: Admin Deposit Management
+
+  // app/(admin)/admin/deposits/page.tsx
+
+  'use client';
+
+  import { useState } from 'react';
+  import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+  import { adminApi } from '@/services/api/admin.api';
+  import { Card } from '@/components/ui/card';
+  import { Button } from '@/components/ui/button';
+  import { Badge } from '@/components/ui/badge';
+  import {
+    Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow,
+  } from '@/components/ui/table';
+  import {
+    Dialog, DialogContent, DialogHeader, DialogTitle,
+    DialogFooter,
+  } from '@/components/ui/dialog';
+  import {
+    CheckCircle2, XCircle, Eye, Clock,
+    AlertTriangle, Loader2, ExternalLink
+  } from 'lucide-react';
+  import { formatCurrency, formatDateTime, formatTimeAgo } from '@/lib/formatters';
+  import { toast } from 'sonner';
+
+  export default function AdminDepositsPage() {
+    const queryClient = useQueryClient();
+    const [selectedDeposit, setSelectedDeposit] = useState<any>(null);
+    const [showDialog, setShowDialog] = useState(false);
+    const [action, setAction] = useState<'approve' | 'reject' | null>(null);
+
+    const { data, isLoading } = useQuery({
+      queryKey: ['admin', 'deposits', 'pending'],
+      queryFn: () => adminApi.getPendingDeposits(),
+      refetchInterval: 10000, // Auto refresh mỗi 10s
+    });
+
+    const confirmMutation = useMutation({
+      mutationFn: ({ depositId, approved, note }: any) =>
+        adminApi.confirmDeposit(depositId, { approved, note }),
+      onSuccess: (_, variables) => {
+        toast.success(
+          variables.approved ? 'Đã duyệt nạp tiền' : 'Đã từ chối nạp tiền'
+        );
+        queryClient.invalidateQueries({ queryKey: ['admin', 'deposits'] });
+        setShowDialog(false);
+        setSelectedDeposit(null);
+      },
+      onError: (err: any) => {
+        toast.error(err.response?.data?.message || 'Có lỗi xảy ra');
+      },
+    });
+
+    const deposits = data?.data || [];
+
+    const statusColor: Record<string, string> = {
+      pending: 'bg-yellow-100 text-yellow-700',
+      user_confirmed: 'bg-blue-100 text-blue-700',
+      completed: 'bg-green-100 text-green-700',
+      failed: 'bg-red-100 text-red-700',
+      expired: 'bg-gray-100 text-gray-500',
+    };
+
+    const statusLabel: Record<string, string> = {
+      pending: 'Chờ chuyển',
+      user_confirmed: '⚡ Đã chuyển - Cần duyệt',
+      completed: 'Hoàn tất',
+      failed: 'Từ chối',
+      expired: 'Hết hạn',
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">Duyệt nạp tiền</h1>
+          <Badge variant="secondary" className="text-lg">
+            {deposits.filter((d: any) => d.status === 'user_confirmed').length} cần duyệt
+          </Badge>
+        </div>
+
+        {/* Notification sound for new deposits */}
+        {deposits.some((d: any) => d.status === 'user_confirmed') && (
+          <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4 flex items-center gap-3 animate-pulse">
+            <AlertTriangle className="w-5 h-5 text-blue-500" />
+            <span className="font-medium text-blue-700 dark:text-blue-300">
+              Có giao dịch mới cần xác nhận!
+            </span>
+          </div>
+        )}
+
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Thời gian</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>Mã nạp</TableHead>
+                <TableHead>Số tiền</TableHead>
+                <TableHead>Trạng thái</TableHead>
+                <TableHead>Proof</TableHead>
+                <TableHead className="text-right">Thao tác</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {deposits.map((deposit: any) => (
+                <TableRow
+                  key={deposit.id}
+                  className={deposit.status === 'user_confirmed'
+                    ? 'bg-blue-50/50 dark:bg-blue-950/30'
+                    : ''
+                  }
+                >
+                  <TableCell>
+                    <div>
+                      <p className="text-sm">{formatTimeAgo(deposit.createdAt)}</p>
+                      <p className="text-xs text-gray-400">{formatDateTime(deposit.createdAt)}</p>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={deposit.user?.avatarUrl || '/default-avatar.png'}
+                        className="w-8 h-8 rounded-full"
+                        alt=""
+                      />
+                      <div>
+                        <p className="font-medium text-sm">{deposit.user?.displayName}</p>
+                        <p className="text-xs text-gray-400">{deposit.user?.email}</p>
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <code className="bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded text-sm font-mono font-bold">
+                      {deposit.depositCode}
+                    </code>
+                  </TableCell>
+                  <TableCell>
+                    <span className="font-bold text-pink-600">
+                      {formatCurrency(deposit.amount)}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <Badge className={statusColor[deposit.status] || ''}>
+                      {statusLabel[deposit.status] || deposit.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {deposit.transferProofUrl ? (
+                      <button
+                        onClick={() => window.open(deposit.transferProofUrl, '_blank')}
+                        className="text-blue-500 hover:text-blue-700 flex items-center gap-1 text-sm"
+                      >
+                        <Eye className="w-4 h-4" />
+                        Xem ảnh
+                      </button>
+                    ) : (
+                      <span className="text-gray-400 text-sm">Không có</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {['pending', 'user_confirmed'].includes(deposit.status) && (
+                      <div className="flex gap-2 justify-end">
+                        <Button
+                          size="sm"
+                          variant="default"
+                          className="bg-green-600 hover:bg-green-700"
+                          onClick={() => {
+                            setSelectedDeposit(deposit);
+                            setAction('approve');
+                            setShowDialog(true);
+                          }}
+                        >
+                          <CheckCircle2 className="w-4 h-4 mr-1" />
+                          Duyệt
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => {
+                            setSelectedDeposit(deposit);
+                            setAction('reject');
+                            setShowDialog(true);
+                          }}
+                        >
+                          <XCircle className="w-4 h-4 mr-1" />
+                          Từ chối
+                        </Button>
+                      </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+
+              {deposits.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-12 text-gray-400">
+                    <Clock className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                    Không có giao dịch nào cần duyệt
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+
+        {/* Confirm Dialog */}
+        <Dialog open={showDialog} onOpenChange={setShowDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {action === 'approve' ? '✅ Xác nhận duyệt nạp tiền' : '❌ Từ chối nạp tiền'}
+              </DialogTitle>
+            </DialogHeader>
+
+            {selectedDeposit && (
+              <div className="space-y-4">
+                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Mã giao dịch</span>
+                    <span className="font-mono font-bold">{selectedDeposit.depositCode}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Số tiền</span>
+                    <span className="font-bold text-pink-600">
+                      {formatCurrency(selectedDeposit.amount)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">User</span>
+                    <span>{selectedDeposit.user?.displayName}</span>
+                  </div>
+                </div>
+
+                {selectedDeposit.transferProofUrl && (
+                  <div>
+                    <p className="text-sm font-medium mb-2">Ảnh proof:</p>
+                    <img
+                      src={selectedDeposit.transferProofUrl}
+                      alt="Transfer proof"
+                      className="max-h-64 rounded-lg border"
+                    />
+                  </div>
+                )}
+
+                {action === 'approve' ? (
+                  <div className="bg-green-50 dark:bg-green-950 rounded-lg p-3 text-sm text-green-700 dark:text-green-300">
+                    Bạn xác nhận đã nhận được {formatCurrency(selectedDeposit.amount)} từ
+                    user {selectedDeposit.user?.displayName}? Số dư sẽ được cộng ngay.
+                  </div>
+                ) : (
+                  <div className="bg-red-50 dark:bg-red-950 rounded-lg p-3 text-sm text-red-700 dark:text-red-300">
+                    Từ chối nạp tiền. User sẽ nhận thông báo.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setShowDialog(false)}>
+                Hủy
+              </Button>
+              <Button
+                onClick={() => {
+                  confirmMutation.mutate({
+                    depositId: selectedDeposit.id,
+                    approved: action === 'approve',
+                    note: action === 'reject' ? 'Không tìm thấy giao dịch khớp' : undefined,
+                  });
+                }}
+                disabled={confirmMutation.isPending}
+                className={action === 'approve'
+                  ? 'bg-green-600 hover:bg-green-700'
+                  : 'bg-red-600 hover:bg-red-700'
+                }
+              >
+                {confirmMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : action === 'approve' ? (
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                ) : (
+                  <XCircle className="w-4 h-4 mr-2" />
+                )}
+                {action === 'approve' ? 'Xác nhận duyệt' : 'Xác nhận từ chối'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  ---
+  📦 PHASE 5: NÂNG CAO - Auto-Verify (Optional)
+
+  5.1: Tự động kiểm tra qua MoMo Notification Listener
+
+  // src/modules/payment/services/momo-notification-listener.service.ts
+
+  /**
+   * CÁCH 1: Đọc SMS/Notification trên điện thoại Admin
+   *
+   * Sử dụng app trung gian trên điện thoại Admin (Android):
+   * - "Tasker" + "AutoNotification"
+   * - Hoặc app tự build đơn giản
+   *
+   * Flow:
+   * 1. MoMo gửi notification "Bạn vừa nhận X đồng từ Y. Nội dung: NAP-XXXXXX"
+   * 2. App trên điện thoại bắt notification, parse nội dung
+   * 3. Gọi webhook đến server: POST /api/v1/payment/webhook/momo-notification
+   * 4. Server tự match deposit code → auto approve
+   */
+
+  import { Injectable, Logger } from '@nestjs/common';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository } from 'typeorm';
+  import { Deposit } from '../entities/deposit.entity';
+  import { PaymentService } from '../payment.service';
+  import { DepositCodeService } from './deposit-code.service';
+
+  interface MoMoNotificationPayload {
+    // Gửi từ app trên điện thoại admin
+    notificationText: string;  // Full text notification
+    amount?: number;            // Số tiền (nếu đã parse)
+    senderName?: string;        // Tên người gửi
+    timestamp: string;
+    secretKey: string;          // Shared secret để xác thực webhook
+  }
+
+  @Injectable()
+  export class MoMoNotificationListenerService {
+    private readonly logger = new Logger(MoMoNotificationListenerService.name);
+    private readonly WEBHOOK_SECRET = process.env.MOMO_WEBHOOK_SECRET || 'your-secret-key';
+
+    constructor(
+      @InjectRepository(Deposit)
+      private depositRepo: Repository<Deposit>,
+      private paymentService: PaymentService,
+      private depositCodeService: DepositCodeService,
+    ) {}
+
+    /**
+     * Xử lý notification từ app trên điện thoại admin
+     */
+    async handleNotification(payload: MoMoNotificationPayload) {
+      // 1. Verify secret
+      if (payload.secretKey !== this.WEBHOOK_SECRET) {
+        this.logger.warn('Invalid webhook secret');
+        return { success: false, error: 'Invalid secret' };
+      }
+
+      // 2. Parse notification text
+      const parsed = this.parseMoMoNotification(payload.notificationText);
+      if (!parsed) {
+        this.logger.warn(`Could not parse MoMo notification: ${payload.notificationText}`);
+        return { success: false, error: 'Could not parse notification' };
+      }
+
+      // 3. Tìm deposit code
+      const depositCode = this.depositCodeService.parseDepositCode(parsed.content);
+      if (!depositCode) {
+        this.logger.log(`No deposit code found in: ${parsed.content}`);
+        return { success: false, error: 'No deposit code found' };
+      }
+
+      // 4. Tìm deposit record
+      const deposit = await this.depositRepo.findOne({
+        where: {
+          depositCode,
+          status: 'pending',
+        },
+      });
+
+      if (!deposit) {
+        // Thử tìm user_confirmed
+        const confirmedDeposit = await this.depositRepo.findOne({
+          where: {
+            depositCode,
+            status: 'user_confirmed',
+          },
+        });
+
+        if (!confirmedDeposit) {
+          this.logger.warn(`Deposit not found for code: ${depositCode}`);
+          return { success: false, error: 'Deposit not found' };
+        }
+
+        return this.processAutoApproval(confirmedDeposit, parsed.amount);
+      }
+
+      return this.processAutoApproval(deposit, parsed.amount);
+    }
+
+    /**
+     * Tự động duyệt nếu khớp
+     */
+    private async processAutoApproval(deposit: Deposit, receivedAmount: number) {
+      // Verify amount
+      if (receivedAmount !== deposit.amount) {
+        this.logger.warn(
+          `Amount mismatch: expected ${deposit.amount}, received ${receivedAmount} ` +
+          `for code ${deposit.depositCode}`
+        );
+        // Vẫn log nhưng không tự duyệt - cần admin check manual
+        return {
+          success: false,
+          error: 'Amount mismatch',
+          expected: deposit.amount,
+          received: receivedAmount,
+        };
+      }
+
+      // Auto approve!
+      const SYSTEM_ADMIN_ID = process.env.SYSTEM_ADMIN_ID || 'system';
+
+      try {
+        await this.paymentService.adminConfirmDeposit(
+          SYSTEM_ADMIN_ID,
+          deposit.id,
+          true,
+          'Auto-approved via MoMo notification',
+        );
+
+        this.logger.log(
+          `✅ Auto-approved deposit ${deposit.depositCode} - ${deposit.amount}đ`
+        );
+
+        return { success: true, depositId: deposit.id };
+      } catch (error) {
+        this.logger.error(`Failed to auto-approve: ${error.message}`);
+        return { success: false, error: error.message };
+      }
+    }
+
+    /**
+     * Parse nội dung notification MoMo
+     * Ví dụ: "Bạn vừa nhận 50.000đ từ NGUYEN VAN B. Nội dung: NAP-A1B2C3. Số dư: 1.000.000đ"
+     */
+    private parseMoMoNotification(text: string): {
+      amount: number;
+      senderName: string;
+      content: string;
+    } | null {
+      try {
+        // Pattern 1: "nhận X đồng/đ từ Y. Nội dung: Z"
+        const amountMatch = text.match(/nhận\s+([\d.,]+)\s*(đ|đồng|VND)/i);
+        const senderMatch = text.match(/từ\s+([^.]+)\./i);
+        const contentMatch = text.match(/[Nn]ội dung[:\s]+([^.]+)/);
+
+        if (!amountMatch) return null;
+
+        const amount = parseInt(amountMatch[1].replace(/[.,]/g, ''));
+        const senderName = senderMatch ? senderMatch[1].trim() : 'Unknown';
+        const content = contentMatch ? contentMatch[1].trim() : '';
+
+        return { amount, senderName, content };
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  5.2: Webhook Controller
+
+  // src/modules/payment/controllers/webhook.controller.ts
+
+  import { Controller, Post, Body, HttpCode, Logger } from '@nestjs/common';
+  import { MoMoNotificationListenerService } from '../services/momo-notification-listener.service';
+
+  @Controller('api/v1/payment/webhook')
+  export class PaymentWebhookController {
+    private readonly logger = new Logger(PaymentWebhookController.name);
+
+    constructor(
+      private momoListener: MoMoNotificationListenerService,
+    ) {}
+
+    /**
+     * POST /api/v1/payment/webhook/momo-notification
+     * Nhận notification từ app trên điện thoại admin
+     *
+     * Không cần JWT auth, dùng shared secret key
+     */
+    @Post('momo-notification')
+    @HttpCode(200)
+    async handleMoMoNotification(@Body() payload: any) {
+      this.logger.log(`Received MoMo notification webhook`);
+      return this.momoListener.handleNotification(payload);
+    }
+  }
+
+  5.3: Android App đơn giản (Notification Forwarder)
+
+  // Đây là pseudo-code cho app Android đơn giản
+  // Bắt notification MoMo → Forward đến server
+
+  // AndroidManifest.xml - cần quyền BIND_NOTIFICATION_LISTENER_SERVICE
+
+  class MoMoNotificationListener : NotificationListenerService() {
+
+      private val SERVER_URL = "https://your-api.com/api/v1/payment/webhook/momo-notification"
+      private val SECRET_KEY = "your-secret-key"
+
+      override fun onNotificationPosted(sbn: StatusBarNotification) {
+          // Chỉ bắt notification từ MoMo
+          if (sbn.packageName != "com.mservice.momotransfer") return
+
+          val extras = sbn.notification.extras
+          val title = extras.getString("android.title") ?: ""
+          val text = extras.getString("android.text") ?: ""
+
+          // Chỉ forward notification nhận tiền
+          if (!text.contains("nhận") && !text.contains("received")) return
+
+          // Forward to server
+          val payload = JSONObject().apply {
+              put("notificationText", "$title $text")
+              put("timestamp", System.currentTimeMillis().toString())
+              put("secretKey", SECRET_KEY)
+          }
+
+          // HTTP POST (dùng OkHttp hoặc Retrofit)
+          sendToServer(SERVER_URL, payload)
+      }
+  }
+
+  ---
+  📦 PHASE 6: CÁCH 2 - Dùng SePay / Casso (Auto-verify Bank Transfer)
+
+  ▎ Đây là cách TỐT NHẤT và ĐƠN GIẢN NHẤT cho cá nhân không có đăng ký doanh nghiệp.
+
+  SePay (sepay.vn) / Casso (casso.vn):
+  - Kết nối ngân hàng cá nhân
+  - Tự động detect giao dịch đến
+  - Gọi webhook khi có tiền vào
+  - MIỄN PHÍ hoặc rất rẻ
+  - Không cần đăng ký doanh nghiệp
+
+  6.1: SePay Integration
+
+  // src/modules/payment/services/sepay.service.ts
+
+  import { Injectable, Logger } from '@nestjs/common';
+  import { ConfigService } from '@nestjs/config';
+  import { InjectRepository } from '@nestjs/typeorm';
+  import { Repository } from 'typeorm';
+  import { Deposit } from '../entities/deposit.entity';
+  import { PaymentService } from '../payment.service';
+  import { DepositCodeService } from './deposit-code.service';
+  import * as crypto from 'crypto';
+
+  /**
+   * SePay (sepay.vn) - Dịch vụ tự động xác nhận giao dịch ngân hàng
+   *
+   * Đăng ký tài khoản tại sepay.vn (miễn phí)
+   * Liên kết ngân hàng cá nhân (MB, TCB, VCB, etc.)
+   * Cấu hình webhook URL
+   *
+   * Khi có tiền vào → SePay gọi webhook → Server tự xác nhận
+   */
+  @Injectable()
+  export class SepayService {
+    private readonly logger = new Logger(SepayService.name);
+    private readonly webhookSecret: string;
+
+    constructor(
+      private configService: ConfigService,
+      @InjectRepository(Deposit)
+      private depositRepo: Repository<Deposit>,
+      private paymentService: PaymentService,
+      private depositCodeService: DepositCodeService,
+    ) {
+      this.webhookSecret = this.configService.get('SEPAY_WEBHOOK_SECRET', '');
+    }
+
+    /**
+     * Xử lý webhook từ SePay
+     * SePay gửi POST request khi có giao dịch mới
+     */
+    async handleWebhook(payload: SepayWebhookPayload, signature: string) {
+      // 1. Verify signature
+      if (!this.verifySignature(payload, signature)) {
+        this.logger.warn('Invalid SePay webhook signature');
+        return { success: false, error: 'Invalid signature' };
+      }
+
+      // 2. Chỉ xử lý giao dịch "IN" (tiền vào)
+      if (payload.transferType !== 'in') {
+        return { success: true, message: 'Skipped outgoing transaction' };
+      }
+
+      this.logger.log(
+        `SePay webhook: ${payload.transferAmount}đ - Content: "${payload.content}"`
+      );
+
+      // 3. Parse deposit code từ nội dung
+      const depositCode = this.depositCodeService.parseDepositCode(payload.content);
+
+      if (!depositCode) {
+        this.logger.log(`No deposit code found in: "${payload.content}"`);
+        return { success: true, message: 'No deposit code found' };
+      }
+
+      // 4. Tìm deposit
+      const deposit = await this.depositRepo.findOne({
+        where: [
+          { depositCode, status: 'pending' },
+          { depositCode, status: 'user_confirmed' },
+        ],
+      });
+
+      if (!deposit) {
+        this.logger.warn(`Deposit not found for code: ${depositCode}`);
+        return { success: false, error: 'Deposit not found' };
+      }
+
+      // 5. Verify amount
+      if (payload.transferAmount < deposit.amount) {
+        this.logger.warn(
+          `Amount insufficient: expected ${deposit.amount}, received ${payload.transferAmount}`
+        );
+        return {
+          success: false,
+          error: 'Amount insufficient',
+        };
+      }
+
+      // 6. Auto approve! 🎉
+      try {
+        const SYSTEM_ID = 'system-sepay';
+
+        await this.paymentService.adminConfirmDeposit(
+          SYSTEM_ID,
+          deposit.id,
+          true,
+          `Auto-approved via SePay. Bank ref: ${payload.referenceNumber}`,
+        );
+
+        this.logger.log(
+          `✅ Auto-approved deposit ${deposit.depositCode} - ${deposit.amount}đ via SePay`
+        );
+
+        return { success: true, depositId: deposit.id };
+      } catch (error) {
+        this.logger.error(`Auto-approve failed: ${error.message}`);
+        return { success: false, error: error.message };
+      }
+    }
+
+    private verifySignature(payload: any, signature: string): boolean {
+      if (!this.webhookSecret) return true; // Skip if no secret configured
+
+      const computed = crypto
+        .createHmac('sha256', this.webhookSecret)
+        .update(JSON.stringify(payload))
+        .digest('hex');
+
+      return computed === signature;
+    }
+  }
+
+  // Types
+  interface SepayWebhookPayload {
+    id: number;
+    gateway: string;              // "MBBank"
+    transactionDate: string;      // "2024-01-15 10:30:00"
+    accountNumber: string;        // "0909123456789"
+    subAccount: string | null;
+    transferType: 'in' | 'out';
+    transferAmount: number;       // 50000
+    accumulated: number;          // Số dư sau giao dịch
+    code: string | null;
+    content: string;              // "NAP A1B2C3" - nội dung CK
+    referenceNumber: string;      // Mã tham chiếu ngân hàng
+    description: string;
+  }
+
+  6.2: SePay Webhook Controller
+
+  // src/modules/payment/controllers/sepay-webhook.controller.ts
+
+  import { Controller, Post, Body, Headers, HttpCode, Logger } from '@nestjs/common';
+  import { SepayService } from '../services/sepay.service';
+
+  @Controller('api/v1/payment/webhook')
+  export class SepayWebhookController {
+    private readonly logger = new Logger(SepayWebhookController.name);
+
+    constructor(private sepayService: SepayService) {}
+
+    /**
+     * POST /api/v1/payment/webhook/sepay
+     * Webhook endpoint cho SePay
+     *
+     * Cấu hình trên sepay.vn:
+     * - URL: https://your-api.com/api/v1/payment/webhook/sepay
+     * - Method: POST
+     * - Secret: your-webhook-secret
+     */
+    @Post('sepay')
+    @HttpCode(200)
+    async handleSepayWebhook(
+      @Body() payload: any,
+      @Headers('x-sepay-signature') signature: string,
+    ) {
+      this.logger.log('Received SePay webhook');
+      return this.sepayService.handleWebhook(payload, signature);
+    }
+  }
+
+  ---
+  🔄 SO SÁNH CÁC PHƯƠNG ÁN
+
+  ┌──────────────────────────┬──────────────┬──────────────┬──────────────┐
+  │ Tiêu chí                 │ Manual       │ MoMo Notif   │ SePay/Casso  │
+  │                          │ (Admin duyệt)│ (Auto)       │ (Auto)       │
+  ├──────────────────────────┼──────────────┼──────────────┼──────────────┤
+  │ Độ phức tạp              │ ⭐ Dễ        │ ⭐⭐⭐ Khó     │ ⭐⭐ Vừa      │
+  │ Tốc độ xác nhận          │ 1-30 phút    │ < 30 giây    │ < 30 giây    │
+  │ Cần đăng ký DN           │ ❌ Không     │ ❌ Không      │ ❌ Không     │
+  │ Chi phí                  │ Miễn phí     │ Miễn phí     │ 0-100k/tháng │
+  │ Độ tin cậy               │ ⭐⭐⭐ Cao    │ ⭐⭐ Trung bình│ ⭐⭐⭐ Cao   │
+  │ Cần app Android          │ ❌ Không     │ ✅ Cần        │ ❌ Không     │
+  │ Hỗ trợ ngân hàng        │ ❌ Chỉ MoMo  │ ❌ Chỉ MoMo   │ ✅ Nhiều NH  │
+  │ Scale khi lượng lớn      │ ❌ Kém       │ ⭐⭐ Được     │ ⭐⭐⭐ Tốt    │
+  ├──────────────────────────┼──────────────┼──────────────┼──────────────┤
+  │ ĐỀ XUẤT                 │ MVP ban đầu  │ Optional     │ ⭐ KHUYÊN    │
+  │                          │              │              │   DÙNG       │
+  └──────────────────────────┴──────────────┴──────────────┴──────────────┘
+
+  ---
+  🚀 KHUYẾN NGHỊ TRIỂN KHAI
+
+  Giai đoạn 1 (MVP - Tuần 1):
+
+  ✅ Manual approval (Admin duyệt thủ công)
+  ✅ QR MoMo cá nhân + VietQR ngân hàng
+  ✅ Admin panel duyệt nạp tiền
+  ✅ Socket.IO thông báo real-time
+
+  Giai đoạn 2 (Tối ưu - Tuần 2):
+
+  ✅ Tích hợp SePay/Casso → Auto-verify bank transfer
+  ✅ VietQR thay cho MoMo QR (hỗ trợ nhiều ngân hàng hơn)
+  ✅ Fallback: vẫn có manual approval nếu auto-verify fail
+
+  Giai đoạn 3 (Scale - Khi có doanh thu):
+
+  🔄 Đăng ký doanh nghiệp → dùng MoMo Business API
+  🔄 Tích hợp VNPay / ZaloPay chính thức
+  🔄 Bỏ manual approval hoàn toàn
+
+  ---
+  📦 PACKAGES CẦN CÀI
+
+  # Backend
+  npm install qrcode nanoid
+  npm install -D @types/qrcode
+
+  # Frontend
+  npm install react-dropzone canvas-confetti
+  npm install -D @types/canvas-confetti
+
+  ---
+  ✅ CHECKLIST
+
+  [ ] MoMo QR generation hoạt động
+  [ ] VietQR (bank transfer) generation hoạt động
+  [ ] Deposit code unique + dễ nhận diện
+  [ ] Countdown timer 30 phút
+  [ ] User confirm + upload proof
+  [ ] Admin panel duyệt nạp tiền
+  [ ] Socket.IO notify khi admin duyệt
+  [ ] Auto-expire deposits hết hạn
+  [ ] Balance cộng đúng sau khi duyệt
+  [ ] Transaction log đầy đủ
+  [ ] (Optional) SePay webhook auto-verify
+  [ ] (Optional) MoMo notification auto-verify
+  [ ] Responsive trên mobile
+  [ ] Error handling đầy đủ

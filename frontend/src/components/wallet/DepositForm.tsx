@@ -13,10 +13,11 @@ import { toast } from "@/components/ui/toast";
 import { walletApi } from "@/services/api/wallet.api";
 import type { PaymentMethod } from "@/types/wallet.types";
 
-const PRESET_AMOUNTS = [50_000, 100_000, 200_000, 500_000, 1_000_000];
+const MIN_DEPOSIT_AMOUNT = 10_000;
+const PRESET_AMOUNTS = [10_000, 50_000, 100_000, 200_000, 500_000, 1_000_000];
 
 export function DepositForm() {
-  const [amount, setAmount] = useState(50_000);
+  const [amount, setAmount] = useState(MIN_DEPOSIT_AMOUNT);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("vnpay");
 
   const depositMutation = useMutation({
@@ -48,7 +49,7 @@ export function DepositForm() {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-white/78">
-            Tối thiểu theo backend hiện tại là {formatCurrency(50_000)}.
+            Tối thiểu theo backend hiện tại là {formatCurrency(MIN_DEPOSIT_AMOUNT)}.
           </p>
         </CardContent>
       </Card>
@@ -82,13 +83,13 @@ export function DepositForm() {
             <Input
               id="deposit-amount"
               type="number"
-              min={50_000}
+              min={MIN_DEPOSIT_AMOUNT}
               step={10_000}
               value={amount}
               onChange={(event) => setAmount(Number(event.target.value || 0))}
             />
             <p className="text-xs text-muted-foreground">
-              Backend sẽ từ chối số tiền nhỏ hơn {formatCurrency(50_000)}.
+              Backend sẽ từ chối số tiền nhỏ hơn {formatCurrency(MIN_DEPOSIT_AMOUNT)}.
             </p>
           </div>
         </CardContent>
@@ -123,8 +124,8 @@ export function DepositForm() {
             size="lg"
             disabled={depositMutation.isPending}
             onClick={() => {
-              if (amount < 50_000) {
-                toast.error("Số tiền nạp tối thiểu là 50.000đ.");
+              if (amount < MIN_DEPOSIT_AMOUNT) {
+                toast.error(`Số tiền nạp tối thiểu là ${formatCurrency(MIN_DEPOSIT_AMOUNT)}.`);
                 return;
               }
 

@@ -3,7 +3,7 @@ import { PAYMENT_METHODS } from '../../../common/constants';
 
 export class DepositDto {
   @IsInt()
-  @Min(50000)
+  @Min(10000)
   amount!: number;
 
   @IsIn(PAYMENT_METHODS)
