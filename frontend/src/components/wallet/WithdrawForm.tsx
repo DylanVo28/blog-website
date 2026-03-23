@@ -17,8 +17,11 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { walletApi } from "@/services/api/wallet.api";
 
+const MIN_WITHDRAW_AMOUNT = 50_000;
+const MIN_WITHDRAW_AMOUNT_ERROR = `Số tiền rút tối thiểu là ${formatCurrency(MIN_WITHDRAW_AMOUNT)}.`;
+
 const withdrawSchema = z.object({
-  amount: z.coerce.number().int().min(100_000, "Số tiền rút tối thiểu là 100.000đ."),
+  amount: z.coerce.number().int().min(MIN_WITHDRAW_AMOUNT, MIN_WITHDRAW_AMOUNT_ERROR),
   bankName: z.string().trim().min(2, "Nhập tên ngân hàng.").max(100),
   bankAccount: z.string().trim().min(6, "Nhập số tài khoản hợp lệ.").max(50),
   bankHolder: z.string().trim().min(2, "Nhập tên chủ tài khoản.").max(100),
@@ -39,7 +42,7 @@ export function WithdrawForm() {
   const form = useForm<WithdrawFormInput, undefined, WithdrawFormValues>({
     resolver: zodResolver(withdrawSchema),
     defaultValues: {
-      amount: 100_000,
+      amount: MIN_WITHDRAW_AMOUNT,
       bankName: "",
       bankAccount: "",
       bankHolder: "",
@@ -82,7 +85,7 @@ export function WithdrawForm() {
               Số dư hiện tại: <span className="font-semibold text-foreground">{formatCurrency(currentBalance)}</span>
             </p>
             <p className="text-sm text-muted-foreground">
-              Mức tối thiểu cho mỗi lần rút là {formatCurrency(100_000)}.
+              Mức tối thiểu cho mỗi lần rút là {formatCurrency(MIN_WITHDRAW_AMOUNT)}.
             </p>
           </CardContent>
         </Card>
@@ -107,7 +110,13 @@ export function WithdrawForm() {
                 <label className="text-sm font-semibold text-foreground" htmlFor="withdraw-amount">
                   Số tiền
                 </label>
-                <Input id="withdraw-amount" type="number" min={100_000} step={10_000} {...form.register("amount")} />
+                <Input
+                  id="withdraw-amount"
+                  type="number"
+                  min={MIN_WITHDRAW_AMOUNT}
+                  step={10_000}
+                  {...form.register("amount")}
+                />
                 {form.formState.errors.amount ? (
                   <p className="text-sm text-destructive">{form.formState.errors.amount.message}</p>
                 ) : null}
@@ -162,9 +171,13 @@ export function WithdrawForm() {
         open={showInsufficientBalance}
         onClose={() => {
           setShowInsufficientBalance(false);
-          form.setValue("amount", Math.max(100_000, Math.min(currentBalance, amount || 100_000)), {
-            shouldValidate: true,
-          });
+          form.setValue(
+            "amount",
+            Math.max(MIN_WITHDRAW_AMOUNT, Math.min(currentBalance, amount || MIN_WITHDRAW_AMOUNT)),
+            {
+              shouldValidate: true,
+            },
+          );
         }}
         requiredAmount={amount || 0}
         currentBalance={currentBalance}

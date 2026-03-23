@@ -2,7 +2,7 @@ import { IsInt, IsString, MaxLength, Min } from 'class-validator';
 
 export class WithdrawDto {
   @IsInt()
-  @Min(100000)
+  @Min(50000)
   amount!: number;
 
   @IsString()

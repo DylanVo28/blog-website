@@ -211,44 +211,44 @@ export class PaymentService {
 
     return {
       items: [
-        {
-          method: 'momo_qr',
-          label: 'MoMo QR cá nhân',
-          description:
-            'Quét QR và xác nhận chuyển khoản để admin duyệt thủ công.',
-          minAmount: momoConfig.minAmount,
-          maxAmount: momoConfig.maxAmount,
-          enabled: this.isMomoQrConfigured(momoConfig),
-          expireMinutes: momoConfig.expireMinutes,
-          autoConfirm: false,
-          allowedAmounts: momoConfig.allowedAmounts,
-          receiver: {
-            phone: momoConfig.phone,
-            name: momoConfig.name,
-            bankCode: null,
-            bankName: null,
-            accountNumber: null,
-          },
-        },
-        {
-          method: 'vcb_qr',
-          label: 'VCB QR tự động',
-          description:
-            'Quét VietQR Vietcombank và hệ thống sẽ tự cộng ví khi webhook ngân hàng khớp nội dung.',
-          minAmount: vcbConfig.minAmount,
-          maxAmount: vcbConfig.maxAmount,
-          enabled: this.isBankQrConfigured(vcbConfig),
-          expireMinutes: vcbConfig.expireMinutes,
-          autoConfirm: true,
-          allowedAmounts: vcbConfig.allowedAmounts,
-          receiver: {
-            phone: null,
-            name: vcbConfig.accountName,
-            bankCode: vcbConfig.bankCode,
-            bankName: vcbConfig.bankName,
-            accountNumber: vcbConfig.accountNumber,
-          },
-        },
+        // {
+        //   method: 'momo_qr',
+        //   label: 'MoMo QR cá nhân',
+        //   description:
+        //     'Quét QR và xác nhận chuyển khoản để admin duyệt thủ công.',
+        //   minAmount: momoConfig.minAmount,
+        //   maxAmount: momoConfig.maxAmount,
+        //   enabled: this.isMomoQrConfigured(momoConfig),
+        //   expireMinutes: momoConfig.expireMinutes,
+        //   autoConfirm: false,
+        //   allowedAmounts: momoConfig.allowedAmounts,
+        //   receiver: {
+        //     phone: momoConfig.phone,
+        //     name: momoConfig.name,
+        //     bankCode: null,
+        //     bankName: null,
+        //     accountNumber: null,
+        //   },
+        // },
+        // {
+        //   method: 'vcb_qr',
+        //   label: 'VCB QR tự động',
+        //   description:
+        //     'Quét VietQR Vietcombank và hệ thống sẽ tự cộng ví khi webhook ngân hàng khớp nội dung.',
+        //   minAmount: vcbConfig.minAmount,
+        //   maxAmount: vcbConfig.maxAmount,
+        //   enabled: this.isBankQrConfigured(vcbConfig),
+        //   expireMinutes: vcbConfig.expireMinutes,
+        //   autoConfirm: true,
+        //   allowedAmounts: vcbConfig.allowedAmounts,
+        //   receiver: {
+        //     phone: null,
+        //     name: vcbConfig.accountName,
+        //     bankCode: vcbConfig.bankCode,
+        //     bankName: vcbConfig.bankName,
+        //     accountNumber: vcbConfig.accountNumber,
+        //   },
+        // },
         {
           method: 'ocb_qr',
           label: 'OCB QR tự động',
