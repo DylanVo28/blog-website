@@ -36,6 +36,15 @@ export class DepositEntity {
   @Column({ name: 'receiver_name', type: 'varchar', length: 100, nullable: true })
   receiverName!: string | null;
 
+  @Column({ name: 'bank_code', type: 'varchar', length: 20, nullable: true })
+  bankCode!: string | null;
+
+  @Column({ name: 'bank_name', type: 'varchar', length: 100, nullable: true })
+  bankName!: string | null;
+
+  @Column({ name: 'account_number', type: 'varchar', length: 50, nullable: true })
+  accountNumber!: string | null;
+
   @Column({ name: 'qr_data', type: 'text', nullable: true })
   qrData!: string | null;
 
@@ -59,6 +68,12 @@ export class DepositEntity {
 
   @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
   expiresAt!: Date | null;
+
+  @Column({ name: 'matched_at', type: 'timestamptz', nullable: true })
+  matchedAt!: Date | null;
+
+  @Column({ name: 'webhook_data', type: 'jsonb', nullable: true })
+  webhookData!: Record<string, unknown> | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;

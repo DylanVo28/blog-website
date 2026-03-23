@@ -9,6 +9,7 @@ import { PaymentService } from './payment.service';
 import { MomoProvider } from './providers/momo.provider';
 import { DepositCodeService } from './services/deposit-code.service';
 import { MomoQrService } from './services/momo-qr.service';
+import { VietQrService } from './services/viet-qr.service';
 import { VnpayProvider } from './providers/vnpay.provider';
 
 @Module({
@@ -26,8 +27,15 @@ import { VnpayProvider } from './providers/vnpay.provider';
     VnpayProvider,
     MomoProvider,
     MomoQrService,
+    VietQrService,
     DepositCodeService,
   ],
-  exports: [PaymentService, VnpayProvider, MomoProvider, MomoQrService],
+  exports: [
+    PaymentService,
+    VnpayProvider,
+    MomoProvider,
+    MomoQrService,
+    VietQrService,
+  ],
 })
 export class PaymentModule {}

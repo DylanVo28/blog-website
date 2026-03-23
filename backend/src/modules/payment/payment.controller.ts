@@ -2,12 +2,16 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
+  HttpCode,
   Param,
   Patch,
   Post,
   Query,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -24,6 +28,7 @@ export class PaymentController {
   constructor(
     private readonly paymentService: PaymentService,
     private readonly jobQueueService: JobQueueService,
+    private readonly configService: ConfigService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -133,5 +138,39 @@ export class PaymentController {
   @Get('vnpay/return')
   handleVnpayReturn(@Query() query: Record<string, unknown>) {
     return this.paymentService.handleVnpayReturn(query);
+  }
+
+  @Post('webhook/casso')
+  @HttpCode(200)
+  handleCassoWebhook(
+    @Headers('secure-token') secureToken?: string,
+    @Body() payload?: Record<string, unknown>,
+  ) {
+    const expectedToken =
+      this.configService.get<string>('payment.casso.webhookSecret')?.trim() ??
+      '';
+
+    if (!expectedToken || secureToken?.trim() !== expectedToken) {
+      throw new UnauthorizedException('Invalid Casso webhook token.');
+    }
+
+    return this.paymentService.handleCassoWebhook(payload ?? {});
+  }
+
+  @Post('webhook/sepay')
+  @HttpCode(200)
+  handleSepayWebhook(
+    @Headers('authorization') authorization?: string,
+    @Body() payload?: Record<string, unknown>,
+  ) {
+    const expectedApiKey =
+      this.configService.get<string>('payment.sepay.apiKey')?.trim() ?? '';
+    const token = authorization?.replace(/^Apikey\s+/i, '').trim() ?? '';
+
+    if (!expectedApiKey || token !== expectedApiKey) {
+      throw new UnauthorizedException('Invalid SePay API key.');
+    }
+
+    return this.paymentService.handleSepayWebhook(payload ?? {});
   }
 }

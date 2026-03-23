@@ -57,7 +57,7 @@ function AdminDepositsScreen() {
           </p>
           <CardTitle className="text-white">Duyệt deposit MoMo QR</CardTitle>
           <CardDescription className="text-white/78">
-            Các giao dịch đang ở trạng thái `pending` hoặc `user_confirmed` sẽ xuất hiện tại đây để đối soát thủ công.
+            Chỉ các giao dịch MoMo QR cần đối soát thủ công mới xuất hiện tại đây. Luồng VCB QR sẽ tự cộng ví khi webhook khớp.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -195,7 +195,7 @@ function AdminDepositsScreen() {
         <EmptyState
           icon={<ShieldCheck className="size-6" />}
           title="Không có deposit nào cần duyệt"
-          description="Khi user tạo MoMo QR và xác nhận đã chuyển tiền, các yêu cầu đang chờ duyệt sẽ xuất hiện tại đây."
+          description="Khi user tạo MoMo QR và xác nhận đã chuyển tiền, các yêu cầu thủ công sẽ xuất hiện tại đây."
         />
       )}
     </div>

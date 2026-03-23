@@ -14,12 +14,16 @@ export interface ManualDeposit {
   paymentRef: string | null;
   receiverPhone: string | null;
   receiverName: string | null;
+  bankCode: string | null;
+  bankName: string | null;
+  accountNumber: string | null;
   status: ManualDepositStatus;
   userConfirmedAt: string | null;
   transferProofUrl: string | null;
   adminConfirmedBy: string | null;
   adminNote: string | null;
   expiresAt: string | null;
+  matchedAt: string | null;
   createdAt: string;
   updatedAt: string | null;
   completedAt: string | null;
@@ -27,9 +31,13 @@ export interface ManualDeposit {
 
 export interface ManualDepositPaymentInfo {
   method: string;
+  autoConfirm: boolean;
   receiver: {
     phone: string | null;
     name: string | null;
+    bankCode: string | null;
+    bankName: string | null;
+    accountNumber: string | null;
   };
   qr: {
     imageDataUrl: string | null;
@@ -58,9 +66,14 @@ export interface PaymentMethodOption {
   maxAmount: number;
   enabled: boolean;
   expireMinutes: number;
+  autoConfirm: boolean;
+  allowedAmounts: number[];
   receiver: {
     phone: string | null;
     name: string | null;
+    bankCode: string | null;
+    bankName: string | null;
+    accountNumber: string | null;
   };
 }
 

@@ -52,6 +52,9 @@ export function normalizePaymentMethodOption(record: PaymentMethodOption): Payme
     minAmount: toNumber(record.minAmount),
     maxAmount: toNumber(record.maxAmount),
     expireMinutes: toNumber(record.expireMinutes),
+    allowedAmounts: Array.isArray(record.allowedAmounts)
+      ? record.allowedAmounts.map((value) => toNumber(value))
+      : [],
   };
 }
 

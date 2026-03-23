@@ -2,18 +2,20 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   CheckCircle2,
   Copy,
   ExternalLink,
+  Landmark,
   QrCode,
   RefreshCw,
   ShieldCheck,
   Smartphone,
   TimerReset,
+  WalletCards,
 } from "lucide-react";
 import { getApiErrorMessage } from "@/lib/api";
 import { formatCurrency } from "@/lib/formatters";
@@ -25,13 +27,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
+import { cn } from "@/lib/utils";
 import type {
   CreateManualDepositResult,
   ManualDeposit,
   ManualDepositStatus,
+  PaymentMethodOption,
 } from "@/types/payment.types";
-
-const STEP_LABELS = ["Số tiền", "Quét QR", "Chờ duyệt", "Hoàn tất"];
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) {
@@ -42,6 +44,28 @@ function formatDateTime(value: string | null | undefined) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function isVcbMethod(method: string | null | undefined) {
+  return method === "vcb_qr";
+}
+
+function formatMethodLabel(method: string | null | undefined) {
+  if (method === "vcb_qr") {
+    return "VCB QR";
+  }
+
+  if (method === "momo_qr") {
+    return "MoMo QR";
+  }
+
+  return "Nạp tiền";
+}
+
+function getStepLabels(method: string | null | undefined) {
+  return isVcbMethod(method)
+    ? ["Số tiền", "Quét QR", "Ngân hàng xác nhận", "Hoàn tất"]
+    : ["Số tiền", "Quét QR", "Chờ duyệt", "Hoàn tất"];
 }
 
 function getStepIndex(status: ManualDepositStatus | null) {
@@ -60,10 +84,12 @@ function getStepIndex(status: ManualDepositStatus | null) {
   return 3;
 }
 
-function getDepositHeadline(status: ManualDepositStatus | null) {
+function getDepositHeadline(method: string | null | undefined, status: ManualDepositStatus | null) {
   switch (status) {
     case "pending":
-      return "Quét QR và chuyển đúng nội dung";
+      return isVcbMethod(method)
+        ? "Quét QR ngân hàng và chuyển đúng nội dung"
+        : "Quét QR và chuyển đúng nội dung";
     case "user_confirmed":
       return "Deposit đang chờ admin duyệt";
     case "completed":
@@ -73,12 +99,55 @@ function getDepositHeadline(status: ManualDepositStatus | null) {
     case "expired":
       return "Mã QR này đã hết hạn";
     default:
-      return "Tạo yêu cầu nạp tiền MoMo QR";
+      return isVcbMethod(method) ? "Tạo yêu cầu nạp tiền VCB QR" : "Tạo yêu cầu nạp tiền MoMo QR";
   }
+}
+
+function getHeroDescription(method: string | null | undefined) {
+  return isVcbMethod(method)
+    ? "Tạo VietQR cho tài khoản Vietcombank và để hệ thống tự cộng ví khi webhook đối soát đúng nội dung chuyển khoản."
+    : "Giữ nguyên luồng MoMo QR cá nhân hiện tại: user quét QR, chuyển tiền và admin duyệt thủ công trước khi cộng ví.";
+}
+
+function getCreateSuccessMessage(method: string | null | undefined) {
+  return isVcbMethod(method) ? "Đã tạo mã nạp tiền VCB QR." : "Đã tạo mã nạp tiền MoMo QR.";
+}
+
+function getMethodCardMeta(method: string) {
+  if (method === "vcb_qr") {
+    return {
+      icon: <Landmark className="size-5" />,
+      iconClassName: "bg-emerald-100 text-emerald-700",
+      activeClassName: "border-emerald-300 bg-emerald-50 shadow-sm",
+      idleClassName: "border-border/70 bg-white/80 hover:border-emerald-200",
+    };
+  }
+
+  return {
+    icon: <WalletCards className="size-5" />,
+    iconClassName: "bg-fuchsia-100 text-fuchsia-700",
+    activeClassName: "border-fuchsia-300 bg-fuchsia-50 shadow-sm",
+    idleClassName: "border-border/70 bg-white/80 hover:border-fuchsia-200",
+  };
+}
+
+function normalizePresetAmounts(method: PaymentMethodOption | null) {
+  if (!method) {
+    return [10_000, 50_000, 100_000, 200_000, 500_000, 1_000_000];
+  }
+
+  const base = method.allowedAmounts.length
+    ? method.allowedAmounts
+    : [method.minAmount, 50_000, 100_000, 200_000, 500_000, 1_000_000];
+
+  return [...new Set(base)]
+    .filter((value) => value >= method.minAmount && value <= method.maxAmount)
+    .sort((left, right) => left - right);
 }
 
 export function DepositForm() {
   const queryClient = useQueryClient();
+  const [selectedMethod, setSelectedMethod] = useState<string | null>(null);
   const [amount, setAmount] = useState(10_000);
   const [proofImageUrl, setProofImageUrl] = useState("");
   const [currentDeposit, setCurrentDeposit] = useState<CreateManualDepositResult | null>(null);
@@ -94,18 +163,28 @@ export function DepositForm() {
     queryFn: () => paymentApi.getMyDeposits(),
   });
 
-  const activeMethod = methodsQuery.data?.items[0] ?? null;
+  const enabledMethods = methodsQuery.data?.items.filter((item) => item.enabled) ?? [];
+  const resolvedMethod = selectedMethod ?? enabledMethods[0]?.method ?? null;
+  const activeMethod =
+    enabledMethods.find((item) => item.method === resolvedMethod) ?? enabledMethods[0] ?? null;
+  const currentMethod = currentDeposit?.payment.method ?? activeMethod?.method ?? null;
+  const isAutoConfirmFlow = currentDeposit?.payment.autoConfirm ?? activeMethod?.autoConfirm ?? false;
 
   const createDepositMutation = useMutation({
-    mutationFn: () =>
-      paymentApi.createDeposit({
+    mutationFn: () => {
+      if (!activeMethod) {
+        throw new Error("Không có phương thức nạp tiền khả dụng.");
+      }
+
+      return paymentApi.createDeposit({
         amount,
-        paymentMethod: "momo_qr",
-      }),
+        paymentMethod: activeMethod.method,
+      });
+    },
     onSuccess: (data) => {
       setCurrentDeposit(data);
       setProofImageUrl("");
-      toast.success("Đã tạo mã nạp tiền MoMo QR.");
+      toast.success(getCreateSuccessMessage(data.payment.method));
       void queryClient.invalidateQueries({ queryKey: ["payment", "my-deposits"] });
     },
     onError: (error) => {
@@ -144,6 +223,10 @@ export function DepositForm() {
         return false;
       }
 
+      if (isAutoConfirmFlow && status === "pending") {
+        return 5_000;
+      }
+
       if (status === "user_confirmed") {
         return 5_000;
       }
@@ -154,6 +237,9 @@ export function DepositForm() {
 
   const displayDeposit = statusQuery.data ?? currentDeposit?.deposit ?? null;
   const currentStatus = displayDeposit?.status ?? null;
+  const stepLabels = getStepLabels(currentMethod);
+  const isCurrentVcbFlow = isVcbMethod(currentDeposit?.payment.method);
+  const presets = normalizePresetAmounts(activeMethod);
 
   useEffect(() => {
     if (!statusQuery.data) {
@@ -165,11 +251,6 @@ export function DepositForm() {
       void queryClient.invalidateQueries({ queryKey: ["payment", "my-deposits"] });
     }
   }, [queryClient, statusQuery.data]);
-
-  const presets = useMemo(() => {
-    const minAmount = activeMethod?.minAmount ?? 10_000;
-    return [minAmount, 50_000, 100_000, 200_000, 500_000, 1_000_000];
-  }, [activeMethod?.minAmount]);
 
   async function copyToClipboard(value: string | null | undefined, label: string) {
     if (!value) {
@@ -192,14 +273,40 @@ export function DepositForm() {
     setCurrentDeposit(null);
     setProofImageUrl("");
     if (activeMethod) {
-      setAmount(activeMethod.minAmount);
+      setAmount(activeMethod.allowedAmounts[0] ?? activeMethod.minAmount);
     }
+  }
+
+  function validateSelectedAmount() {
+    if (!activeMethod) {
+      toast.error("Không có phương thức nạp tiền khả dụng.");
+      return false;
+    }
+
+    if (amount < activeMethod.minAmount) {
+      toast.error(`Số tiền nạp tối thiểu là ${formatCurrency(activeMethod.minAmount)}.`);
+      return false;
+    }
+
+    if (amount > activeMethod.maxAmount) {
+      toast.error(`Số tiền nạp tối đa là ${formatCurrency(activeMethod.maxAmount)}.`);
+      return false;
+    }
+
+    if (activeMethod.allowedAmounts.length > 0 && !activeMethod.allowedAmounts.includes(amount)) {
+      toast.error(
+        `${activeMethod.label} chỉ hỗ trợ: ${activeMethod.allowedAmounts.map((value) => formatCurrency(value)).join(", ")}.`,
+      );
+      return false;
+    }
+
+    return true;
   }
 
   if (methodsQuery.isLoading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <LoadingSpinner label="Đang tải cấu hình MoMo QR..." />
+        <LoadingSpinner label="Đang tải cấu hình phương thức nạp tiền..." />
       </div>
     );
   }
@@ -207,30 +314,40 @@ export function DepositForm() {
   if (!activeMethod) {
     return (
       <EmptyState
-        title="MoMo QR chưa sẵn sàng"
-        description="Backend chưa trả về phương thức thanh toán nào. Hãy kiểm tra cấu hình MOMO_QR_PHONE và MOMO_QR_NAME."
+        title="Phương thức nạp tiền chưa sẵn sàng"
+        description="Backend chưa trả về phương thức nào khả dụng. Hãy kiểm tra cấu hình MoMo QR hoặc VCB QR."
       />
     );
   }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <Card className="overflow-hidden border-0 bg-[linear-gradient(135deg,#46215d,#bb2874_58%,#f17fa2)] text-white">
+      <Card
+        className={cn(
+          "overflow-hidden border-0 text-white",
+          isVcbMethod(currentMethod)
+            ? "bg-[linear-gradient(135deg,#0f3d2e,#13795b_56%,#46c78a)]"
+            : "bg-[linear-gradient(135deg,#46215d,#bb2874_58%,#f17fa2)]",
+        )}
+      >
         <CardHeader className="space-y-4">
           <p className="text-sm font-semibold uppercase tracking-[0.25em] text-white/70">
-            MoMo QR Personal
+            {isVcbMethod(currentMethod) ? "Vietcombank QR" : "MoMo QR Personal"}
           </p>
           <div className="flex flex-wrap items-center gap-4">
-            {STEP_LABELS.map((label, index) => {
+            {stepLabels.map((label, index) => {
               const activeIndex = getStepIndex(currentStatus);
               const isActive = index <= activeIndex;
 
               return (
                 <div key={label} className="flex items-center gap-3">
                   <div
-                    className={`flex size-10 items-center justify-center rounded-full border text-sm font-semibold ${
-                      isActive ? "border-white/30 bg-white/16 text-white" : "border-white/10 bg-white/5 text-white/55"
-                    }`}
+                    className={cn(
+                      "flex size-10 items-center justify-center rounded-full border text-sm font-semibold",
+                      isActive
+                        ? "border-white/30 bg-white/16 text-white"
+                        : "border-white/10 bg-white/5 text-white/55",
+                    )}
                   >
                     {index + 1}
                   </div>
@@ -240,9 +357,9 @@ export function DepositForm() {
             })}
           </div>
           <div>
-            <CardTitle className="text-white">{getDepositHeadline(currentStatus)}</CardTitle>
+            <CardTitle className="text-white">{getDepositHeadline(currentMethod, currentStatus)}</CardTitle>
             <CardDescription className="text-white/80">
-              Không cần tài khoản doanh nghiệp. User chuyển tiền tới MoMo cá nhân và admin duyệt thủ công trước khi cộng ví.
+              {getHeroDescription(currentMethod)}
             </CardDescription>
           </div>
         </CardHeader>
@@ -251,13 +368,45 @@ export function DepositForm() {
       {!currentDeposit ? (
         <Card>
           <CardHeader>
-            <CardTitle className="text-2xl">Bước 1: Tạo mã nạp tiền</CardTitle>
+            <CardTitle className="text-2xl">Bước 1: Chọn phương thức và tạo mã nạp tiền</CardTitle>
             <CardDescription>
-              Số tiền tối thiểu {formatCurrency(activeMethod.minAmount)}. Deposit sẽ hết hạn sau{" "}
-              {activeMethod.expireMinutes} phút.
+              Mỗi phương thức có giới hạn và thời gian hết hạn riêng. Hãy chọn cách nạp phù hợp trước khi tạo QR.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+            <div className="grid gap-3 md:grid-cols-2">
+              {enabledMethods.map((method) => {
+                const meta = getMethodCardMeta(method.method);
+                const isActive = method.method === activeMethod.method;
+
+                return (
+                  <button
+                    key={method.method}
+                    type="button"
+                    onClick={() => {
+                      setSelectedMethod(method.method);
+                      setAmount(method.allowedAmounts[0] ?? method.minAmount);
+                    }}
+                    className={cn(
+                      "rounded-[1.4rem] border-2 p-4 text-left transition-all",
+                      isActive ? meta.activeClassName : meta.idleClassName,
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className={cn("rounded-full p-2", meta.iconClassName)}>{meta.icon}</span>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-foreground">{method.label}</p>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">{method.description}</p>
+                        <p className="mt-3 text-sm text-muted-foreground">
+                          Hạn dùng {method.expireMinutes} phút • {method.autoConfirm ? "Tự động đối soát" : "Admin duyệt thủ công"}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-3">
               {presets.map((preset) => (
                 <Button
@@ -286,37 +435,49 @@ export function DepositForm() {
                   onChange={(event) => setAmount(Number(event.target.value || 0))}
                 />
                 <p className="text-sm text-muted-foreground">
-                  Hệ thống sẽ tạo một mã nội dung riêng cho bạn để admin đối soát.
+                  Mã đối soát riêng sẽ được sinh tự động để khớp giao dịch chính xác.
                 </p>
+                {activeMethod.allowedAmounts.length > 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Mệnh giá hỗ trợ: {activeMethod.allowedAmounts.map((value) => formatCurrency(value)).join(", ")}.
+                  </p>
+                ) : null}
               </div>
 
               <div className="rounded-[1.6rem] border border-border/70 bg-muted/30 p-5">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
-                  Người nhận
+                  Thông tin nhận tiền
                 </p>
                 <p className="mt-3 text-lg font-semibold text-foreground">{activeMethod.receiver.name}</p>
-                <p className="mt-1 text-sm text-muted-foreground">{activeMethod.receiver.phone}</p>
-                <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                  Bạn sẽ quét QR MoMo cá nhân và chuyển đúng nội dung để tránh đối soát nhầm.
-                </p>
+                {isVcbMethod(activeMethod.method) ? (
+                  <>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {activeMethod.receiver.bankName} • {activeMethod.receiver.accountNumber}
+                    </p>
+                    <p className="mt-4 text-sm leading-6 text-muted-foreground">
+                      Hệ thống tạo VietQR cho tài khoản Vietcombank và tự cộng ví khi webhook match đúng nội dung.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-1 text-sm text-muted-foreground">{activeMethod.receiver.phone}</p>
+                    <p className="mt-4 text-sm leading-6 text-muted-foreground">
+                      Bạn sẽ quét QR MoMo cá nhân và xác nhận chuyển tiền để admin duyệt thủ công.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">
-                Hệ thống hiện chỉ bật phương thức <span className="font-semibold text-foreground">{activeMethod.label}</span>.
+                Đang chọn <span className="font-semibold text-foreground">{activeMethod.label}</span>.
               </p>
               <Button
                 type="button"
                 disabled={createDepositMutation.isPending}
                 onClick={() => {
-                  if (amount < activeMethod.minAmount) {
-                    toast.error(`Số tiền nạp tối thiểu là ${formatCurrency(activeMethod.minAmount)}.`);
-                    return;
-                  }
-
-                  if (amount > activeMethod.maxAmount) {
-                    toast.error(`Số tiền nạp tối đa là ${formatCurrency(activeMethod.maxAmount)}.`);
+                  if (!validateSelectedAmount()) {
                     return;
                   }
 
@@ -324,7 +485,7 @@ export function DepositForm() {
                 }}
               >
                 <QrCode className="size-4" />
-                {createDepositMutation.isPending ? "Đang tạo mã..." : "Tạo QR nạp tiền"}
+                {createDepositMutation.isPending ? "Đang tạo mã..." : `Tạo QR ${formatMethodLabel(activeMethod.method)}`}
               </Button>
             </div>
           </CardContent>
@@ -335,7 +496,9 @@ export function DepositForm() {
             <CardHeader>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <CardTitle className="text-2xl">Bước 2: Quét QR và chuyển tiền</CardTitle>
+                  <CardTitle className="text-2xl">
+                    {isCurrentVcbFlow ? "Bước 2: Quét QR và chuyển khoản ngân hàng" : "Bước 2: Quét QR và chuyển tiền"}
+                  </CardTitle>
                   <CardDescription>
                     Giao dịch hết hạn lúc {formatDateTime(displayDeposit.expiresAt)}.
                   </CardDescription>
@@ -364,10 +527,14 @@ export function DepositForm() {
                     </Button>
                   </div>
                   <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                    Đây là mã đối soát duy nhất. Nếu đổi nội dung này, admin sẽ khó xác nhận chính xác giao dịch.
+                    {isCurrentVcbFlow
+                      ? "Đây là mã đối soát để webhook ngân hàng khớp giao dịch. Nếu thay đổi nội dung này, hệ thống sẽ không thể tự cộng ví."
+                      : "Đây là mã đối soát duy nhất. Nếu đổi nội dung này, admin sẽ khó xác nhận chính xác giao dịch."}
                   </p>
                   <p className="mt-2 text-sm leading-6 text-amber-700">
-                    Lưu ý: QR MoMo cá nhân có thể chỉ tự điền người nhận và số tiền. Nếu app MoMo chưa hiện nội dung, hãy dán mã này thủ công vào ô lời nhắn/nội dung chuyển khoản.
+                    {isCurrentVcbFlow
+                      ? "Hãy giữ nguyên đúng số tiền và nội dung. Sau khi chuyển thành công, hệ thống sẽ tự cập nhật khi Casso/SePay gửi webhook về."
+                      : "QR MoMo cá nhân có thể chỉ tự điền người nhận và số tiền. Nếu app MoMo chưa hiện nội dung, hãy dán mã này thủ công vào ô lời nhắn."}
                   </p>
                 </div>
 
@@ -379,11 +546,17 @@ export function DepositForm() {
                     </p>
                   </div>
                   <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
-                    <p className="text-sm text-muted-foreground">Người nhận</p>
+                    <p className="text-sm text-muted-foreground">
+                      {isCurrentVcbFlow ? "Tài khoản nhận" : "Người nhận"}
+                    </p>
                     <p className="mt-2 text-lg font-semibold text-foreground">
                       {currentDeposit.payment.receiver.name}
                     </p>
-                    <p className="text-sm text-muted-foreground">{currentDeposit.payment.receiver.phone}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {isCurrentVcbFlow
+                        ? `${currentDeposit.payment.receiver.bankName} • ${currentDeposit.payment.receiver.accountNumber}`
+                        : currentDeposit.payment.receiver.phone}
+                    </p>
                   </div>
                 </div>
 
@@ -403,20 +576,22 @@ export function DepositForm() {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-foreground" htmlFor="deposit-proof-url">
-                    Ảnh proof chuyển khoản, nếu có
-                  </label>
-                  <Input
-                    id="deposit-proof-url"
-                    placeholder="https://... hoặc để trống"
-                    value={proofImageUrl}
-                    onChange={(event) => setProofImageUrl(event.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Bước này không bắt buộc, nhưng có thể giúp admin duyệt nhanh hơn.
-                  </p>
-                </div>
+                {!isCurrentVcbFlow ? (
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-foreground" htmlFor="deposit-proof-url">
+                      Ảnh proof chuyển khoản, nếu có
+                    </label>
+                    <Input
+                      id="deposit-proof-url"
+                      placeholder="https://... hoặc để trống"
+                      value={proofImageUrl}
+                      onChange={(event) => setProofImageUrl(event.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Bước này không bắt buộc, nhưng có thể giúp admin duyệt nhanh hơn.
+                    </p>
+                  </div>
+                ) : null}
 
                 <div className="flex flex-wrap items-center gap-3">
                   {currentDeposit.payment.qr.deepLink ? (
@@ -427,16 +602,48 @@ export function DepositForm() {
                       </a>
                     </Button>
                   ) : null}
-                  <Button
-                    type="button"
-                    disabled={confirmTransferMutation.isPending}
-                    onClick={() => {
-                      void confirmTransferMutation.mutateAsync();
-                    }}
-                  >
-                    <ShieldCheck className="size-4" />
-                    {confirmTransferMutation.isPending ? "Đang gửi xác nhận..." : "Tôi đã chuyển tiền"}
-                  </Button>
+
+                  {isCurrentVcbFlow ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={statusQuery.isFetching}
+                      onClick={() => {
+                        void statusQuery.refetch();
+                      }}
+                    >
+                      <RefreshCw className="size-4" />
+                      {statusQuery.isFetching ? "Đang kiểm tra..." : "Kiểm tra giao dịch"}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      disabled={confirmTransferMutation.isPending}
+                      onClick={() => {
+                        void confirmTransferMutation.mutateAsync();
+                      }}
+                    >
+                      <ShieldCheck className="size-4" />
+                      {confirmTransferMutation.isPending ? "Đang gửi xác nhận..." : "Tôi đã chuyển tiền"}
+                    </Button>
+                  )}
+
+                  {isCurrentVcbFlow ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        void copyToClipboard(
+                          currentDeposit.payment.receiver.accountNumber,
+                          "số tài khoản",
+                        )
+                      }
+                    >
+                      <Copy className="size-4" />
+                      {copiedValue === "số tài khoản" ? "Đã sao chép" : "Sao chép STK"}
+                    </Button>
+                  ) : null}
+
                   <Button type="button" variant="ghost" onClick={resetFlow}>
                     Tạo mã mới
                   </Button>
@@ -445,13 +652,13 @@ export function DepositForm() {
 
               <div className="space-y-4 rounded-[1.8rem] border border-border/70 bg-white/80 p-5 text-center">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
-                  MoMo QR
+                  {isCurrentVcbFlow ? "VietQR Vietcombank" : "MoMo QR"}
                 </p>
                 <div className="overflow-hidden rounded-[1.5rem] border border-border/70 bg-white p-3">
                   {currentDeposit.payment.qr.imageDataUrl ? (
                     <Image
                       src={currentDeposit.payment.qr.imageDataUrl}
-                      alt="Ma QR MoMo"
+                      alt={isCurrentVcbFlow ? "Ma QR Vietcombank" : "Ma QR MoMo"}
                       width={420}
                       height={420}
                       unoptimized
@@ -464,7 +671,9 @@ export function DepositForm() {
                   )}
                 </div>
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Hãy kiểm tra đúng người nhận. Nếu MoMo chưa tự điền nội dung, hãy dán mã `NAP...` ở bên trái vào ô lời nhắn rồi mới chuyển tiền.
+                  {isCurrentVcbFlow
+                    ? "Bạn có thể quét bằng ứng dụng Vietcombank hoặc bất kỳ app ngân hàng nào hỗ trợ VietQR."
+                    : "Hãy kiểm tra đúng người nhận. Nếu MoMo chưa tự điền nội dung, hãy dán mã ở bên trái vào ô lời nhắn rồi mới chuyển tiền."}
                 </p>
               </div>
             </CardContent>
@@ -476,6 +685,9 @@ export function DepositForm() {
             </CardHeader>
             <CardContent className="space-y-4 text-sm leading-6 text-muted-foreground">
               <p>
+                Phương thức: <span className="font-semibold text-foreground">{formatMethodLabel(displayDeposit.paymentMethod)}</span>
+              </p>
+              <p>
                 Mã nạp: <span className="font-semibold text-foreground">{displayDeposit.depositCode}</span>
               </p>
               <p>
@@ -484,12 +696,28 @@ export function DepositForm() {
               <p>
                 Hết hạn: <span className="font-semibold text-foreground">{formatDateTime(displayDeposit.expiresAt)}</span>
               </p>
-              <p>
-                Người nhận: <span className="font-semibold text-foreground">{displayDeposit.receiverName}</span>
-              </p>
-              <p>
-                Số điện thoại: <span className="font-semibold text-foreground">{displayDeposit.receiverPhone}</span>
-              </p>
+              {isCurrentVcbFlow ? (
+                <>
+                  <p>
+                    Ngân hàng: <span className="font-semibold text-foreground">{displayDeposit.bankName}</span>
+                  </p>
+                  <p>
+                    Số tài khoản: <span className="font-semibold text-foreground">{displayDeposit.accountNumber}</span>
+                  </p>
+                  <p>
+                    Chủ tài khoản: <span className="font-semibold text-foreground">{displayDeposit.receiverName}</span>
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Người nhận: <span className="font-semibold text-foreground">{displayDeposit.receiverName}</span>
+                  </p>
+                  <p>
+                    Số điện thoại: <span className="font-semibold text-foreground">{displayDeposit.receiverPhone}</span>
+                  </p>
+                </>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -500,7 +728,7 @@ export function DepositForm() {
               <div>
                 <CardTitle className="text-2xl">Bước 3: Chờ admin duyệt</CardTitle>
                 <CardDescription>
-                  Trang này đang polling trạng thái mỗi 5 giây. Bạn có thể giữ nguyên tab này.
+                  Luồng này chỉ áp dụng cho MoMo QR. Trang đang polling trạng thái mỗi 5 giây.
                 </CardDescription>
               </div>
               <DepositStatusBadge status={displayDeposit.status} />
@@ -591,7 +819,8 @@ export function DepositForm() {
             <div>
               <CardTitle className="text-white">Nạp tiền thành công</CardTitle>
               <CardDescription className="text-white/80">
-                {formatCurrency(displayDeposit.amount)} đã được cộng vào ví của bạn.
+                {formatCurrency(displayDeposit.amount)} đã được cộng vào ví của bạn qua{" "}
+                {formatMethodLabel(displayDeposit.paymentMethod)}.
               </CardDescription>
             </div>
           </CardHeader>
@@ -604,9 +833,9 @@ export function DepositForm() {
                 </p>
               </div>
               <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4">
-                <p className="text-sm text-white/70">Duyệt lúc</p>
+                <p className="text-sm text-white/70">Hoàn tất lúc</p>
                 <p className="mt-2 font-semibold text-white">
-                  {formatDateTime(displayDeposit.completedAt)}
+                  {formatDateTime(displayDeposit.matchedAt ?? displayDeposit.completedAt)}
                 </p>
               </div>
               <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4">
@@ -615,6 +844,12 @@ export function DepositForm() {
               </div>
             </div>
 
+            {displayDeposit.adminNote ? (
+              <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4 text-sm leading-6 text-white/90">
+                {displayDeposit.adminNote}
+              </div>
+            ) : null}
+
             <div className="flex flex-wrap gap-3">
               <Button asChild variant="secondary">
                 <Link href="/wallet">
@@ -622,7 +857,12 @@ export function DepositForm() {
                   <ArrowRight className="size-4" />
                 </Link>
               </Button>
-              <Button type="button" variant="outline" className="border-white/25 bg-transparent text-white hover:bg-white/10" onClick={resetFlow}>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-white/25 bg-transparent text-white hover:bg-white/10"
+                onClick={resetFlow}
+              >
                 Tạo deposit mới
               </Button>
             </div>
@@ -663,7 +903,7 @@ export function DepositForm() {
         <CardHeader>
           <CardTitle className="text-2xl">Lịch sử nạp tiền gần đây</CardTitle>
           <CardDescription>
-            Bao gồm các deposit đang chờ duyệt, đã cộng ví, bị từ chối hoặc hết hạn.
+            Bao gồm cả luồng MoMo QR chờ duyệt thủ công và VCB QR được đối soát tự động.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -683,7 +923,8 @@ export function DepositForm() {
                     <DepositStatusBadge status={item.status} />
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {item.depositCode ?? "Không có mã"} • {formatDateTime(item.createdAt)}
+                    {formatMethodLabel(item.paymentMethod)} • {item.depositCode ?? "Không có mã"} •{" "}
+                    {formatDateTime(item.createdAt)}
                   </p>
                   {item.adminNote ? (
                     <p className="text-sm leading-6 text-muted-foreground">{item.adminNote}</p>
@@ -691,7 +932,7 @@ export function DepositForm() {
                 </div>
                 <div className="text-right text-sm text-muted-foreground">
                   <p>Hết hạn: {formatDateTime(item.expiresAt)}</p>
-                  <p>Hoàn tất: {formatDateTime(item.completedAt)}</p>
+                  <p>Hoàn tất: {formatDateTime(item.matchedAt ?? item.completedAt)}</p>
                 </div>
               </div>
             ))
@@ -699,7 +940,7 @@ export function DepositForm() {
             <EmptyState
               icon={<QrCode className="size-6" />}
               title="Chưa có yêu cầu nạp tiền nào"
-              description="Tạo deposit đầu tiên để nhận QR MoMo cá nhân và bắt đầu nạp tiền vào ví."
+              description="Tạo deposit đầu tiên để nhận QR MoMo hoặc VCB và bắt đầu nạp tiền vào ví."
             />
           )}
         </CardContent>

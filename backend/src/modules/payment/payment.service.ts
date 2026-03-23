@@ -20,12 +20,45 @@ import { MomoProvider } from './providers/momo.provider';
 import { VnpayProvider } from './providers/vnpay.provider';
 import { DepositCodeService } from './services/deposit-code.service';
 import { MomoQrService } from './services/momo-qr.service';
+import { VietQrService } from './services/viet-qr.service';
 
 type ReviewableDepositStatus = 'pending' | 'user_confirmed';
+type ManualDepositMethod = 'momo_qr' | 'vcb_qr';
+type BankWebhookSource = 'casso' | 'sepay';
 
 interface ParsedQrData {
   deepLink: string | null;
   raw: string | null;
+}
+
+interface MomoQrConfig {
+  phone: string;
+  name: string;
+  minAmount: number;
+  maxAmount: number;
+  expireMinutes: number;
+  allowedAmounts: number[];
+}
+
+interface VcbQrConfig {
+  bankCode: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  template: string;
+  minAmount: number;
+  maxAmount: number;
+  expireMinutes: number;
+  allowedAmounts: number[];
+}
+
+interface NormalizedBankWebhookTransaction {
+  transactionId: string;
+  amount: number;
+  description: string;
+  occurredAt: Date | null;
+  raw: Record<string, unknown>;
+  source: BankWebhookSource;
 }
 
 @Injectable()
@@ -52,88 +85,27 @@ export class PaymentService {
     private readonly vnpayProvider: VnpayProvider,
     private readonly momoProvider: MomoProvider,
     private readonly momoQrService: MomoQrService,
+    private readonly vietQrService: VietQrService,
     private readonly depositCodeService: DepositCodeService,
   ) {}
 
   async createDeposit(userId: string, dto: CreateDepositDto) {
-    const config = this.getMomoQrConfig();
-    const paymentMethod = dto.paymentMethod ?? 'momo_qr';
-
-    if (paymentMethod !== 'momo_qr') {
-      throw new BadRequestException(
-        'Flow này chỉ hỗ trợ MoMo QR cá nhân. Hãy chọn MoMo QR.',
-      );
-    }
-
-    if (dto.amount < config.minAmount) {
-      throw new BadRequestException(
-        `Số tiền tối thiểu là ${config.minAmount.toLocaleString('vi-VN')}đ.`,
-      );
-    }
-
-    if (dto.amount > config.maxAmount) {
-      throw new BadRequestException(
-        `Số tiền tối đa là ${config.maxAmount.toLocaleString('vi-VN')}đ.`,
-      );
-    }
-
     await this.expireOverdueDeposits({
       userId,
     });
 
-    const existingDeposit = await this.depositsRepository.findOne({
-      where: {
-        userId,
-        status: In(PaymentService.REVIEWABLE_DEPOSIT_STATUSES),
-        paymentMethod: 'momo_qr',
-      },
-      order: {
-        createdAt: 'DESC',
-      },
-    });
+    const paymentMethod = dto.paymentMethod ?? 'momo_qr';
 
-    if (existingDeposit) {
-      const refreshedDeposit = await this.refreshManualMomoQrDeposit(
-        existingDeposit,
-        config,
-      );
-      return this.formatManualDepositResponse(refreshedDeposit);
+    switch (paymentMethod) {
+      case 'momo_qr':
+        return this.createMomoQrDeposit(userId, dto.amount);
+      case 'vcb_qr':
+        return this.createVcbQrDeposit(userId, dto.amount);
+      default:
+        throw new BadRequestException(
+          'Flow này chỉ hỗ trợ MoMo QR cá nhân hoặc QR Vietcombank.',
+        );
     }
-
-    const depositCode = await this.depositCodeService.generateUniqueCode();
-    const qrPayload = this.momoQrService.generateScanPayload({
-      phone: config.phone,
-      name: config.name,
-      amount: dto.amount,
-      comment: depositCode,
-    });
-    const qrImageUrl = await this.momoQrService.generateQrDataUrl(qrPayload);
-
-    const expiresAt = new Date(Date.now() + config.expireMinutes * 60_000);
-    const deposit = await this.depositsRepository.save(
-      this.depositsRepository.create({
-        userId,
-        amount: String(dto.amount),
-        depositCode,
-        paymentMethod: 'momo_qr',
-        paymentRef: null,
-        receiverPhone: config.phone,
-        receiverName: config.name,
-        qrData: JSON.stringify({
-          deepLink: null,
-          raw: qrPayload,
-        }),
-        qrImageUrl,
-        status: 'pending',
-        expiresAt,
-      }),
-    );
-
-    void this.jobQueueService
-      .enqueueDepositExpiry(deposit.id, config.expireMinutes * 60_000)
-      .catch(() => undefined);
-
-    return this.formatManualDepositResponse(deposit);
   }
 
   async confirmDepositTransfer(
@@ -152,6 +124,12 @@ export class PaymentService {
       throw new NotFoundException('Không tìm thấy giao dịch nạp tiền.');
     }
 
+    if (deposit.paymentMethod !== 'momo_qr') {
+      throw new BadRequestException(
+        'Chỉ deposit MoMo QR mới cần người dùng xác nhận thủ công.',
+      );
+    }
+
     const freshDeposit = await this.syncDepositExpiration(deposit);
 
     if (freshDeposit.status === 'expired') {
@@ -160,7 +138,11 @@ export class PaymentService {
       );
     }
 
-    if (!PaymentService.REVIEWABLE_DEPOSIT_STATUSES.includes(freshDeposit.status as ReviewableDepositStatus)) {
+    if (
+      !PaymentService.REVIEWABLE_DEPOSIT_STATUSES.includes(
+        freshDeposit.status as ReviewableDepositStatus,
+      )
+    ) {
       throw new BadRequestException(
         `Deposit đang ở trạng thái "${freshDeposit.status}", không thể xác nhận chuyển khoản.`,
       );
@@ -218,7 +200,8 @@ export class PaymentService {
   }
 
   async getAvailablePaymentMethods() {
-    const config = this.getMomoQrConfig();
+    const momoConfig = this.readMomoQrConfig();
+    const vcbConfig = this.readVcbQrConfig();
 
     return {
       items: [
@@ -226,15 +209,39 @@ export class PaymentService {
           method: 'momo_qr',
           label: 'MoMo QR cá nhân',
           description:
-            'Quét QR và chuyển đúng số tiền, đúng nội dung để admin duyệt thủ công.',
-          minAmount: config.minAmount,
-          maxAmount: config.maxAmount,
+            'Quét QR và xác nhận chuyển khoản để admin duyệt thủ công.',
+          minAmount: momoConfig.minAmount,
+          maxAmount: momoConfig.maxAmount,
+          enabled: this.isMomoQrConfigured(momoConfig),
+          expireMinutes: momoConfig.expireMinutes,
+          autoConfirm: false,
+          allowedAmounts: momoConfig.allowedAmounts,
           receiver: {
-            phone: config.phone,
-            name: config.name,
+            phone: momoConfig.phone,
+            name: momoConfig.name,
+            bankCode: null,
+            bankName: null,
+            accountNumber: null,
           },
-          enabled: Boolean(config.phone && config.name),
-          expireMinutes: config.expireMinutes,
+        },
+        {
+          method: 'vcb_qr',
+          label: 'VCB QR tự động',
+          description:
+            'Quét VietQR và hệ thống sẽ tự cộng ví khi webhook ngân hàng khớp nội dung.',
+          minAmount: vcbConfig.minAmount,
+          maxAmount: vcbConfig.maxAmount,
+          enabled: this.isVcbQrConfigured(vcbConfig),
+          expireMinutes: vcbConfig.expireMinutes,
+          autoConfirm: true,
+          allowedAmounts: vcbConfig.allowedAmounts,
+          receiver: {
+            phone: null,
+            name: vcbConfig.accountName,
+            bankCode: vcbConfig.bankCode,
+            bankName: vcbConfig.bankName,
+            accountNumber: vcbConfig.accountNumber,
+          },
         },
       ],
     };
@@ -246,7 +253,10 @@ export class PaymentService {
     const currentPage = this.normalizePage(page);
     const items = await this.depositsRepository
       .createQueryBuilder('deposit')
-      .where('deposit.status IN (:...statuses)', {
+      .where('deposit.payment_method = :method', {
+        method: 'momo_qr',
+      })
+      .andWhere('deposit.status IN (:...statuses)', {
         statuses: PaymentService.REVIEWABLE_DEPOSIT_STATUSES,
       })
       .orderBy(
@@ -309,6 +319,12 @@ export class PaymentService {
 
       if (!deposit) {
         throw new NotFoundException('Không tìm thấy deposit cần duyệt.');
+      }
+
+      if (deposit.paymentMethod !== 'momo_qr') {
+        throw new BadRequestException(
+          'Chỉ deposit MoMo QR mới cần admin duyệt thủ công.',
+        );
       }
 
       if (this.isDepositExpired(deposit)) {
@@ -401,6 +417,28 @@ export class PaymentService {
     return this.processDepositCallback('momo', dto);
   }
 
+  async handleCassoWebhook(payload: Record<string, unknown>) {
+    const transactions = this.normalizeCassoTransactions(payload);
+    const summary = await this.processBankWebhookTransactions(transactions);
+
+    return {
+      success: true,
+      provider: 'casso',
+      ...summary,
+    };
+  }
+
+  async handleSepayWebhook(payload: Record<string, unknown>) {
+    const transactions = this.normalizeSepayTransactions(payload);
+    const summary = await this.processBankWebhookTransactions(transactions);
+
+    return {
+      success: true,
+      provider: 'sepay',
+      ...summary,
+    };
+  }
+
   async processQueuedCallback(
     provider: 'vnpay' | 'momo',
     dto: PaymentCallbackDto,
@@ -429,6 +467,125 @@ export class PaymentService {
 
     const freshDeposit = await this.syncDepositExpiration(deposit);
     return this.toDepositResponse(freshDeposit);
+  }
+
+  private async createMomoQrDeposit(userId: string, amount: number) {
+    const config = this.getMomoQrConfig();
+    this.validateManualDepositAmount(
+      amount,
+      config.minAmount,
+      config.maxAmount,
+      config.allowedAmounts,
+      'MoMo QR',
+    );
+
+    const existingDeposit = await this.findActiveManualDeposit(
+      userId,
+      'momo_qr',
+    );
+
+    if (existingDeposit) {
+      const refreshedDeposit = await this.refreshManualMomoQrDeposit(
+        existingDeposit,
+        config,
+      );
+      return this.formatDepositResponse(refreshedDeposit);
+    }
+
+    const depositCode = await this.depositCodeService.generateUniqueCode();
+    const qrPayload = this.momoQrService.generateScanPayload({
+      phone: config.phone,
+      name: config.name,
+      amount,
+      comment: depositCode,
+    });
+    const qrImageUrl = await this.momoQrService.generateQrDataUrl(qrPayload);
+
+    const expiresAt = new Date(Date.now() + config.expireMinutes * 60_000);
+    const deposit = await this.depositsRepository.save(
+      this.depositsRepository.create({
+        userId,
+        amount: String(amount),
+        depositCode,
+        paymentMethod: 'momo_qr',
+        paymentRef: null,
+        receiverPhone: config.phone,
+        receiverName: config.name,
+        bankCode: null,
+        bankName: null,
+        accountNumber: null,
+        qrData: JSON.stringify({
+          deepLink: null,
+          raw: qrPayload,
+        }),
+        qrImageUrl,
+        status: 'pending',
+        expiresAt,
+        matchedAt: null,
+        webhookData: null,
+      }),
+    );
+
+    this.enqueueDepositExpiry(deposit.id, config.expireMinutes);
+
+    return this.formatDepositResponse(deposit);
+  }
+
+  private async createVcbQrDeposit(userId: string, amount: number) {
+    const config = this.getVcbQrConfig();
+    this.validateManualDepositAmount(
+      amount,
+      config.minAmount,
+      config.maxAmount,
+      config.allowedAmounts,
+      'VCB QR',
+    );
+
+    const existingDeposit = await this.findActiveManualDeposit(userId, 'vcb_qr');
+
+    if (existingDeposit) {
+      const refreshedDeposit = await this.refreshVcbQrDeposit(
+        existingDeposit,
+        config,
+      );
+      return this.formatDepositResponse(refreshedDeposit);
+    }
+
+    const depositCode = await this.depositCodeService.generateUniqueCode();
+    const qrImageUrl = this.vietQrService.generateQrUrl({
+      bankCode: config.bankCode,
+      accountNumber: config.accountNumber,
+      accountName: config.accountName,
+      amount,
+      description: depositCode,
+      template: config.template,
+    });
+
+    const expiresAt = new Date(Date.now() + config.expireMinutes * 60_000);
+    const deposit = await this.depositsRepository.save(
+      this.depositsRepository.create({
+        userId,
+        amount: String(amount),
+        depositCode,
+        paymentMethod: 'vcb_qr',
+        paymentRef: null,
+        receiverPhone: null,
+        receiverName: config.accountName,
+        bankCode: config.bankCode,
+        bankName: config.bankName,
+        accountNumber: config.accountNumber,
+        qrData: null,
+        qrImageUrl,
+        status: 'pending',
+        expiresAt,
+        matchedAt: null,
+        webhookData: null,
+      }),
+    );
+
+    this.enqueueDepositExpiry(deposit.id, config.expireMinutes);
+
+    return this.formatDepositResponse(deposit);
   }
 
   private async processDepositCallback(
@@ -470,7 +627,10 @@ export class PaymentService {
       )
     ) {
       await this.dataSource.transaction(async (manager) => {
-        const lockedWallet = await manager.getRepository(WalletEntity).findOne({
+        const walletRepository = manager.getRepository(WalletEntity);
+        const depositRepository = manager.getRepository(DepositEntity);
+
+        let lockedWallet = await walletRepository.findOne({
           where: {
             userId: deposit.userId,
           },
@@ -480,18 +640,25 @@ export class PaymentService {
         });
 
         if (!lockedWallet) {
-          throw new NotFoundException('Wallet not found for deposit.');
+          lockedWallet = await walletRepository.save(
+            walletRepository.create({
+              userId: deposit.userId,
+              balance: '0',
+              totalEarned: '0',
+              totalSpent: '0',
+            }),
+          );
         }
 
         lockedWallet.balance = String(
           toNumber(lockedWallet.balance) + toNumber(deposit.amount),
         );
-        await manager.save(WalletEntity, lockedWallet);
+        await walletRepository.save(lockedWallet);
 
         deposit.status = 'completed';
         deposit.completedAt = new Date();
         deposit.paymentRef = dto.paymentRef ?? deposit.paymentRef ?? deposit.id;
-        await manager.save(DepositEntity, deposit);
+        await depositRepository.save(deposit);
 
         await manager.save(
           TransactionEntity,
@@ -532,6 +699,174 @@ export class PaymentService {
       verification,
       deposit: refreshedDeposit ? this.toDepositResponse(refreshedDeposit) : null,
     };
+  }
+
+  private async processBankWebhookTransactions(
+    transactions: NormalizedBankWebhookTransaction[],
+  ) {
+    let matched = 0;
+    let ignored = 0;
+
+    for (const transaction of transactions) {
+      const handled = await this.processBankWebhookTransaction(transaction);
+
+      if (handled) {
+        matched += 1;
+      } else {
+        ignored += 1;
+      }
+    }
+
+    return {
+      received: transactions.length,
+      matched,
+      ignored,
+    };
+  }
+
+  private async processBankWebhookTransaction(
+    transaction: NormalizedBankWebhookTransaction,
+  ) {
+    if (transaction.amount <= 0) {
+      return false;
+    }
+
+    const depositCode = this.depositCodeService.parseDepositCode(
+      transaction.description,
+    );
+
+    if (!depositCode) {
+      return false;
+    }
+
+    const deposit = await this.depositsRepository.findOne({
+      where: {
+        depositCode,
+        paymentMethod: 'vcb_qr',
+        status: 'pending',
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+
+    if (!deposit) {
+      return false;
+    }
+
+    if (this.isDepositExpired(deposit)) {
+      await this.syncDepositExpiration(deposit);
+      return false;
+    }
+
+    const expectedAmount = toNumber(deposit.amount);
+    const creditedAmount = this.calculateCreditedVcbAmount(
+      transaction.amount,
+      expectedAmount,
+    );
+
+    if (creditedAmount <= 0) {
+      return false;
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const depositRepository = manager.getRepository(DepositEntity);
+      const walletRepository = manager.getRepository(WalletEntity);
+      const transactionRepository = manager.getRepository(TransactionEntity);
+
+      const lockedDeposit = await depositRepository.findOne({
+        where: {
+          id: deposit.id,
+        },
+        lock: {
+          mode: 'pessimistic_write',
+        },
+      });
+
+      if (
+        !lockedDeposit ||
+        lockedDeposit.paymentMethod !== 'vcb_qr' ||
+        lockedDeposit.status !== 'pending'
+      ) {
+        return false;
+      }
+
+      if (this.isDepositExpired(lockedDeposit)) {
+        lockedDeposit.status = 'expired';
+        await depositRepository.save(lockedDeposit);
+        return false;
+      }
+
+      let wallet = await walletRepository.findOne({
+        where: {
+          userId: lockedDeposit.userId,
+        },
+        lock: {
+          mode: 'pessimistic_write',
+        },
+      });
+
+      if (!wallet) {
+        wallet = await walletRepository.save(
+          walletRepository.create({
+            userId: lockedDeposit.userId,
+            balance: '0',
+            totalEarned: '0',
+            totalSpent: '0',
+          }),
+        );
+      }
+
+      wallet.balance = String(toNumber(wallet.balance) + creditedAmount);
+      await walletRepository.save(wallet);
+
+      const receivedAt = transaction.occurredAt ?? new Date();
+      const note = this.buildVcbWebhookNote(
+        transaction.amount,
+        expectedAmount,
+        creditedAmount,
+      );
+
+      lockedDeposit.status = 'completed';
+      lockedDeposit.amount = String(creditedAmount);
+      lockedDeposit.paymentRef = transaction.transactionId;
+      lockedDeposit.completedAt = receivedAt;
+      lockedDeposit.matchedAt = receivedAt;
+      lockedDeposit.adminNote = note;
+      lockedDeposit.webhookData = {
+        source: transaction.source,
+        transactionId: transaction.transactionId,
+        description: transaction.description,
+        receivedAmount: transaction.amount,
+        creditedAmount,
+        receivedAt: receivedAt.toISOString(),
+        raw: transaction.raw,
+      };
+
+      await depositRepository.save(lockedDeposit);
+
+      await transactionRepository.save(
+        transactionRepository.create({
+          senderId: null,
+          receiverId: lockedDeposit.userId,
+          amount: String(creditedAmount),
+          type: 'deposit',
+          status: 'completed',
+          referenceId: lockedDeposit.id,
+          referenceType: 'deposit',
+          metadata: {
+            provider: 'vcb_qr',
+            webhookSource: transaction.source,
+            bankTransactionId: transaction.transactionId,
+            depositCode,
+            receivedAmount: transaction.amount,
+            creditedAmount,
+          },
+        }),
+      );
+
+      return true;
+    });
   }
 
   private async expireOverdueDeposits(filters?: { userId?: string }) {
@@ -578,44 +913,189 @@ export class PaymentService {
     );
   }
 
-  private getMomoQrConfig() {
-    const phone = this.configService.get<string>('payment.momoQr.phone')?.trim() ?? '';
-    const name = this.configService.get<string>('payment.momoQr.name')?.trim() ?? '';
-    const minAmount = Number(
-      this.configService.get<number>('payment.momoQr.minAmount') ?? 10000,
-    );
-    const maxAmount = Number(
-      this.configService.get<number>('payment.momoQr.maxAmount') ?? 5000000,
-    );
-    const expireMinutes = Number(
-      this.configService.get<number>('payment.momoQr.expireMinutes') ?? 30,
-    );
+  private readMomoQrConfig(): MomoQrConfig {
+    return {
+      phone:
+        this.configService.get<string>('payment.momoQr.phone')?.trim() ?? '',
+      name: this.configService.get<string>('payment.momoQr.name')?.trim() ?? '',
+      minAmount: Number(
+        this.configService.get<number>('payment.momoQr.minAmount') ?? 10000,
+      ),
+      maxAmount: Number(
+        this.configService.get<number>('payment.momoQr.maxAmount') ?? 5000000,
+      ),
+      expireMinutes: Number(
+        this.configService.get<number>('payment.momoQr.expireMinutes') ?? 30,
+      ),
+      allowedAmounts: this.normalizeAllowedAmounts(
+        this.configService.get<number[]>('payment.momoQr.allowedAmounts') ?? [],
+      ),
+    };
+  }
 
-    if (!phone || !name) {
+  private getMomoQrConfig() {
+    const config = this.readMomoQrConfig();
+
+    if (!this.isMomoQrConfigured(config)) {
       throw new BadRequestException(
         'MoMo QR chưa được cấu hình. Hãy đặt MOMO_QR_PHONE và MOMO_QR_NAME.',
       );
     }
 
+    return config;
+  }
+
+  private isMomoQrConfigured(config: MomoQrConfig) {
+    return Boolean(config.phone && config.name);
+  }
+
+  private readVcbQrConfig(): VcbQrConfig {
     return {
-      phone,
-      name,
-      minAmount,
-      maxAmount,
-      expireMinutes,
+      bankCode:
+        this.configService.get<string>('payment.vcbQr.bankCode')?.trim() ??
+        '',
+      bankName:
+        this.configService.get<string>('payment.vcbQr.bankName')?.trim() ??
+        '',
+      accountNumber:
+        this.configService
+          .get<string>('payment.vcbQr.accountNumber')
+          ?.trim() ?? '',
+      accountName:
+        this.configService.get<string>('payment.vcbQr.accountName')?.trim() ??
+        '',
+      template:
+        this.configService.get<string>('payment.vcbQr.template')?.trim() ??
+        'compact2',
+      minAmount: Number(
+        this.configService.get<number>('payment.vcbQr.minAmount') ?? 10000,
+      ),
+      maxAmount: Number(
+        this.configService.get<number>('payment.vcbQr.maxAmount') ?? 5000000,
+      ),
+      expireMinutes: Number(
+        this.configService.get<number>('payment.vcbQr.expireMinutes') ?? 15,
+      ),
+      allowedAmounts: this.normalizeAllowedAmounts(
+        this.configService.get<number[]>('payment.vcbQr.allowedAmounts') ?? [],
+      ),
     };
   }
 
-  private formatManualDepositResponse(deposit: DepositEntity) {
+  private getVcbQrConfig() {
+    const config = this.readVcbQrConfig();
+
+    if (!this.isVcbQrConfigured(config)) {
+      throw new BadRequestException(
+        'VCB QR chưa được cấu hình. Hãy đặt VCB_QR_ACCOUNT_NUMBER và VCB_QR_ACCOUNT_NAME.',
+      );
+    }
+
+    return config;
+  }
+
+  private isVcbQrConfigured(config: VcbQrConfig) {
+    return Boolean(
+      config.bankCode &&
+        config.bankName &&
+        config.accountNumber &&
+        config.accountName,
+    );
+  }
+
+  private validateManualDepositAmount(
+    amount: number,
+    minAmount: number,
+    maxAmount: number,
+    allowedAmounts: number[],
+    label: string,
+  ) {
+    if (amount < minAmount) {
+      throw new BadRequestException(
+        `Số tiền tối thiểu cho ${label} là ${this.formatCurrency(minAmount)}.`,
+      );
+    }
+
+    if (amount > maxAmount) {
+      throw new BadRequestException(
+        `Số tiền tối đa cho ${label} là ${this.formatCurrency(maxAmount)}.`,
+      );
+    }
+
+    if (allowedAmounts.length && !allowedAmounts.includes(amount)) {
+      throw new BadRequestException(
+        `${label} chỉ hỗ trợ các mệnh giá: ${allowedAmounts
+          .map((value) => this.formatCurrency(value))
+          .join(', ')}.`,
+      );
+    }
+  }
+
+  private async findActiveManualDeposit(
+    userId: string,
+    paymentMethod: ManualDepositMethod,
+  ) {
+    return this.depositsRepository.findOne({
+      where: {
+        userId,
+        status: In(PaymentService.REVIEWABLE_DEPOSIT_STATUSES),
+        paymentMethod,
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+  }
+
+  private enqueueDepositExpiry(depositId: string, expireMinutes: number) {
+    void this.jobQueueService
+      .enqueueDepositExpiry(depositId, expireMinutes * 60_000)
+      .catch(() => undefined);
+  }
+
+  private formatDepositResponse(deposit: DepositEntity) {
+    if (deposit.paymentMethod === 'vcb_qr') {
+      return {
+        deposit: this.toDepositResponse(deposit),
+        payment: {
+          method: 'vcb_qr',
+          autoConfirm: true,
+          receiver: {
+            phone: null,
+            name: deposit.receiverName,
+            bankCode: deposit.bankCode,
+            bankName: deposit.bankName,
+            accountNumber: deposit.accountNumber,
+          },
+          qr: {
+            imageDataUrl: deposit.qrImageUrl,
+            deepLink: null,
+            raw: null,
+          },
+          transferContent: deposit.depositCode,
+          instructions: [
+            'Mở ứng dụng ngân hàng hoặc ví hỗ trợ quét VietQR.',
+            'Quét mã QR bên dưới và kiểm tra đúng số tiền trước khi xác nhận.',
+            `Bắt buộc giữ nguyên nội dung ${deposit.depositCode} để hệ thống tự đối soát.`,
+            'Sau khi ngân hàng báo thành công, ví sẽ tự cập nhật trong ít giây khi webhook trả về.',
+          ],
+        },
+      };
+    }
+
     const parsedQrData = this.parseQrData(deposit.qrData);
 
     return {
       deposit: this.toDepositResponse(deposit),
       payment: {
         method: 'momo_qr',
+        autoConfirm: false,
         receiver: {
           phone: deposit.receiverPhone,
           name: deposit.receiverName,
+          bankCode: null,
+          bankName: null,
+          accountNumber: null,
         },
         qr: {
           imageDataUrl: deposit.qrImageUrl,
@@ -658,13 +1138,7 @@ export class PaymentService {
 
   private async refreshManualMomoQrDeposit(
     deposit: DepositEntity,
-    config: {
-      phone: string;
-      name: string;
-      minAmount: number;
-      maxAmount: number;
-      expireMinutes: number;
-    },
+    config: MomoQrConfig,
   ) {
     const parsedQrData = this.parseQrData(deposit.qrData);
     const nextQrPayload = this.momoQrService.generateScanPayload({
@@ -685,13 +1159,154 @@ export class PaymentService {
 
     deposit.receiverPhone = config.phone;
     deposit.receiverName = config.name;
+    deposit.bankCode = null;
+    deposit.bankName = null;
+    deposit.accountNumber = null;
     deposit.qrData = JSON.stringify({
       deepLink: null,
       raw: nextQrPayload,
     });
-    deposit.qrImageUrl = await this.momoQrService.generateQrDataUrl(nextQrPayload);
+    deposit.qrImageUrl =
+      await this.momoQrService.generateQrDataUrl(nextQrPayload);
 
     return this.depositsRepository.save(deposit);
+  }
+
+  private async refreshVcbQrDeposit(
+    deposit: DepositEntity,
+    config: VcbQrConfig,
+  ) {
+    const nextQrUrl = this.vietQrService.generateQrUrl({
+      bankCode: config.bankCode,
+      accountNumber: config.accountNumber,
+      accountName: config.accountName,
+      amount: toNumber(deposit.amount),
+      description: deposit.depositCode ?? '',
+      template: config.template,
+    });
+
+    const shouldRefreshQr =
+      deposit.receiverName !== config.accountName ||
+      deposit.bankCode !== config.bankCode ||
+      deposit.bankName !== config.bankName ||
+      deposit.accountNumber !== config.accountNumber ||
+      deposit.qrImageUrl !== nextQrUrl;
+
+    if (!shouldRefreshQr) {
+      return deposit;
+    }
+
+    deposit.receiverPhone = null;
+    deposit.receiverName = config.accountName;
+    deposit.bankCode = config.bankCode;
+    deposit.bankName = config.bankName;
+    deposit.accountNumber = config.accountNumber;
+    deposit.qrData = null;
+    deposit.qrImageUrl = nextQrUrl;
+
+    return this.depositsRepository.save(deposit);
+  }
+
+  private normalizeCassoTransactions(payload: Record<string, unknown>) {
+    const error = this.readNumber(payload.error);
+
+    if (error !== null && error !== 0) {
+      return [];
+    }
+
+    if (!Array.isArray(payload.data)) {
+      return [];
+    }
+
+    return payload.data.flatMap((item) =>
+      this.normalizeBankTransaction(item, {
+        source: 'casso',
+        transactionIdKeys: ['tid', 'id'],
+        amountKeys: ['amount'],
+        descriptionKeys: ['description'],
+        occurredAtKeys: ['when'],
+      }),
+    );
+  }
+
+  private normalizeSepayTransactions(payload: Record<string, unknown>) {
+    const candidates = Array.isArray(payload.data)
+      ? payload.data
+      : Array.isArray(payload.transactions)
+        ? payload.transactions
+        : [payload];
+
+    return candidates.flatMap((item) =>
+      this.normalizeBankTransaction(item, {
+        source: 'sepay',
+        transactionIdKeys: ['referenceNumber', 'reference_number', 'id'],
+        amountKeys: ['transferAmount', 'transfer_amount', 'amount'],
+        descriptionKeys: ['content', 'description'],
+        occurredAtKeys: ['transactionDate', 'transaction_date', 'createdAt'],
+      }),
+    );
+  }
+
+  private normalizeBankTransaction(
+    input: unknown,
+    options: {
+      source: BankWebhookSource;
+      transactionIdKeys: string[];
+      amountKeys: string[];
+      descriptionKeys: string[];
+      occurredAtKeys: string[];
+    },
+  ): NormalizedBankWebhookTransaction[] {
+    if (!this.isRecord(input)) {
+      return [];
+    }
+
+    const transactionId = this.readFirstString(input, options.transactionIdKeys);
+    const amount = this.readFirstNumber(input, options.amountKeys);
+    const description =
+      this.readFirstString(input, options.descriptionKeys) ?? '';
+    const occurredAt = this.readDate(
+      this.readFirstValue(input, options.occurredAtKeys),
+    );
+
+    if (!transactionId || amount === null) {
+      return [];
+    }
+
+    return [
+      {
+        transactionId,
+        amount,
+        description,
+        occurredAt,
+        raw: input,
+        source: options.source,
+      },
+    ];
+  }
+
+  private calculateCreditedVcbAmount(actualAmount: number, expectedAmount: number) {
+    if (actualAmount <= 0 || expectedAmount <= 0) {
+      return 0;
+    }
+
+    return Math.min(Math.floor(actualAmount), Math.floor(expectedAmount));
+  }
+
+  private buildVcbWebhookNote(
+    actualAmount: number,
+    expectedAmount: number,
+    creditedAmount: number,
+  ) {
+    if (actualAmount < expectedAmount) {
+      return `Hệ thống ghi nhận ${this.formatCurrency(actualAmount)} thay vì ${this.formatCurrency(expectedAmount)}. Ví đã được cộng theo số tiền thực nhận ${this.formatCurrency(creditedAmount)}.`;
+    }
+
+    if (actualAmount > expectedAmount) {
+      return `Ngân hàng báo nhận ${this.formatCurrency(actualAmount)}. Hệ thống cộng ${this.formatCurrency(creditedAmount)} theo yêu cầu QR đã tạo.`;
+    }
+
+    return null;
   }
 
   private toDepositResponse(deposit: DepositEntity) {
@@ -704,16 +1319,26 @@ export class PaymentService {
       paymentRef: deposit.paymentRef,
       receiverPhone: deposit.receiverPhone,
       receiverName: deposit.receiverName,
+      bankCode: deposit.bankCode,
+      bankName: deposit.bankName,
+      accountNumber: deposit.accountNumber,
       status: deposit.status,
       userConfirmedAt: deposit.userConfirmedAt,
       transferProofUrl: deposit.transferProofUrl,
       adminConfirmedBy: deposit.adminConfirmedBy,
       adminNote: deposit.adminNote,
       expiresAt: deposit.expiresAt,
+      matchedAt: deposit.matchedAt,
       createdAt: deposit.createdAt,
       updatedAt: deposit.updatedAt,
       completedAt: deposit.completedAt,
     };
+  }
+
+  private normalizeAllowedAmounts(values: number[]) {
+    return [...new Set(values.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))]
+      .map((value) => Math.floor(value))
+      .sort((left, right) => left - right);
   }
 
   private normalizePage(page: number) {
@@ -732,5 +1357,76 @@ export class PaymentService {
     return ['success', 'completed', 'paid', '00'].includes(
       status.toLowerCase(),
     );
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private readFirstValue(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): unknown {
+    for (const key of keys) {
+      if (key in record) {
+        return record[key];
+      }
+    }
+
+    return null;
+  }
+
+  private readFirstString(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): string | null {
+    return this.readString(this.readFirstValue(record, keys));
+  }
+
+  private readFirstNumber(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): number | null {
+    return this.readNumber(this.readFirstValue(record, keys));
+  }
+
+  private readString(value: unknown) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+
+    return null;
+  }
+
+  private readNumber(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private readDate(value: unknown) {
+    const raw = this.readString(value);
+
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private formatCurrency(amount: number) {
+    return new Intl.NumberFormat('vi-VN').format(amount) + 'đ';
   }
 }

@@ -143,6 +143,10 @@ function getTransactionDescription(record: BackendTransactionRecord, currentUser
 }
 
 function formatProviderLabel(provider: string) {
+  if (provider === "vcb_qr") {
+    return "VCB QR";
+  }
+
   if (provider === "momo_qr") {
     return "MoMo QR";
   }

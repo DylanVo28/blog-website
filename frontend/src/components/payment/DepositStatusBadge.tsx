@@ -6,7 +6,7 @@ const statusMap: Record<
   { label: string; variant: "default" | "secondary" | "outline" | "success" }
 > = {
   pending: {
-    label: "Chờ chuyển tiền",
+    label: "Chờ thanh toán",
     variant: "outline",
   },
   user_confirmed: {
