@@ -62,6 +62,24 @@ export interface WithdrawalRequest {
   completedAt: string | null;
 }
 
+export interface AdminWalletUserSummary {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: string;
+}
+
+export interface AdminWithdrawalItem extends WithdrawalRequest {
+  totalDebit: number;
+  user: AdminWalletUserSummary | null;
+  approvedByAdmin: AdminWalletUserSummary | null;
+}
+
+export interface AdminWithdrawalsResult {
+  items: AdminWithdrawalItem[];
+}
+
 export interface Transaction {
   id: string;
   senderId: string | null;

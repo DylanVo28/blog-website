@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { sumNumbers, toNumber } from '../../common/utils/number.util';
 import { PostEntity } from '../posts/entities/post.entity';
 import { QuestionEntity } from '../questions/entities/question.entity';
@@ -83,11 +83,36 @@ export class AdminService {
       take: 200,
     });
 
+    const relatedUserIds = Array.from(
+      new Set(
+        items.flatMap((item) =>
+          [item.userId, item.approvedBy].filter(
+            (value): value is string => Boolean(value),
+          ),
+        ),
+      ),
+    );
+
+    const users = relatedUserIds.length
+      ? await this.usersRepository.find({
+          where: {
+            id: In(relatedUserIds),
+          },
+        })
+      : [];
+
+    const userMap = new Map(users.map((user) => [user.id, user]));
+
     return {
       items: items.map((item) => ({
         ...item,
         amount: toNumber(item.amount),
         feeAmount: toNumber(item.feeAmount),
+        totalDebit: toNumber(item.amount) + toNumber(item.feeAmount),
+        user: this.serializeAdminUser(userMap.get(item.userId)),
+        approvedByAdmin: item.approvedBy
+          ? this.serializeAdminUser(userMap.get(item.approvedBy))
+          : null,
       })),
     };
   }
@@ -111,6 +136,12 @@ export class AdminService {
         throw new NotFoundException('Withdrawal not found.');
       }
 
+      if (withdrawal.status !== 'pending') {
+        throw new BadRequestException(
+          `Withdrawal has already been ${withdrawal.status}.`,
+        );
+      }
+
       const wallet = await walletRepository.findOne({
         where: {
           userId: withdrawal.userId,
@@ -127,7 +158,9 @@ export class AdminService {
       const totalDebit =
         toNumber(withdrawal.amount) + toNumber(withdrawal.feeAmount);
       if (toNumber(wallet.balance) < totalDebit) {
-        throw new NotFoundException('Wallet balance is not enough for withdrawal approval.');
+        throw new BadRequestException(
+          'Wallet balance is not enough for withdrawal approval.',
+        );
       }
 
       wallet.balance = String(toNumber(wallet.balance) - totalDebit);
@@ -189,6 +222,12 @@ export class AdminService {
 
     if (!withdrawal) {
       throw new NotFoundException('Withdrawal not found.');
+    }
+
+    if (withdrawal.status !== 'pending') {
+      throw new BadRequestException(
+        `Withdrawal has already been ${withdrawal.status}.`,
+      );
     }
 
     withdrawal.status = 'rejected';
@@ -262,6 +301,20 @@ export class AdminService {
       banned: true,
       bannedAt: user.bannedAt,
       reason: user.banReason,
+    };
+  }
+
+  private serializeAdminUser(user?: UserEntity | null) {
+    if (!user) {
+      return null;
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      role: user.role,
     };
   }
 }

@@ -1,4 +1,6 @@
 import type {
+  AdminWithdrawalItem,
+  AdminWithdrawalsResult,
   BackendTransactionRecord,
   DepositOrder,
   PaymentRequest,
@@ -58,6 +60,24 @@ export function normalizeWithdrawalRequest(record: WithdrawalRequest): Withdrawa
     ...record,
     amount: toNumber(record.amount),
     feeAmount: toNumber(record.feeAmount),
+  };
+}
+
+export function normalizeAdminWithdrawalItem(record: AdminWithdrawalItem): AdminWithdrawalItem {
+  return {
+    ...normalizeWithdrawalRequest(record),
+    totalDebit: toNumber(record.totalDebit),
+    user: record.user,
+    approvedByAdmin: record.approvedByAdmin,
+  };
+}
+
+export function normalizeAdminWithdrawalsResult(
+  record: AdminWithdrawalsResult,
+): AdminWithdrawalsResult {
+  return {
+    ...record,
+    items: record.items.map((item) => normalizeAdminWithdrawalItem(item)),
   };
 }
 
