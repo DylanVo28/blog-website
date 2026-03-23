@@ -17,9 +17,6 @@ import {
   TimerReset,
   WalletCards,
 } from "lucide-react";
-import { getApiErrorMessage } from "@/lib/api";
-import { formatCurrency } from "@/lib/formatters";
-import { paymentApi } from "@/services/api/payment.api";
 import { DepositStatusBadge } from "@/components/payment/DepositStatusBadge";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -27,13 +24,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
+import { getApiErrorMessage } from "@/lib/api";
+import { formatCurrency } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { paymentApi } from "@/services/api/payment.api";
 import type {
   CreateManualDepositResult,
   ManualDeposit,
   ManualDepositStatus,
   PaymentMethodOption,
 } from "@/types/payment.types";
+
+const METHOD_LABELS: Record<string, string> = {
+  momo_qr: "MoMo QR",
+  vcb_qr: "VCB QR",
+  ocb_qr: "OCB QR",
+};
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) {
@@ -46,24 +52,44 @@ function formatDateTime(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
-function isVcbMethod(method: string | null | undefined) {
-  return method === "vcb_qr";
+function isBankQrMethod(method: string | null | undefined) {
+  return method === "vcb_qr" || method === "ocb_qr";
 }
 
 function formatMethodLabel(method: string | null | undefined) {
+  if (!method) {
+    return "Nạp tiền";
+  }
+
+  return METHOD_LABELS[method] ?? method;
+}
+
+function getHeroTitle(method: string | null | undefined, bankName: string | null | undefined) {
   if (method === "vcb_qr") {
-    return "VCB QR";
+    return "Vietcombank QR";
   }
 
-  if (method === "momo_qr") {
-    return "MoMo QR";
+  if (method === "ocb_qr") {
+    return bankName ? `${bankName} QR` : "OCB QR";
   }
 
-  return "Nạp tiền";
+  return "MoMo QR Personal";
+}
+
+function getHeroClassName(method: string | null | undefined) {
+  if (method === "vcb_qr") {
+    return "bg-[linear-gradient(135deg,#0f3d2e,#13795b_56%,#46c78a)]";
+  }
+
+  if (method === "ocb_qr") {
+    return "bg-[linear-gradient(135deg,#6d3208,#d16014_56%,#ffb25c)]";
+  }
+
+  return "bg-[linear-gradient(135deg,#46215d,#bb2874_58%,#f17fa2)]";
 }
 
 function getStepLabels(method: string | null | undefined) {
-  return isVcbMethod(method)
+  return isBankQrMethod(method)
     ? ["Số tiền", "Quét QR", "Ngân hàng xác nhận", "Hoàn tất"]
     : ["Số tiền", "Quét QR", "Chờ duyệt", "Hoàn tất"];
 }
@@ -87,7 +113,7 @@ function getStepIndex(status: ManualDepositStatus | null) {
 function getDepositHeadline(method: string | null | undefined, status: ManualDepositStatus | null) {
   switch (status) {
     case "pending":
-      return isVcbMethod(method)
+      return isBankQrMethod(method)
         ? "Quét QR ngân hàng và chuyển đúng nội dung"
         : "Quét QR và chuyển đúng nội dung";
     case "user_confirmed":
@@ -99,18 +125,30 @@ function getDepositHeadline(method: string | null | undefined, status: ManualDep
     case "expired":
       return "Mã QR này đã hết hạn";
     default:
-      return isVcbMethod(method) ? "Tạo yêu cầu nạp tiền VCB QR" : "Tạo yêu cầu nạp tiền MoMo QR";
+      return isBankQrMethod(method)
+        ? `Tạo yêu cầu nạp tiền ${formatMethodLabel(method)}`
+        : "Tạo yêu cầu nạp tiền MoMo QR";
   }
 }
 
-function getHeroDescription(method: string | null | undefined) {
-  return isVcbMethod(method)
-    ? "Tạo VietQR cho tài khoản Vietcombank và để hệ thống tự cộng ví khi webhook đối soát đúng nội dung chuyển khoản."
-    : "Giữ nguyên luồng MoMo QR cá nhân hiện tại: user quét QR, chuyển tiền và admin duyệt thủ công trước khi cộng ví.";
+function getHeroDescription(method: string | null | undefined, bankName: string | null | undefined) {
+  if (method === "vcb_qr") {
+    return "Tạo VietQR cho tài khoản Vietcombank và để hệ thống tự cộng ví khi webhook đối soát đúng nội dung chuyển khoản.";
+  }
+
+  if (method === "ocb_qr") {
+    return `Tạo VietQR cho tài khoản ${bankName ?? "OCB"} và để hệ thống tự cộng ví khi webhook đối soát đúng nội dung chuyển khoản.`;
+  }
+
+  return "Giữ nguyên luồng MoMo QR cá nhân hiện tại: user quét QR, chuyển tiền và admin duyệt thủ công trước khi cộng ví.";
 }
 
 function getCreateSuccessMessage(method: string | null | undefined) {
-  return isVcbMethod(method) ? "Đã tạo mã nạp tiền VCB QR." : "Đã tạo mã nạp tiền MoMo QR.";
+  if (isBankQrMethod(method)) {
+    return `Đã tạo mã nạp tiền ${formatMethodLabel(method)}.`;
+  }
+
+  return "Đã tạo mã nạp tiền MoMo QR.";
 }
 
 function getMethodCardMeta(method: string) {
@@ -120,6 +158,15 @@ function getMethodCardMeta(method: string) {
       iconClassName: "bg-emerald-100 text-emerald-700",
       activeClassName: "border-emerald-300 bg-emerald-50 shadow-sm",
       idleClassName: "border-border/70 bg-white/80 hover:border-emerald-200",
+    };
+  }
+
+  if (method === "ocb_qr") {
+    return {
+      icon: <Landmark className="size-5" />,
+      iconClassName: "bg-amber-100 text-amber-700",
+      activeClassName: "border-amber-300 bg-amber-50 shadow-sm",
+      idleClassName: "border-border/70 bg-white/80 hover:border-amber-200",
     };
   }
 
@@ -167,8 +214,13 @@ export function DepositForm() {
   const resolvedMethod = selectedMethod ?? enabledMethods[0]?.method ?? null;
   const activeMethod =
     enabledMethods.find((item) => item.method === resolvedMethod) ?? enabledMethods[0] ?? null;
+
   const currentMethod = currentDeposit?.payment.method ?? activeMethod?.method ?? null;
+  const currentBankName =
+    currentDeposit?.payment.receiver.bankName ?? activeMethod?.receiver.bankName ?? null;
   const isAutoConfirmFlow = currentDeposit?.payment.autoConfirm ?? activeMethod?.autoConfirm ?? false;
+  const isCurrentBankFlow = isBankQrMethod(currentDeposit?.payment.method);
+  const presets = normalizePresetAmounts(activeMethod);
 
   const createDepositMutation = useMutation({
     mutationFn: () => {
@@ -238,8 +290,6 @@ export function DepositForm() {
   const displayDeposit = statusQuery.data ?? currentDeposit?.deposit ?? null;
   const currentStatus = displayDeposit?.status ?? null;
   const stepLabels = getStepLabels(currentMethod);
-  const isCurrentVcbFlow = isVcbMethod(currentDeposit?.payment.method);
-  const presets = normalizePresetAmounts(activeMethod);
 
   useEffect(() => {
     if (!statusQuery.data) {
@@ -315,25 +365,19 @@ export function DepositForm() {
     return (
       <EmptyState
         title="Phương thức nạp tiền chưa sẵn sàng"
-        description="Backend chưa trả về phương thức nào khả dụng. Hãy kiểm tra cấu hình MoMo QR hoặc VCB QR."
+        description="Backend chưa trả về phương thức nào khả dụng. Hãy kiểm tra cấu hình MoMo QR, VCB QR hoặc OCB QR."
       />
     );
   }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <Card
-        className={cn(
-          "overflow-hidden border-0 text-white",
-          isVcbMethod(currentMethod)
-            ? "bg-[linear-gradient(135deg,#0f3d2e,#13795b_56%,#46c78a)]"
-            : "bg-[linear-gradient(135deg,#46215d,#bb2874_58%,#f17fa2)]",
-        )}
-      >
+      <Card className={cn("overflow-hidden border-0 text-white", getHeroClassName(currentMethod))}>
         <CardHeader className="space-y-4">
           <p className="text-sm font-semibold uppercase tracking-[0.25em] text-white/70">
-            {isVcbMethod(currentMethod) ? "Vietcombank QR" : "MoMo QR Personal"}
+            {getHeroTitle(currentMethod, currentBankName)}
           </p>
+
           <div className="flex flex-wrap items-center gap-4">
             {stepLabels.map((label, index) => {
               const activeIndex = getStepIndex(currentStatus);
@@ -356,10 +400,11 @@ export function DepositForm() {
               );
             })}
           </div>
+
           <div>
             <CardTitle className="text-white">{getDepositHeadline(currentMethod, currentStatus)}</CardTitle>
             <CardDescription className="text-white/80">
-              {getHeroDescription(currentMethod)}
+              {getHeroDescription(currentMethod, currentBankName)}
             </CardDescription>
           </div>
         </CardHeader>
@@ -374,7 +419,7 @@ export function DepositForm() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-3">
               {enabledMethods.map((method) => {
                 const meta = getMethodCardMeta(method.method);
                 const isActive = method.method === activeMethod.method;
@@ -449,13 +494,13 @@ export function DepositForm() {
                   Thông tin nhận tiền
                 </p>
                 <p className="mt-3 text-lg font-semibold text-foreground">{activeMethod.receiver.name}</p>
-                {isVcbMethod(activeMethod.method) ? (
+                {isBankQrMethod(activeMethod.method) ? (
                   <>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {activeMethod.receiver.bankName} • {activeMethod.receiver.accountNumber}
                     </p>
                     <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                      Hệ thống tạo VietQR cho tài khoản Vietcombank và tự cộng ví khi webhook match đúng nội dung.
+                      Hệ thống tạo VietQR cho tài khoản {activeMethod.receiver.bankName} và tự cộng ví khi webhook match đúng nội dung.
                     </p>
                   </>
                 ) : (
@@ -497,7 +542,7 @@ export function DepositForm() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <CardTitle className="text-2xl">
-                    {isCurrentVcbFlow ? "Bước 2: Quét QR và chuyển khoản ngân hàng" : "Bước 2: Quét QR và chuyển tiền"}
+                    {isCurrentBankFlow ? "Bước 2: Quét QR và chuyển khoản ngân hàng" : "Bước 2: Quét QR và chuyển tiền"}
                   </CardTitle>
                   <CardDescription>
                     Giao dịch hết hạn lúc {formatDateTime(displayDeposit.expiresAt)}.
@@ -506,6 +551,7 @@ export function DepositForm() {
                 <DepositStatusBadge status={displayDeposit.status} />
               </div>
             </CardHeader>
+
             <CardContent className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
               <div className="space-y-4">
                 <div className="rounded-[1.5rem] border border-border/70 bg-muted/20 p-4">
@@ -527,13 +573,13 @@ export function DepositForm() {
                     </Button>
                   </div>
                   <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                    {isCurrentVcbFlow
+                    {isCurrentBankFlow
                       ? "Đây là mã đối soát để webhook ngân hàng khớp giao dịch. Nếu thay đổi nội dung này, hệ thống sẽ không thể tự cộng ví."
                       : "Đây là mã đối soát duy nhất. Nếu đổi nội dung này, admin sẽ khó xác nhận chính xác giao dịch."}
                   </p>
                   <p className="mt-2 text-sm leading-6 text-amber-700">
-                    {isCurrentVcbFlow
-                      ? "Hãy giữ nguyên đúng số tiền và nội dung. Sau khi chuyển thành công, hệ thống sẽ tự cập nhật khi Casso/SePay gửi webhook về."
+                    {isCurrentBankFlow
+                      ? "Hãy giữ nguyên đúng số tiền và nội dung. Sau khi chuyển thành công, hệ thống sẽ tự cập nhật khi SePay gửi webhook về."
                       : "QR MoMo cá nhân có thể chỉ tự điền người nhận và số tiền. Nếu app MoMo chưa hiện nội dung, hãy dán mã này thủ công vào ô lời nhắn."}
                   </p>
                 </div>
@@ -547,13 +593,13 @@ export function DepositForm() {
                   </div>
                   <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
                     <p className="text-sm text-muted-foreground">
-                      {isCurrentVcbFlow ? "Tài khoản nhận" : "Người nhận"}
+                      {isCurrentBankFlow ? "Tài khoản nhận" : "Người nhận"}
                     </p>
                     <p className="mt-2 text-lg font-semibold text-foreground">
                       {currentDeposit.payment.receiver.name}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {isCurrentVcbFlow
+                      {isCurrentBankFlow
                         ? `${currentDeposit.payment.receiver.bankName} • ${currentDeposit.payment.receiver.accountNumber}`
                         : currentDeposit.payment.receiver.phone}
                     </p>
@@ -576,7 +622,7 @@ export function DepositForm() {
                   </div>
                 </div>
 
-                {!isCurrentVcbFlow ? (
+                {!isCurrentBankFlow ? (
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-foreground" htmlFor="deposit-proof-url">
                       Ảnh proof chuyển khoản, nếu có
@@ -603,7 +649,7 @@ export function DepositForm() {
                     </Button>
                   ) : null}
 
-                  {isCurrentVcbFlow ? (
+                  {isCurrentBankFlow ? (
                     <Button
                       type="button"
                       variant="outline"
@@ -628,7 +674,7 @@ export function DepositForm() {
                     </Button>
                   )}
 
-                  {isCurrentVcbFlow ? (
+                  {isCurrentBankFlow ? (
                     <Button
                       type="button"
                       variant="outline"
@@ -652,13 +698,15 @@ export function DepositForm() {
 
               <div className="space-y-4 rounded-[1.8rem] border border-border/70 bg-white/80 p-5 text-center">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
-                  {isCurrentVcbFlow ? "VietQR Vietcombank" : "MoMo QR"}
+                  {isCurrentBankFlow
+                    ? `VietQR ${currentDeposit.payment.receiver.bankName ?? formatMethodLabel(currentMethod)}`
+                    : "MoMo QR"}
                 </p>
                 <div className="overflow-hidden rounded-[1.5rem] border border-border/70 bg-white p-3">
                   {currentDeposit.payment.qr.imageDataUrl ? (
                     <Image
                       src={currentDeposit.payment.qr.imageDataUrl}
-                      alt={isCurrentVcbFlow ? "Ma QR Vietcombank" : "Ma QR MoMo"}
+                      alt={isCurrentBankFlow ? `Ma QR ${currentDeposit.payment.receiver.bankName ?? ""}` : "Ma QR MoMo"}
                       width={420}
                       height={420}
                       unoptimized
@@ -671,8 +719,8 @@ export function DepositForm() {
                   )}
                 </div>
                 <p className="text-sm leading-6 text-muted-foreground">
-                  {isCurrentVcbFlow
-                    ? "Bạn có thể quét bằng ứng dụng Vietcombank hoặc bất kỳ app ngân hàng nào hỗ trợ VietQR."
+                  {isCurrentBankFlow
+                    ? `Bạn có thể quét bằng ứng dụng ${currentDeposit.payment.receiver.bankName ?? "ngân hàng"} hoặc bất kỳ app ngân hàng nào hỗ trợ VietQR.`
                     : "Hãy kiểm tra đúng người nhận. Nếu MoMo chưa tự điền nội dung, hãy dán mã ở bên trái vào ô lời nhắn rồi mới chuyển tiền."}
                 </p>
               </div>
@@ -696,7 +744,7 @@ export function DepositForm() {
               <p>
                 Hết hạn: <span className="font-semibold text-foreground">{formatDateTime(displayDeposit.expiresAt)}</span>
               </p>
-              {isCurrentVcbFlow ? (
+              {isCurrentBankFlow ? (
                 <>
                   <p>
                     Ngân hàng: <span className="font-semibold text-foreground">{displayDeposit.bankName}</span>
@@ -903,7 +951,7 @@ export function DepositForm() {
         <CardHeader>
           <CardTitle className="text-2xl">Lịch sử nạp tiền gần đây</CardTitle>
           <CardDescription>
-            Bao gồm cả luồng MoMo QR chờ duyệt thủ công và VCB QR được đối soát tự động.
+            Bao gồm MoMo QR chờ duyệt thủ công và các luồng ngân hàng QR như VCB, OCB được đối soát tự động.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -940,7 +988,7 @@ export function DepositForm() {
             <EmptyState
               icon={<QrCode className="size-6" />}
               title="Chưa có yêu cầu nạp tiền nào"
-              description="Tạo deposit đầu tiên để nhận QR MoMo hoặc VCB và bắt đầu nạp tiền vào ví."
+              description="Tạo deposit đầu tiên để nhận QR MoMo hoặc QR ngân hàng và bắt đầu nạp tiền vào ví."
             />
           )}
         </CardContent>

@@ -117,7 +117,7 @@ export default function WalletPage() {
                 <CardTitle className="text-2xl">Ghi chú</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
-                <p>MoMo QR vẫn là luồng duyệt thủ công, còn VCB QR sẽ tự cộng ví khi webhook đối soát đúng nội dung chuyển khoản.</p>
+                <p>MoMo QR vẫn là luồng duyệt thủ công, còn các QR ngân hàng như VCB hoặc OCB sẽ tự cộng ví khi webhook đối soát đúng nội dung chuyển khoản.</p>
                 <p>Withdraw hiện tạo yêu cầu `pending`, số dư chưa bị trừ cho đến khi admin duyệt.</p>
                 <p>Khoản thu từ câu hỏi tác giả sẽ xuất hiện khi câu hỏi được trả lời và payout được giải ngân.</p>
               </CardContent>

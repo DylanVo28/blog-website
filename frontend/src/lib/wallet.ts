@@ -143,6 +143,10 @@ function getTransactionDescription(record: BackendTransactionRecord, currentUser
 }
 
 function formatProviderLabel(provider: string) {
+  if (provider === "ocb_qr") {
+    return "OCB QR";
+  }
+
   if (provider === "vcb_qr") {
     return "VCB QR";
   }

@@ -36,7 +36,13 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
-export const PAYMENT_METHODS = ['vnpay', 'momo', 'momo_qr', 'vcb_qr'] as const;
+export const PAYMENT_METHODS = [
+  'vnpay',
+  'momo',
+  'momo_qr',
+  'vcb_qr',
+  'ocb_qr',
+] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 export const DEPOSIT_STATUSES = [

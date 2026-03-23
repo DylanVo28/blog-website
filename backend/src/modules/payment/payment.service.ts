@@ -23,7 +23,8 @@ import { MomoQrService } from './services/momo-qr.service';
 import { VietQrService } from './services/viet-qr.service';
 
 type ReviewableDepositStatus = 'pending' | 'user_confirmed';
-type ManualDepositMethod = 'momo_qr' | 'vcb_qr';
+type BankQrMethod = 'vcb_qr' | 'ocb_qr';
+type ManualDepositMethod = 'momo_qr' | BankQrMethod;
 type BankWebhookSource = 'casso' | 'sepay';
 
 interface ParsedQrData {
@@ -40,7 +41,9 @@ interface MomoQrConfig {
   allowedAmounts: number[];
 }
 
-interface VcbQrConfig {
+interface BankQrConfig {
+  method: BankQrMethod;
+  label: string;
   bankCode: string;
   bankName: string;
   accountNumber: string;
@@ -55,6 +58,7 @@ interface VcbQrConfig {
 interface NormalizedBankWebhookTransaction {
   transactionId: string;
   amount: number;
+  paymentCode: string | null;
   description: string;
   occurredAt: Date | null;
   raw: Record<string, unknown>;
@@ -100,10 +104,11 @@ export class PaymentService {
       case 'momo_qr':
         return this.createMomoQrDeposit(userId, dto.amount);
       case 'vcb_qr':
-        return this.createVcbQrDeposit(userId, dto.amount);
+      case 'ocb_qr':
+        return this.createBankQrDeposit(userId, paymentMethod, dto.amount);
       default:
         throw new BadRequestException(
-          'Flow này chỉ hỗ trợ MoMo QR cá nhân hoặc QR Vietcombank.',
+          'Flow này chỉ hỗ trợ MoMo QR cá nhân hoặc QR ngân hàng.',
         );
     }
   }
@@ -201,7 +206,8 @@ export class PaymentService {
 
   async getAvailablePaymentMethods() {
     const momoConfig = this.readMomoQrConfig();
-    const vcbConfig = this.readVcbQrConfig();
+    const vcbConfig = this.readBankQrConfig('vcb_qr');
+    const ocbConfig = this.readBankQrConfig('ocb_qr');
 
     return {
       items: [
@@ -228,10 +234,10 @@ export class PaymentService {
           method: 'vcb_qr',
           label: 'VCB QR tự động',
           description:
-            'Quét VietQR và hệ thống sẽ tự cộng ví khi webhook ngân hàng khớp nội dung.',
+            'Quét VietQR Vietcombank và hệ thống sẽ tự cộng ví khi webhook ngân hàng khớp nội dung.',
           minAmount: vcbConfig.minAmount,
           maxAmount: vcbConfig.maxAmount,
-          enabled: this.isVcbQrConfigured(vcbConfig),
+          enabled: this.isBankQrConfigured(vcbConfig),
           expireMinutes: vcbConfig.expireMinutes,
           autoConfirm: true,
           allowedAmounts: vcbConfig.allowedAmounts,
@@ -241,6 +247,25 @@ export class PaymentService {
             bankCode: vcbConfig.bankCode,
             bankName: vcbConfig.bankName,
             accountNumber: vcbConfig.accountNumber,
+          },
+        },
+        {
+          method: 'ocb_qr',
+          label: 'OCB QR tự động',
+          description:
+            'Quét VietQR OCB và hệ thống sẽ tự cộng ví khi webhook ngân hàng khớp nội dung.',
+          minAmount: ocbConfig.minAmount,
+          maxAmount: ocbConfig.maxAmount,
+          enabled: this.isBankQrConfigured(ocbConfig),
+          expireMinutes: ocbConfig.expireMinutes,
+          autoConfirm: true,
+          allowedAmounts: ocbConfig.allowedAmounts,
+          receiver: {
+            phone: null,
+            name: ocbConfig.accountName,
+            bankCode: ocbConfig.bankCode,
+            bankName: ocbConfig.bankName,
+            accountNumber: ocbConfig.accountNumber,
           },
         },
       ],
@@ -531,20 +556,27 @@ export class PaymentService {
     return this.formatDepositResponse(deposit);
   }
 
-  private async createVcbQrDeposit(userId: string, amount: number) {
-    const config = this.getVcbQrConfig();
+  private async createBankQrDeposit(
+    userId: string,
+    paymentMethod: BankQrMethod,
+    amount: number,
+  ) {
+    const config = this.getBankQrConfig(paymentMethod);
     this.validateManualDepositAmount(
       amount,
       config.minAmount,
       config.maxAmount,
       config.allowedAmounts,
-      'VCB QR',
+      config.label,
     );
 
-    const existingDeposit = await this.findActiveManualDeposit(userId, 'vcb_qr');
+    const existingDeposit = await this.findActiveManualDeposit(
+      userId,
+      paymentMethod,
+    );
 
     if (existingDeposit) {
-      const refreshedDeposit = await this.refreshVcbQrDeposit(
+      const refreshedDeposit = await this.refreshBankQrDeposit(
         existingDeposit,
         config,
       );
@@ -567,7 +599,7 @@ export class PaymentService {
         userId,
         amount: String(amount),
         depositCode,
-        paymentMethod: 'vcb_qr',
+        paymentMethod,
         paymentRef: null,
         receiverPhone: null,
         receiverName: config.accountName,
@@ -731,9 +763,9 @@ export class PaymentService {
       return false;
     }
 
-    const depositCode = this.depositCodeService.parseDepositCode(
-      transaction.description,
-    );
+    const depositCode =
+      transaction.paymentCode ??
+      this.depositCodeService.parseDepositCode(transaction.description);
 
     if (!depositCode) {
       return false;
@@ -742,7 +774,7 @@ export class PaymentService {
     const deposit = await this.depositsRepository.findOne({
       where: {
         depositCode,
-        paymentMethod: 'vcb_qr',
+        paymentMethod: In(this.getSupportedBankQrMethods()),
         status: 'pending',
       },
       order: {
@@ -760,7 +792,7 @@ export class PaymentService {
     }
 
     const expectedAmount = toNumber(deposit.amount);
-    const creditedAmount = this.calculateCreditedVcbAmount(
+    const creditedAmount = this.calculateCreditedBankAmount(
       transaction.amount,
       expectedAmount,
     );
@@ -785,7 +817,9 @@ export class PaymentService {
 
       if (
         !lockedDeposit ||
-        lockedDeposit.paymentMethod !== 'vcb_qr' ||
+        !this.getSupportedBankQrMethods().includes(
+          lockedDeposit.paymentMethod as BankQrMethod,
+        ) ||
         lockedDeposit.status !== 'pending'
       ) {
         return false;
@@ -821,7 +855,7 @@ export class PaymentService {
       await walletRepository.save(wallet);
 
       const receivedAt = transaction.occurredAt ?? new Date();
-      const note = this.buildVcbWebhookNote(
+      const note = this.buildBankWebhookNote(
         transaction.amount,
         expectedAmount,
         creditedAmount,
@@ -855,7 +889,7 @@ export class PaymentService {
           referenceId: lockedDeposit.id,
           referenceType: 'deposit',
           metadata: {
-            provider: 'vcb_qr',
+            provider: lockedDeposit.paymentMethod,
             webhookSource: transaction.source,
             bankTransactionId: transaction.transactionId,
             depositCode,
@@ -949,58 +983,68 @@ export class PaymentService {
     return Boolean(config.phone && config.name);
   }
 
-  private readVcbQrConfig(): VcbQrConfig {
+  private readBankQrConfig(method: BankQrMethod): BankQrConfig {
+    const configKey = method === 'vcb_qr' ? 'payment.vcbQr' : 'payment.ocbQr';
+
     return {
+      method,
+      label: this.getBankQrLabel(method),
       bankCode:
-        this.configService.get<string>('payment.vcbQr.bankCode')?.trim() ??
-        '',
+        this.configService.get<string>(`${configKey}.bankCode`)?.trim() ?? '',
       bankName:
-        this.configService.get<string>('payment.vcbQr.bankName')?.trim() ??
-        '',
+        this.configService.get<string>(`${configKey}.bankName`)?.trim() ?? '',
       accountNumber:
         this.configService
-          .get<string>('payment.vcbQr.accountNumber')
+          .get<string>(`${configKey}.accountNumber`)
           ?.trim() ?? '',
       accountName:
-        this.configService.get<string>('payment.vcbQr.accountName')?.trim() ??
+        this.configService.get<string>(`${configKey}.accountName`)?.trim() ??
         '',
       template:
-        this.configService.get<string>('payment.vcbQr.template')?.trim() ??
+        this.configService.get<string>(`${configKey}.template`)?.trim() ??
         'compact2',
       minAmount: Number(
-        this.configService.get<number>('payment.vcbQr.minAmount') ?? 10000,
+        this.configService.get<number>(`${configKey}.minAmount`) ?? 10000,
       ),
       maxAmount: Number(
-        this.configService.get<number>('payment.vcbQr.maxAmount') ?? 5000000,
+        this.configService.get<number>(`${configKey}.maxAmount`) ?? 5000000,
       ),
       expireMinutes: Number(
-        this.configService.get<number>('payment.vcbQr.expireMinutes') ?? 15,
+        this.configService.get<number>(`${configKey}.expireMinutes`) ?? 15,
       ),
       allowedAmounts: this.normalizeAllowedAmounts(
-        this.configService.get<number[]>('payment.vcbQr.allowedAmounts') ?? [],
+        this.configService.get<number[]>(`${configKey}.allowedAmounts`) ?? [],
       ),
     };
   }
 
-  private getVcbQrConfig() {
-    const config = this.readVcbQrConfig();
+  private getBankQrConfig(method: BankQrMethod) {
+    const config = this.readBankQrConfig(method);
 
-    if (!this.isVcbQrConfigured(config)) {
+    if (!this.isBankQrConfigured(config)) {
       throw new BadRequestException(
-        'VCB QR chưa được cấu hình. Hãy đặt VCB_QR_ACCOUNT_NUMBER và VCB_QR_ACCOUNT_NAME.',
+        `${config.label} chưa được cấu hình. Hãy đặt ${method === 'vcb_qr' ? 'VCB_QR' : 'OCB_QR'}_ACCOUNT_NUMBER và ${method === 'vcb_qr' ? 'VCB_QR' : 'OCB_QR'}_ACCOUNT_NAME.`,
       );
     }
 
     return config;
   }
 
-  private isVcbQrConfigured(config: VcbQrConfig) {
+  private isBankQrConfigured(config: BankQrConfig) {
     return Boolean(
       config.bankCode &&
         config.bankName &&
         config.accountNumber &&
         config.accountName,
     );
+  }
+
+  private getBankQrLabel(method: BankQrMethod) {
+    return method === 'vcb_qr' ? 'VCB QR' : 'OCB QR';
+  }
+
+  private getSupportedBankQrMethods(): BankQrMethod[] {
+    return ['vcb_qr', 'ocb_qr'];
   }
 
   private validateManualDepositAmount(
@@ -1054,11 +1098,16 @@ export class PaymentService {
   }
 
   private formatDepositResponse(deposit: DepositEntity) {
-    if (deposit.paymentMethod === 'vcb_qr') {
+    if (
+      deposit.paymentMethod &&
+      this.getSupportedBankQrMethods().includes(
+        deposit.paymentMethod as BankQrMethod,
+      )
+    ) {
       return {
         deposit: this.toDepositResponse(deposit),
         payment: {
-          method: 'vcb_qr',
+          method: deposit.paymentMethod,
           autoConfirm: true,
           receiver: {
             phone: null,
@@ -1075,7 +1124,7 @@ export class PaymentService {
           transferContent: deposit.depositCode,
           instructions: [
             'Mở ứng dụng ngân hàng hoặc ví hỗ trợ quét VietQR.',
-            'Quét mã QR bên dưới và kiểm tra đúng số tiền trước khi xác nhận.',
+            `Quét mã QR ${deposit.bankName ?? 'ngân hàng'} bên dưới và kiểm tra đúng số tiền trước khi xác nhận.`,
             `Bắt buộc giữ nguyên nội dung ${deposit.depositCode} để hệ thống tự đối soát.`,
             'Sau khi ngân hàng báo thành công, ví sẽ tự cập nhật trong ít giây khi webhook trả về.',
           ],
@@ -1172,9 +1221,9 @@ export class PaymentService {
     return this.depositsRepository.save(deposit);
   }
 
-  private async refreshVcbQrDeposit(
+  private async refreshBankQrDeposit(
     deposit: DepositEntity,
-    config: VcbQrConfig,
+    config: BankQrConfig,
   ) {
     const nextQrUrl = this.vietQrService.generateQrUrl({
       bankCode: config.bankCode,
@@ -1239,8 +1288,14 @@ export class PaymentService {
     return candidates.flatMap((item) =>
       this.normalizeBankTransaction(item, {
         source: 'sepay',
-        transactionIdKeys: ['referenceNumber', 'reference_number', 'id'],
+        transactionIdKeys: [
+          'referenceNumber',
+          'reference_number',
+          'referenceCode',
+          'id',
+        ],
         amountKeys: ['transferAmount', 'transfer_amount', 'amount'],
+        paymentCodeKeys: ['code'],
         descriptionKeys: ['content', 'description'],
         occurredAtKeys: ['transactionDate', 'transaction_date', 'createdAt'],
       }),
@@ -1253,6 +1308,7 @@ export class PaymentService {
       source: BankWebhookSource;
       transactionIdKeys: string[];
       amountKeys: string[];
+      paymentCodeKeys?: string[];
       descriptionKeys: string[];
       occurredAtKeys: string[];
     },
@@ -1263,6 +1319,9 @@ export class PaymentService {
 
     const transactionId = this.readFirstString(input, options.transactionIdKeys);
     const amount = this.readFirstNumber(input, options.amountKeys);
+    const paymentCode = this.normalizeReceivedDepositCode(
+      this.readFirstString(input, options.paymentCodeKeys ?? []),
+    );
     const description =
       this.readFirstString(input, options.descriptionKeys) ?? '';
     const occurredAt = this.readDate(
@@ -1277,6 +1336,7 @@ export class PaymentService {
       {
         transactionId,
         amount,
+        paymentCode,
         description,
         occurredAt,
         raw: input,
@@ -1285,7 +1345,10 @@ export class PaymentService {
     ];
   }
 
-  private calculateCreditedVcbAmount(actualAmount: number, expectedAmount: number) {
+  private calculateCreditedBankAmount(
+    actualAmount: number,
+    expectedAmount: number,
+  ) {
     if (actualAmount <= 0 || expectedAmount <= 0) {
       return 0;
     }
@@ -1293,7 +1356,7 @@ export class PaymentService {
     return Math.min(Math.floor(actualAmount), Math.floor(expectedAmount));
   }
 
-  private buildVcbWebhookNote(
+  private buildBankWebhookNote(
     actualAmount: number,
     expectedAmount: number,
     creditedAmount: number,
@@ -1339,6 +1402,20 @@ export class PaymentService {
     return [...new Set(values.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))]
       .map((value) => Math.floor(value))
       .sort((left, right) => left - right);
+  }
+
+  private normalizeReceivedDepositCode(value: string | null | undefined) {
+    if (!value) {
+      return null;
+    }
+
+    const normalized = value.toUpperCase().trim().replace(/[\s-]/g, '');
+
+    if (/^NAP[A-Z0-9]{6}$/.test(normalized)) {
+      return normalized;
+    }
+
+    return this.depositCodeService.parseDepositCode(normalized);
   }
 
   private normalizePage(page: number) {

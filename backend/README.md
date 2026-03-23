@@ -70,3 +70,43 @@ SMTP_IGNORE_TLS=false
 ```
 
 Nếu chưa cấu hình SMTP, backend sẽ bỏ qua việc gửi mail và vẫn trả dev token khi chạy ngoài production để bạn test flow reset password.
+
+## Payment QR
+
+Repo hiện hỗ trợ song song:
+
+- `momo_qr`: user quét QR MoMo, bấm xác nhận, admin duyệt thủ công.
+- `vcb_qr`: user quét VietQR Vietcombank, SePay gửi webhook về backend để auto cộng ví.
+- `ocb_qr`: user quét VietQR OCB, SePay gửi webhook về backend để auto cộng ví.
+
+Cấu hình tối thiểu cho `vcb_qr` trong `backend/.env`:
+
+```bash
+VCB_QR_BANK_CODE=970436
+VCB_QR_BANK_NAME=Vietcombank
+VCB_QR_ACCOUNT_NUMBER=0123456789
+VCB_QR_ACCOUNT_NAME=NGUYEN VAN A
+VCB_QR_TEMPLATE=compact2
+
+OCB_QR_BANK_CODE=970448
+OCB_QR_BANK_NAME=OCB
+OCB_QR_ACCOUNT_NUMBER=0123456789
+OCB_QR_ACCOUNT_NAME=NGUYEN VAN A
+OCB_QR_TEMPLATE=compact2
+
+SEPAY_API_KEY=your-sepay-api-key
+```
+
+Webhook SePay cần trỏ về:
+
+```bash
+POST https://your-domain.com/api/payment/webhook/sepay
+```
+
+Backend sẽ đọc API key ở header:
+
+```bash
+Authorization: Apikey <SEPAY_API_KEY>
+```
+
+Bạn không cần cấu hình Casso nếu chỉ muốn dùng SePay.

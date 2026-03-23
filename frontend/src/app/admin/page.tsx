@@ -57,7 +57,7 @@ function AdminDepositsScreen() {
           </p>
           <CardTitle className="text-white">Duyệt deposit MoMo QR</CardTitle>
           <CardDescription className="text-white/78">
-            Chỉ các giao dịch MoMo QR cần đối soát thủ công mới xuất hiện tại đây. Luồng VCB QR sẽ tự cộng ví khi webhook khớp.
+            Chỉ các giao dịch MoMo QR cần đối soát thủ công mới xuất hiện tại đây. Các luồng QR ngân hàng như VCB hoặc OCB sẽ tự cộng ví khi webhook khớp.
           </CardDescription>
         </CardHeader>
       </Card>
