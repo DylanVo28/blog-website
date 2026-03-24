@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  NotFoundException,
   Param,
   Post,
   Query,
@@ -29,12 +30,13 @@ export class AuthController {
     private readonly socialAuthService: SocialAuthService,
   ) {}
 
-  @Get(':provider(google|github)')
+  @Get(':provider')
   async redirectToProvider(
-    @Param('provider') provider: SocialProvider,
+    @Param('provider') providerParam: string,
     @Res() res: Response,
     @Query('redirect') redirect?: string,
   ) {
+    const provider = this.parseProvider(providerParam);
     const authRequest = await this.socialAuthService.createAuthorizationRequest(
       provider,
       redirect,
@@ -51,15 +53,16 @@ export class AuthController {
     return res.redirect(authRequest.authorizationUrl);
   }
 
-  @Get(':provider(google|github)/callback')
+  @Get(':provider/callback')
   async handleSocialCallback(
-    @Param('provider') provider: SocialProvider,
+    @Param('provider') providerParam: string,
     @Req() req: Request,
     @Res() res: Response,
     @Query('code') code?: string,
     @Query('state') state?: string,
     @Query('error') error?: string,
   ) {
+    const provider = this.parseProvider(providerParam);
     const cookieName = this.socialAuthService.getStateCookieName(provider);
     const cookieState = this.readCookie(req.headers.cookie, cookieName);
     const frontendSuccessUrl = process.env.SOCIAL_AUTH_SUCCESS_URL
@@ -209,5 +212,13 @@ export class AuthController {
     }
 
     return decodeURIComponent(cookie.slice(name.length + 1));
+  }
+
+  private parseProvider(provider: string): SocialProvider {
+    if (provider === 'google' || provider === 'github') {
+      return provider;
+    }
+
+    throw new NotFoundException('Social provider not found.');
   }
 }
