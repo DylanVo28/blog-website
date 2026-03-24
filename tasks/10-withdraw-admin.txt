@@ -1,1 +1,151 @@
-đọc lẹ đi
+ Kế hoạch: Nâng cấp hệ thống Withdraw Admin                                                                                                                                                                                                        
+                                                        
+ Context
+
+ Hệ thống withdraw admin hiện tại (/admin page, tab "Withdraw") đã hoạt động cơ bản: hiển thị danh sách withdrawal, duyệt, và từ chối. Tuy nhiên còn thiếu:
+
+ 1. Lọc & tìm kiếm – Admin cần nhanh chóng tìm theo user, số tài khoản, hoặc lọc theo trạng thái
+ 2. Bug backend: rejectWithdrawal không lưu adminId vào approvedBy, nên không biết ai đã từ chối
+ 3. Xác nhận 2 bước khi approve/reject (tránh thao tác nhầm)
+
+ Tất cả filter sẽ chạy client-side (data đã load về, phù hợp với giới hạn 200 bản ghi).
+
+ ---
+ Các file cần sửa
+
+ Backend
+
+ - backend/src/modules/admin/admin.service.ts — sửa rejectWithdrawal()
+
+ Frontend
+
+ - frontend/src/app/admin/page.tsx — thêm filter bar + confirm dialog vào AdminWithdrawalsPanel
+
+ ---
+ Chi tiết thực hiện
+
+ 1. Bug fix backend — rejectWithdrawal không lưu adminId
+
+ File: backend/src/modules/admin/admin.service.ts
+
+ Hiện tại method rejectWithdrawal nhận adminId nhưng không dùng:
+ async rejectWithdrawal(withdrawalId: string, adminId: string) {
+   // ... adminId bị bỏ qua
+   withdrawal.status = 'rejected';
+   withdrawal.approvedBy = adminId; // ← BUG: dòng này THIẾU
+
+ Sửa: Thêm withdrawal.approvedBy = adminId; và withdrawal.completedAt = new Date(); như bên approveWithdrawal.
+
+ 2. Filter bar client-side — Frontend
+
+ Thêm state và UI filter vào AdminWithdrawalsPanel:
+
+ State cần thêm:
+
+ const [searchText, setSearchText] = useState('');          // tìm theo tên, email, SĐT, STK
+ const [statusFilter, setStatusFilter] = useState<'all' | WithdrawalStatus>('all');
+
+ Logic filter (useMemo):
+
+ const filteredItems = useMemo(() => {
+   return items.filter(item => {
+     // Filter theo status
+     if (statusFilter !== 'all' && item.status !== statusFilter) return false;
+     // Filter theo search text (case-insensitive)
+     if (searchText.trim()) {
+       const q = searchText.toLowerCase();
+       const matchName = item.user?.displayName?.toLowerCase().includes(q);
+       const matchEmail = item.user?.email?.toLowerCase().includes(q);
+       const matchBank = item.bankAccount?.toLowerCase().includes(q);
+       const matchHolder = item.bankHolder?.toLowerCase().includes(q);
+       if (!matchName && !matchEmail && !matchBank && !matchHolder) return false;
+     }
+     return true;
+   });
+ }, [items, searchText, statusFilter]);
+
+ UI filter bar (thêm phía trên danh sách):
+
+ - Input tìm kiếm (placeholder: "Tìm theo tên, email, số tài khoản...")
+ - Dropdown hoặc SegmentedControl chọn trạng thái: Tất cả / Chờ duyệt / Hoàn tất / Từ chối
+ - Hiển thị số kết quả: "Đang hiển thị X / Y withdrawal"
+ - Dùng components sẵn: Input từ @/components/ui/input, Select từ @/components/ui/select
+
+ Tách pending/processed từ filteredItems (không phải items):
+
+ const pendingItems = filteredItems.filter(item => item.status === 'pending');
+ const processedItems = filteredItems.filter(item => item.status !== 'pending');
+
+ 3. Confirm dialog trước khi approve/reject
+
+ Dùng AlertDialog từ @/components/ui/alert-dialog (shadcn/ui đã có sẵn):
+
+ // State trong AdminWithdrawalsPanel
+ const [confirmState, setConfirmState] = useState<{
+   open: boolean;
+   withdrawalId: string;
+   action: 'approve' | 'reject';
+   amount: number;
+   userName: string;
+ } | null>(null);
+
+ Flow:
+ 1. User click "Duyệt và hoàn tất" → setConfirmState mở dialog
+ 2. Dialog hiển thị: "Xác nhận duyệt rút 100,000đ cho Nguyễn Văn A?"
+ 3. User click "Xác nhận" → gọi mutation
+ 4. Dialog đóng
+
+ WithdrawalCard nhận onApprove và onReject props giữ nguyên — chỉ đổi implementation trong AdminWithdrawalsPanel để mở dialog thay vì gọi mutation trực tiếp.
+
+ ---
+ Sơ đồ UI mới
+
+ ┌─────────────────────────────────────────────────┐
+ │  Summary Cards: [Chờ duyệt] [Tiền cần chuyển] [Tổng trừ ví]  │
+ ├─────────────────────────────────────────────────┤
+ │  🔍 [Tìm theo tên, email, STK...]  [▼ Trạng thái: Tất cả]    │
+ │  Đang hiển thị 12 / 47 withdrawal                              │
+ ├─────────────────────────────────────────────────┤
+ │  PENDING QUEUE                                                  │
+ │  ┌──────── WithdrawalCard ─────────┐                           │
+ │  │ User info | Bank info | Stats   │ [Duyệt] [Từ chối]        │
+ │  └─────────────────────────────────┘                           │
+ ├─────────────────────────────────────────────────┤
+ │  RECENT HISTORY                                                 │
+ │  ┌──────── WithdrawalCard ─────────┐                           │
+ │  │ (trạng thái đã xử lý)           │ [Đã xử lý]               │
+ │  └─────────────────────────────────┘                           │
+ └─────────────────────────────────────────────────┘
+
+ Dialog xác nhận:
+ ┌──────────────────────────────────┐
+ │ Xác nhận duyệt withdrawal?       │
+ │                                  │
+ │ Duyệt rút 100,000đ cho           │
+ │ Nguyễn Văn A                     │
+ │ Hệ thống sẽ trừ ví và tạo       │
+ │ transaction withdrawal.          │
+ │                                  │
+ │ [Hủy]           [Xác nhận duyệt] │
+ └──────────────────────────────────┘
+
+ ---
+ Thứ tự thực hiện
+
+ 1. Fix backend rejectWithdrawal — thêm approvedBy và completedAt
+ 2. Thêm filter state + useMemo vào AdminWithdrawalsPanel
+ 3. Render filter bar UI (Input + Select)
+ 4. Cập nhật section renders dùng filteredItems thay items
+ 5. Thêm AlertDialog + confirmState cho approve/reject
+ 6. Cập nhật summary cards dùng filteredItems.filter(pending) để phản ánh filter
+
+ ---
+ Verification
+
+ 1. Khởi động backend: cd backend && npm run start:dev
+ 2. Khởi động frontend: cd frontend && npm run dev
+ 3. Đăng nhập với tài khoản admin → vào /admin
+ 4. Test filter: nhập tên user, đổi dropdown status → danh sách lọc đúng
+ 5. Test confirm dialog: click "Duyệt" → dialog hiện → cancel không có gì → confirm → withdrawal approved
+ 6. Test reject: kiểm tra DB withdrawals.approved_by được lưu adminId
+ 7. Test summary cards: khi filter còn 1 pending item, summary cards cập nhật đúng

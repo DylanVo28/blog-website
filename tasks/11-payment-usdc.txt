@@ -1,0 +1,1 @@
+tạo cho tôi task, thiết kế hệ thống payment bằng usdc, bao gồm cả backend và frontend.

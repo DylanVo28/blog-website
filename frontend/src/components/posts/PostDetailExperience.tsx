@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PostDetail } from "@/components/posts/PostDetail";
@@ -19,6 +19,40 @@ type DetailTab = "questions" | "comments";
 export function PostDetailExperience({ post }: PostDetailExperienceProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("questions");
   const [questionPrefill, setQuestionPrefill] = useState<QuestionPrefill | null>(null);
+
+  const syncTabWithHash = useEffectEvent(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const { hash } = window.location;
+
+    if (hash === "#comment-section") {
+      setActiveTab("comments");
+
+      window.setTimeout(() => {
+        document.getElementById("comment-section")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 40);
+
+      return;
+    }
+
+    if (hash === "#question-section") {
+      setActiveTab("questions");
+    }
+  });
+
+  useEffect(() => {
+    syncTabWithHash();
+    window.addEventListener("hashchange", syncTabWithHash);
+
+    return () => {
+      window.removeEventListener("hashchange", syncTabWithHash);
+    };
+  }, []);
 
   useEffect(() => {
     if (questionPrefill) {
@@ -74,17 +108,19 @@ export function PostDetailExperience({ post }: PostDetailExperienceProps) {
         </TabsContent>
 
         <TabsContent value="comments">
-          <CommentSection
-            postId={post.id}
-            onSwitchToQuestion={(content) => {
-              setActiveTab("questions");
-              setQuestionPrefill({
-                content,
-                target: "author",
-                nonce: Date.now(),
-              });
-            }}
-          />
+          <div id="comment-section">
+            <CommentSection
+              postId={post.id}
+              onSwitchToQuestion={(content) => {
+                setActiveTab("questions");
+                setQuestionPrefill({
+                  content,
+                  target: "author",
+                  nonce: Date.now(),
+                });
+              }}
+            />
+          </div>
         </TabsContent>
       </Tabs>
     </article>

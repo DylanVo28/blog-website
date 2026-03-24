@@ -6,6 +6,7 @@ import { isUnauthorizedError } from "@/lib/api";
 import { authApi } from "@/services/api/auth.api";
 import { walletApi } from "@/services/api/wallet.api";
 import { useAuthStore } from "@/stores/authStore";
+import { useNotificationStore } from "@/stores/notificationStore";
 import { useWalletStore } from "@/stores/walletStore";
 
 export function SessionBootstrapper() {
@@ -17,6 +18,7 @@ export function SessionBootstrapper() {
   const setBalance = useWalletStore((state) => state.setBalance);
   const setLoading = useWalletStore((state) => state.setLoading);
   const resetWallet = useWalletStore((state) => state.reset);
+  const resetNotifications = useNotificationStore((state) => state.reset);
 
   const meQuery = useQuery({
     queryKey: ["auth", "me", accessToken],
@@ -56,15 +58,17 @@ export function SessionBootstrapper() {
   useEffect(() => {
     if (hydrated && !accessToken) {
       resetWallet();
+      resetNotifications();
     }
-  }, [accessToken, hydrated, resetWallet]);
+  }, [accessToken, hydrated, resetNotifications, resetWallet]);
 
   useEffect(() => {
     if (isUnauthorizedError(meQuery.error) || isUnauthorizedError(walletQuery.error)) {
       logout();
       resetWallet();
+      resetNotifications();
     }
-  }, [logout, meQuery.error, resetWallet, walletQuery.error]);
+  }, [logout, meQuery.error, resetNotifications, resetWallet, walletQuery.error]);
 
   return null;
 }

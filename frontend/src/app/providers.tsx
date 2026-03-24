@@ -5,6 +5,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { SessionBootstrapper } from "@/components/auth/SessionBootstrapper";
+import { SocketProvider } from "@/components/providers/SocketProvider";
 import { Toaster } from "@/components/ui/toast";
 
 interface ProvidersProps {
@@ -31,7 +32,7 @@ export function Providers({ children }: ProvidersProps) {
   return (
     <QueryClientProvider client={queryClient}>
       <SessionBootstrapper />
-      {children}
+      <SocketProvider>{children}</SocketProvider>
       <Toaster />
       {process.env.NODE_ENV === "development" ? (
         <ReactQueryDevtools initialIsOpen={false} />
