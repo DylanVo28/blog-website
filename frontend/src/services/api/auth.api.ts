@@ -7,6 +7,10 @@ import type {
   LoginPayload,
   RegisterPayload,
   ResetPasswordPayload,
+  SendVerificationPayload,
+  SendVerificationResult,
+  VerifyEmailPayload,
+  VerifyEmailResult,
   VerifyResetPasswordPayload,
   VerifyResetPasswordResult,
 } from "@/types/auth.types";
@@ -21,12 +25,20 @@ export const authApi = {
   login: (payload: LoginPayload) =>
     apiClient.post<ApiResponse<AuthSession>>("/auth/login", payload),
 
+  sendVerification: (payload: SendVerificationPayload) =>
+    apiClient.post<ApiResponse<SendVerificationResult>>(
+      "/auth/send-verification",
+      payload,
+    ),
+
+  verifyEmail: (payload: VerifyEmailPayload) =>
+    apiClient.post<ApiResponse<VerifyEmailResult>>("/auth/verify-email", payload),
+
+  resendOtp: (payload: SendVerificationPayload) =>
+    apiClient.post<ApiResponse<SendVerificationResult>>("/auth/resend-otp", payload),
+
   register: (payload: RegisterPayload) =>
-    apiClient.post<ApiResponse<AuthSession>>("/auth/register", {
-      email: payload.email,
-      password: payload.password,
-      displayName: payload.displayName,
-    }),
+    apiClient.post<ApiResponse<AuthSession>>("/auth/register", payload),
 
   logout: () =>
     apiClient.post<ApiResponse<LogoutResult>>("/auth/logout"),

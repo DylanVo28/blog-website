@@ -253,11 +253,13 @@ export class AdminService {
       items: items.map((user) => ({
         id: user.id,
         email: user.email,
+        username: user.username,
         displayName: user.displayName,
         avatarUrl: user.avatarUrl,
         bio: user.bio,
         role: user.role,
         isVerified: user.isVerified,
+        emailVerifiedAt: user.emailVerifiedAt,
         isBanned: Boolean(user.bannedAt),
         bannedAt: user.bannedAt,
         banReason: user.banReason,
@@ -289,7 +291,6 @@ export class AdminService {
       throw new NotFoundException('User not found.');
     }
 
-    user.isVerified = false;
     user.bannedAt = new Date();
     user.bannedBy = adminId;
     user.banReason = reason?.trim() || null;

@@ -194,6 +194,7 @@ export class WalletService {
           displayName: PLATFORM_SYSTEM_DISPLAY_NAME,
           role: 'admin',
           isVerified: true,
+          emailVerifiedAt: new Date(),
         }),
       );
     }

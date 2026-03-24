@@ -119,14 +119,17 @@ export class UsersService {
     return {
       id: user.id,
       email: user.email,
+      username: user.username,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
       bio: user.bio,
       role: user.role,
       isVerified: user.isVerified,
+      emailVerifiedAt: user.emailVerifiedAt,
       isBanned: Boolean(user.bannedAt),
       bannedAt: user.bannedAt,
       createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
     };
   }
 }

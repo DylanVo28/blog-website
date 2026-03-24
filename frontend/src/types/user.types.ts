@@ -12,6 +12,7 @@ export interface UserProfile extends AuthorInfo {
   email: string;
   role: UserRole;
   isVerified: boolean;
+  emailVerifiedAt?: string | null;
   isBanned?: boolean;
   bannedAt?: string | null;
   createdAt?: string;

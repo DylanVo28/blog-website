@@ -9,6 +9,9 @@ export class UserEntity {
   @Column({ unique: true, length: 255 })
   email!: string;
 
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  username!: string | null;
+
   @Column({ name: 'password_hash', length: 255 })
   passwordHash!: string;
 
@@ -26,6 +29,9 @@ export class UserEntity {
 
   @Column({ name: 'is_verified', default: false })
   isVerified!: boolean;
+
+  @Column({ name: 'email_verified_at', type: 'timestamptz' })
+  emailVerifiedAt!: Date;
 
   @Column({ name: 'reset_password_token', type: 'varchar', length: 255, nullable: true })
   resetPasswordToken!: string | null;

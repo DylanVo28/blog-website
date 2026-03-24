@@ -14,11 +14,32 @@ export interface LoginPayload {
   password: string;
 }
 
-export interface RegisterPayload {
+export interface SendVerificationPayload {
   email: string;
+}
+
+export interface SendVerificationResult {
+  email: string;
+  expires_in: number;
+  retry_after: number;
+}
+
+export interface VerifyEmailPayload {
+  email: string;
+  otp: string;
+}
+
+export interface VerifyEmailResult {
+  email: string;
+  verification_token: string;
+  token_expires_in: number;
+}
+
+export interface RegisterPayload {
+  verification_token: string;
   password: string;
   displayName: string;
-  username?: string;
+  username: string;
 }
 
 export interface ForgotPasswordPayload {

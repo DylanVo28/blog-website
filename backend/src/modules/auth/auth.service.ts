@@ -3,6 +3,9 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  GoneException,
+  HttpException,
+  HttpStatus,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -22,6 +25,10 @@ import { PasswordResetTokenEntity } from './entities/password-reset-token.entity
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResendOtpDto } from './dto/resend-otp.dto';
+import { SendVerificationDto } from './dto/send-verification.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
+import { EmailVerificationEntity } from './entities/email-verification.entity';
 import { VerifyResetTokenDto } from './dto/verify-reset-token.dto';
 
 interface AuthPayload {
@@ -31,8 +38,23 @@ interface AuthPayload {
   iat?: number;
 }
 
+interface EmailVerificationTokenPayload {
+  email: string;
+  verificationId: string;
+  type: 'email_verification';
+}
+
 @Injectable()
 export class AuthService {
+  private static readonly EMAIL_VERIFICATION_OTP_TTL_MINUTES = 5;
+  private static readonly EMAIL_VERIFICATION_OTP_TTL_SECONDS =
+    AuthService.EMAIL_VERIFICATION_OTP_TTL_MINUTES * 60;
+  private static readonly EMAIL_VERIFICATION_TOKEN_TTL_MINUTES = 15;
+  private static readonly EMAIL_VERIFICATION_TOKEN_TTL_SECONDS =
+    AuthService.EMAIL_VERIFICATION_TOKEN_TTL_MINUTES * 60;
+  private static readonly EMAIL_VERIFICATION_COOLDOWN_SECONDS = 60;
+  private static readonly EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR = 5;
+  private static readonly EMAIL_VERIFICATION_CLEANUP_RETENTION_HOURS = 24;
   private static readonly PASSWORD_RESET_TOKEN_TTL_MINUTES = 15;
   private static readonly PASSWORD_RESET_COOLDOWN_SECONDS = 60;
   private static readonly PASSWORD_RESET_MAX_REQUESTS_PER_HOUR = 3;
@@ -44,27 +66,206 @@ export class AuthService {
     private readonly mailService: MailService,
     @InjectRepository(UserEntity)
     private readonly usersRepository: Repository<UserEntity>,
+    @InjectRepository(EmailVerificationEntity)
+    private readonly emailVerificationsRepository: Repository<EmailVerificationEntity>,
     @InjectRepository(PasswordResetTokenEntity)
     private readonly passwordResetTokensRepository: Repository<PasswordResetTokenEntity>,
   ) {}
 
+  async sendVerification(dto: SendVerificationDto) {
+    await this.cleanupExpiredEmailVerifications();
+
+    const email = dto.email;
+    await this.ensureEmailIsAvailable(email);
+    await this.ensureVerificationCooldown(email);
+
+    const now = new Date();
+    const otpCode = this.generateOtp();
+    const expiresAt = new Date(
+      Date.now() + AuthService.EMAIL_VERIFICATION_OTP_TTL_SECONDS * 1000,
+    );
+
+    await this.emailVerificationsRepository
+      .createQueryBuilder()
+      .update(EmailVerificationEntity)
+      .set({ expiresAt: now })
+      .where('email = :email', { email })
+      .andWhere('verified_at IS NULL')
+      .andWhere('used_at IS NULL')
+      .execute();
+
+    await this.emailVerificationsRepository.save(
+      this.emailVerificationsRepository.create({
+        email,
+        otpHash: await hashPassword(otpCode),
+        expiresAt,
+        attempts: 0,
+        maxAttempts: 5,
+        verifiedAt: null,
+        usedAt: null,
+      }),
+    );
+
+    void this.mailService.sendEmailVerificationOtp({
+      to: email,
+      email,
+      otpCode,
+      expiresInMinutes: AuthService.EMAIL_VERIFICATION_OTP_TTL_MINUTES,
+    });
+
+    return {
+      email,
+      expires_in: AuthService.EMAIL_VERIFICATION_OTP_TTL_SECONDS,
+      retry_after: AuthService.EMAIL_VERIFICATION_COOLDOWN_SECONDS,
+      ...(process.env.NODE_ENV === 'production'
+        ? {}
+        : {
+            otpCode,
+            expiresAt,
+          }),
+    };
+  }
+
+  async resendOtp(dto: ResendOtpDto) {
+    await this.cleanupExpiredEmailVerifications();
+
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentRequestCount = await this.emailVerificationsRepository.count({
+      where: {
+        email: dto.email,
+        createdAt: MoreThan(oneHourAgo),
+      },
+    });
+
+    if (
+      recentRequestCount >=
+      AuthService.EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR
+    ) {
+      throw new HttpException(
+        'Bạn đã gửi quá nhiều mã OTP. Vui lòng thử lại sau 1 giờ.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    return this.sendVerification(dto);
+  }
+
+  async verifyEmail(dto: VerifyEmailDto) {
+    await this.cleanupExpiredEmailVerifications();
+
+    const verification = await this.findLatestEmailVerification(dto.email);
+
+    if (!verification || verification.isUsed || verification.isVerified) {
+      throw new GoneException(
+        'Mã OTP đã hết hạn hoặc không còn hiệu lực. Vui lòng gửi lại mã mới.',
+      );
+    }
+
+    if (verification.isExpired) {
+      throw new GoneException(
+        'Mã OTP đã hết hạn. Vui lòng gửi lại để nhận mã mới.',
+      );
+    }
+
+    if (verification.attempts >= verification.maxAttempts) {
+      throw new HttpException(
+        'Bạn đã nhập sai quá nhiều lần. Vui lòng gửi lại mã OTP mới.',
+        HttpStatus.LOCKED,
+      );
+    }
+
+    const isValidOtp = await verifyPassword(dto.otp, verification.otpHash);
+
+    if (!isValidOtp) {
+      verification.attempts += 1;
+      await this.emailVerificationsRepository.save(verification);
+
+      const remainingAttempts = verification.maxAttempts - verification.attempts;
+
+      if (remainingAttempts <= 0) {
+        throw new HttpException(
+          'Bạn đã nhập sai quá nhiều lần. Vui lòng gửi lại mã OTP mới.',
+          HttpStatus.LOCKED,
+        );
+      }
+
+      throw new BadRequestException(
+        `Mã OTP không đúng. Bạn còn ${remainingAttempts} lần thử.`,
+      );
+    }
+
+    verification.verifiedAt = new Date();
+    await this.emailVerificationsRepository.save(verification);
+
+    const verificationToken = await this.jwtService.signAsync(
+      {
+        email: verification.email,
+        verificationId: verification.id,
+        type: 'email_verification',
+      },
+      {
+        secret: this.configService.getOrThrow<string>('jwt.verificationSecret'),
+        expiresIn: AuthService.EMAIL_VERIFICATION_TOKEN_TTL_SECONDS,
+      },
+    );
+
+    return {
+      email: verification.email,
+      verification_token: verificationToken,
+      token_expires_in: AuthService.EMAIL_VERIFICATION_TOKEN_TTL_SECONDS,
+    };
+  }
+
   async register(dto: RegisterDto) {
+    const verificationPayload = await this.verifyEmailVerificationToken(
+      dto.verification_token,
+    );
+    const email = verificationPayload.email;
+    const username = dto.username;
     const existingUser = await this.usersRepository.findOne({
       where: {
-        email: dto.email.toLowerCase(),
+        email,
       },
     });
 
     if (existingUser) {
-      throw new ConflictException('Email already exists.');
+      throw new ConflictException('Email đã được đăng ký.');
     }
+
+    const existingUsername = await this.usersRepository.findOne({
+      where: {
+        username,
+      },
+    });
+
+    if (existingUsername) {
+      throw new ConflictException('Username đã tồn tại.');
+    }
+
+    const verification = await this.emailVerificationsRepository.findOne({
+      where: {
+        id: verificationPayload.verificationId,
+        email,
+      },
+    });
+
+    if (!verification || !verification.isVerified || verification.isUsed) {
+      throw new UnauthorizedException(
+        'Token xác thực không hợp lệ hoặc đã được sử dụng. Vui lòng xác thực email lại.',
+      );
+    }
+
+    const verifiedAt = verification.verifiedAt ?? new Date();
 
     const user = await this.dataSource.transaction(async (manager) => {
       const createdUser = manager.create(UserEntity, {
-        email: dto.email.toLowerCase(),
+        email,
+        username,
         passwordHash: await hashPassword(dto.password),
         displayName: dto.displayName,
         role: 'reader',
+        isVerified: true,
+        emailVerifiedAt: verifiedAt,
       });
 
       const savedUser = await manager.save(UserEntity, createdUser);
@@ -76,6 +277,16 @@ export class AuthService {
           totalEarned: '0',
           totalSpent: '0',
         }),
+      );
+
+      await manager.update(
+        EmailVerificationEntity,
+        {
+          id: verification.id,
+        },
+        {
+          usedAt: new Date(),
+        },
       );
 
       return savedUser;
@@ -357,14 +568,17 @@ export class AuthService {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         displayName: user.displayName,
         avatarUrl: user.avatarUrl,
         bio: user.bio,
         role: user.role,
         isVerified: user.isVerified,
+        emailVerifiedAt: user.emailVerifiedAt,
         isBanned: Boolean(user.bannedAt),
         bannedAt: user.bannedAt,
         createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
       },
       accessToken,
       refreshToken,
@@ -468,6 +682,32 @@ export class AuthService {
     return randomInt(100000, 1000000).toString();
   }
 
+  private async verifyEmailVerificationToken(rawToken: string) {
+    let payload: EmailVerificationTokenPayload;
+
+    try {
+      payload =
+        await this.jwtService.verifyAsync<EmailVerificationTokenPayload>(
+          rawToken,
+          {
+            secret: this.configService.getOrThrow<string>(
+              'jwt.verificationSecret',
+            ),
+          },
+        );
+    } catch {
+      throw new UnauthorizedException(
+        'Token xác thực không hợp lệ hoặc đã hết hạn. Vui lòng xác thực email lại.',
+      );
+    }
+
+    if (payload.type !== 'email_verification') {
+      throw new UnauthorizedException('Token xác thực không hợp lệ.');
+    }
+
+    return payload;
+  }
+
   private buildResetPasswordUrl(rawToken: string) {
     const frontendUrl =
       this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:3001';
@@ -498,6 +738,70 @@ export class AuthService {
   private async cleanupExpiredResetTokens() {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
     await this.passwordResetTokensRepository.delete({
+      createdAt: LessThan(cutoff),
+    });
+  }
+
+  private async ensureEmailIsAvailable(email: string) {
+    const existingUser = await this.usersRepository.findOne({
+      where: {
+        email,
+      },
+    });
+
+    if (existingUser) {
+      throw new ConflictException('Email đã được đăng ký.');
+    }
+  }
+
+  private async ensureVerificationCooldown(email: string) {
+    const lastRequest = await this.emailVerificationsRepository.findOne({
+      where: {
+        email,
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+
+    if (!lastRequest) {
+      return;
+    }
+
+    const elapsedSeconds =
+      (Date.now() - lastRequest.createdAt.getTime()) / 1000;
+
+    if (elapsedSeconds < AuthService.EMAIL_VERIFICATION_COOLDOWN_SECONDS) {
+      throw new HttpException(
+        `Vui lòng đợi ${Math.ceil(
+          AuthService.EMAIL_VERIFICATION_COOLDOWN_SECONDS - elapsedSeconds,
+        )} giây trước khi gửi lại mã OTP.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  private async findLatestEmailVerification(email: string) {
+    return this.emailVerificationsRepository.findOne({
+      where: {
+        email,
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+  }
+
+  private async cleanupExpiredEmailVerifications() {
+    const cutoff = new Date(
+      Date.now() -
+        AuthService.EMAIL_VERIFICATION_CLEANUP_RETENTION_HOURS *
+          60 *
+          60 *
+          1000,
+    );
+
+    await this.emailVerificationsRepository.delete({
       createdAt: LessThan(cutoff),
     });
   }

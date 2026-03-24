@@ -29,16 +29,26 @@ export const usernameSchema = z
   .trim()
   .min(3, "Username tối thiểu 3 ký tự.")
   .max(30, "Username tối đa 30 ký tự.")
-  .regex(/^[a-zA-Z0-9._-]+$/, "Username chỉ gồm chữ, số, dấu chấm hoặc gạch dưới.");
-
-export const optionalUsernameSchema = z
-  .union([usernameSchema, z.literal("")])
-  .optional()
-  .transform((value) => (value ? value : undefined));
+  .regex(
+    /^[a-zA-Z0-9_-]+$/,
+    "Username chỉ gồm chữ, số, dấu gạch ngang hoặc gạch dưới.",
+  );
 
 export const loginSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
+});
+
+export const emailVerificationSchema = z.object({
+  email: emailSchema,
+});
+
+export const otpVerificationSchema = z.object({
+  otp: z
+    .string()
+    .trim()
+    .length(6, "Mã OTP phải có đúng 6 chữ số.")
+    .regex(/^\d{6}$/, "Mã OTP chỉ gồm chữ số."),
 });
 
 export const forgotPasswordSchema = z.object({
@@ -57,10 +67,9 @@ export const resetPasswordSchema = z
   });
 
 export const registerSchema = z.object({
-  email: emailSchema,
-  password: passwordSchema,
+  password: strongPasswordSchema,
   displayName: displayNameSchema,
-  username: optionalUsernameSchema,
+  username: usernameSchema,
 });
 
 export const commentSchema = z.object({

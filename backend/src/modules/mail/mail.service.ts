@@ -10,6 +10,13 @@ interface PasswordResetEmailInput {
   expiresInMinutes: number;
 }
 
+interface EmailVerificationOtpInput {
+  to: string;
+  email: string;
+  otpCode: string;
+  expiresInMinutes: number;
+}
+
 interface PasswordChangedNotificationInput {
   to: string;
   userName: string;
@@ -31,6 +38,17 @@ export class MailService {
       html: this.renderPasswordResetEmail(data),
       subject: 'Dat lai mat khau - Inkline',
       text: this.renderPasswordResetText(data),
+      to: data.to,
+    });
+  }
+
+  async sendEmailVerificationOtp(
+    data: EmailVerificationOtpInput,
+  ): Promise<boolean> {
+    return this.sendMail({
+      html: this.renderEmailVerificationOtpEmail(data),
+      subject: 'Xac thuc email - Inkline',
+      text: this.renderEmailVerificationOtpText(data),
       to: data.to,
     });
   }
@@ -219,6 +237,52 @@ export class MailService {
     `;
   }
 
+  private renderEmailVerificationOtpEmail(
+    data: EmailVerificationOtpInput,
+  ): string {
+    const email = this.escapeHtml(data.email);
+    const otpCode = this.escapeHtml(data.otpCode);
+    const year = new Date().getFullYear();
+
+    return `
+      <div style="margin:0;padding:24px;background:#f4f1ea;font-family:Arial,sans-serif;color:#1d2a2f;">
+        <div style="max-width:640px;margin:0 auto;background:#fffaf2;border:1px solid #e8dcc8;border-radius:20px;overflow:hidden;">
+          <div style="padding:28px 32px;background:linear-gradient(135deg,#143642 0%,#1f6f8b 100%);color:#fff;">
+            <p style="margin:0;font-size:12px;letter-spacing:0.24em;text-transform:uppercase;opacity:0.85;">Inkline Security</p>
+            <h1 style="margin:12px 0 0;font-size:28px;line-height:1.3;">Xac thuc email truoc khi tao tai khoan</h1>
+          </div>
+
+          <div style="padding:32px;">
+            <p style="margin:0 0 16px;font-size:16px;line-height:1.7;">
+              Ban dang dang ky voi email <strong>${email}</strong>.
+            </p>
+            <p style="margin:0 0 18px;font-size:15px;line-height:1.7;">
+              Hay nhap ma OTP ben duoi de xac thuc email truoc khi hoan tat tao tai khoan.
+            </p>
+
+            <div style="margin:24px 0;padding:20px;border:1px dashed #1f6f8b;border-radius:16px;background:#eff8fb;text-align:center;">
+              <p style="margin:0 0 8px;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:#1f6f8b;">Ma OTP</p>
+              <p style="margin:0;font-size:32px;font-weight:700;letter-spacing:8px;color:#143642;">${otpCode}</p>
+            </div>
+
+            <div style="padding:16px;border-radius:14px;background:#fff1d8;color:#76520e;font-size:14px;line-height:1.7;">
+              Ma co hieu luc trong <strong>${data.expiresInMinutes} phut</strong>.
+              Khong chia se ma nay voi bat ky ai.
+            </div>
+
+            <p style="margin:24px 0 0;font-size:13px;line-height:1.7;color:#5c6b70;">
+              Neu ban khong thuc hien thao tac nay, vui long bo qua email nay.
+            </p>
+          </div>
+
+          <div style="padding:18px 32px;background:#f3ece1;font-size:12px;color:#6c7477;">
+            © ${year} Inkline. Day la email tu dong phuc vu xac thuc tai khoan.
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private renderPasswordResetText(data: PasswordResetEmailInput): string {
     return [
       `Xin chao ${data.userName},`,
@@ -227,6 +291,20 @@ export class MailService {
       `Link dat lai mat khau: ${data.resetUrl}`,
       `OTP: ${data.otpCode}`,
       `Thong tin nay se het han sau ${data.expiresInMinutes} phut.`,
+      '',
+      'Neu ban khong yeu cau thao tac nay, vui long bo qua email nay.',
+    ].join('\n');
+  }
+
+  private renderEmailVerificationOtpText(
+    data: EmailVerificationOtpInput,
+  ): string {
+    return [
+      `Xin chao ${data.email},`,
+      '',
+      'Ban dang tao tai khoan Inkline va can xac thuc email truoc khi dang ky.',
+      `OTP: ${data.otpCode}`,
+      `Ma co hieu luc trong ${data.expiresInMinutes} phut.`,
       '',
       'Neu ban khong yeu cau thao tac nay, vui long bo qua email nay.',
     ].join('\n');

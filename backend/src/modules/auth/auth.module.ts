@@ -9,6 +9,7 @@ import { MailModule } from '../mail/mail.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { EmailVerificationEntity } from './entities/email-verification.entity';
 import { PasswordResetTokenEntity } from './entities/password-reset-token.entity';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -21,6 +22,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     TypeOrmModule.forFeature([
       UserEntity,
       WalletEntity,
+      EmailVerificationEntity,
       PasswordResetTokenEntity,
     ]),
     JwtModule.registerAsync({

@@ -16,6 +16,9 @@ type RetryableRequest = InternalAxiosRequestConfig & {
 const UNAUTHENTICATED_AUTH_PATHS = [
   "/auth/login",
   "/auth/register",
+  "/auth/send-verification",
+  "/auth/verify-email",
+  "/auth/resend-otp",
   "/auth/password/forgot",
   "/auth/password/reset",
   "/auth/password/verify-token",

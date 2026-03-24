@@ -6,10 +6,10 @@ export default function RegisterPage() {
   return (
     <AuthShell
       badge="Đăng ký"
-      title="Tạo một hồ sơ mới để bắt đầu hệ sinh thái blog trả phí."
-      description="Sau khi đăng ký thành công, frontend sẽ tự tạo phiên đăng nhập và kéo số dư ví mặc định từ backend."
-      helperTitle="Một form, nhiều nền móng"
-      helperDescription="Register page này đang bám theo backend thật: email, display name và password. Username public sẽ nối tiếp khi backend bổ sung schema."
+      title="Xác thực email trước, rồi tạo tài khoản trong một flow liền mạch."
+      description="Trang đăng ký giờ đi theo 3 bước: gửi OTP vào email, xác thực mã, rồi mới hoàn tất hồ sơ và tự đăng nhập."
+      helperTitle="Bảo vệ ngay từ bước đầu"
+      helperDescription="OTP giúp chặn account ảo trước khi ghi user vào database, đồng thời backend chỉ cho phép register khi kèm verification token còn hạn."
       footer={
         <p>
           Đã có tài khoản?{" "}

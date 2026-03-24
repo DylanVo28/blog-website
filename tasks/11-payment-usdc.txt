@@ -1,1 +1,833 @@
-tạo cho tôi task, thiết kế hệ thống payment bằng usdc, bao gồm cả backend và frontend.
+THIET KE HE THONG PAYMENT BANG USDC
+
+Muc tieu
+
+Them 1 phuong thuc nap tien moi bang USDC vao he thong wallet hien tai, bao gom:
+
+1. User tao yeu cau nap tien tren frontend
+2. He thong tra ve so USDC chinh xac can chuyen + dia chi nhan + QR
+3. Backend tu dong theo doi blockchain, xac nhan giao dich, cong tien vao vi noi bo
+4. Admin co man hinh review cac case lech so tien / sai token / can xu ly thu cong
+5. Toan bo flow phai ghep duoc vao stack hien co: NestJS + TypeORM + BullMQ + Next.js + React Query + Socket
+
+Quyet dinh kien truc cho phase 1
+
+Khong nen dung "moi deposit = 1 vi EVM rieng" ngay tu dau, vi se phat sinh bai toan sweep USDC va cap gas native token cho tung vi con.
+
+Phuong an de ship nhanh, an toan va phu hop codebase hien tai:
+
+1. Chi ho tro 1 chain duy nhat trong phase 1
+   De xuat dat ten generic la `usdc`, nhung config chi tro den 1 network duy nhat, vi du `base` hoac `polygon`.
+
+2. Dung 1 treasury address co dinh
+   User chuyen USDC vao 1 dia chi he thong duy nhat.
+
+3. Match giao dich bang "so USDC chinh xac"
+   Tuong tu noi dung chuyen khoan cua bank QR, he thong tao 1 quote USDC exact cho moi deposit.
+   Vi du:
+   - User muon nap 100.000d
+   - Rate khoa tai thoi diem tao deposit = 25.000 VND / 1 USDC
+   - So USDC co ban = 4.000000
+   - He thong gan suffix duy nhat -> 4.000137 USDC
+   - User phai chuyen dung 4.000137 USDC vao treasury address
+
+4. Vi noi bo van giu don vi VND nhu hien tai
+   `deposits.amount` tiep tuc la so tien cong vao vi noi bo.
+   USDC chi la payment rail, khong doi toan bo wallet sang crypto.
+
+5. Auto-credit chi khi match exact amount + dung token + dung network + du confirmations
+   Moi truong hop sai lech dua vao `review_required` de admin xu ly.
+
+6. Khong bat user connect wallet o phase 1
+   Frontend chi can hien:
+   - so USDC can chuyen
+   - network
+   - treasury address
+   - QR / deep link
+   - trang thai on-chain
+   - nut "Kiem tra lai" neu user muon refresh som
+
+7. Can admin fallback
+   Vi giao dich on-chain co the gap underpayment, overpayment, tx den sau khi quote het han, gui sai token, hoac watcher bo lo.
+
+------------------------------------------------------------------
+FLOW TONG QUAN
+
+User Wallet Page             Backend Payment Service              Blockchain Watcher          Admin
+----------------             -----------------------              ------------------          -----
+1. Chon "USDC"   ------->   2. Tao deposit session
+   + chon menh gia          - lock rate VND/USDC
+                            - tao quoted USDC exact
+                            - luu deposit pending
+                            - tra ve address + QR + instructions
+
+3. Hien thi QR/address <--- 4. Response cho frontend
+
+5. User chuyen USDC  ------------------------------------------------------> 6. Transfer event
+
+                                                        7. Watcher scan log
+                                                        - dung token contract
+                                                        - dung treasury address
+                                                        - amount = quoted amount?
+                                                        - confirmations du chua?
+
+8. Cap nhat status <----------------------------------- 9. pending -> detected -> confirming
+   qua polling/socket                                       -> completed / review_required
+
+10. Khi du confirmations:
+    - credit wallet
+    - tao transaction type=deposit
+    - emit wallet update socket
+    - gui notification
+
+11. Neu sai lech:
+    - mark review_required
+    - admin vao /admin review va xu ly thu cong
+
+------------------------------------------------------------------
+PHAM VI PHASE 1
+
+Bao gom:
+
+1. USDC deposit vao wallet noi bo
+2. 1 network duy nhat
+3. Exact-match bang so tien quoted
+4. Auto confirm sau N block confirmations
+5. Admin review fallback
+6. Frontend user flow + admin flow
+
+Chua bao gom:
+
+1. Multi-chain USDC
+2. Auto-sweep tu nhieu address con
+3. Refund on-chain tu dong
+4. Wallet connect / ky giao dich trong app
+5. Fiat off-ramp
+
+------------------------------------------------------------------
+DATABASE SCHEMA
+
+Khuyen nghi: tiep tuc dung bang `deposits` lam source of truth, khong tao bang payment rieng cho MVP.
+
+1. Mo rong `PAYMENT_METHODS`
+
+- them `usdc`
+
+2. Mo rong `DEPOSIT_STATUSES`
+
+De xuat bo status moi:
+
+- `pending`
+- `detected`
+- `confirming`
+- `completed`
+- `failed`
+- `expired`
+- `review_required`
+- `user_confirmed`
+
+Ghi chu:
+
+- `user_confirmed` chi tiep tuc dung cho `momo_qr`
+- `detected` / `confirming` / `review_required` phuc vu rieng cho USDC
+
+3. Migration de them cot cho USDC
+
+ALTER TABLE deposits
+  ADD COLUMN receiver_address VARCHAR(80),
+  ADD COLUMN sender_address VARCHAR(80),
+  ADD COLUMN network_code VARCHAR(20),
+  ADD COLUMN asset_symbol VARCHAR(20),
+  ADD COLUMN asset_decimals INTEGER,
+  ADD COLUMN token_contract VARCHAR(80),
+  ADD COLUMN quoted_asset_amount_atomic BIGINT,
+  ADD COLUMN received_asset_amount_atomic BIGINT,
+  ADD COLUMN quote_rate_vnd BIGINT,
+  ADD COLUMN tx_hash VARCHAR(100),
+  ADD COLUMN tx_nonce BIGINT,
+  ADD COLUMN block_number BIGINT,
+  ADD COLUMN confirmations INTEGER DEFAULT 0,
+  ADD COLUMN review_reason VARCHAR(50),
+  ADD COLUMN detected_at TIMESTAMPTZ;
+
+CREATE INDEX idx_deposits_usdc_status
+  ON deposits(payment_method, status, created_at DESC);
+
+CREATE INDEX idx_deposits_usdc_tx_hash
+  ON deposits(tx_hash)
+  WHERE tx_hash IS NOT NULL;
+
+CREATE INDEX idx_deposits_usdc_quote
+  ON deposits(payment_method, network_code, quoted_asset_amount_atomic)
+  WHERE payment_method = 'usdc';
+
+Co the them unique partial index cho active quotes:
+
+CREATE UNIQUE INDEX idx_deposits_usdc_active_unique_quote
+  ON deposits(payment_method, network_code, quoted_asset_amount_atomic)
+  WHERE payment_method = 'usdc'
+    AND status IN ('pending', 'detected', 'confirming');
+
+4. Bang cursor de scan blockchain
+
+Them bang nho de luu block da quet:
+
+CREATE TABLE payment_chain_cursors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider VARCHAR(30) NOT NULL,          -- 'usdc'
+  network_code VARCHAR(20) NOT NULL,      -- 'base'
+  token_contract VARCHAR(80) NOT NULL,
+  last_scanned_block BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (provider, network_code, token_contract)
+);
+
+Ly do:
+
+- watcher khong phai scan lai tu block 0
+- de retry an toan neu service restart
+
+5. Quy uoc du lieu
+
+- `amount`: so tien cong vao wallet noi bo (VND)
+- `quoted_asset_amount_atomic`: so USDC user phai gui, don vi atomic 10^-6
+- `received_asset_amount_atomic`: so USDC he thong thuc nhan tren chain
+- `quote_rate_vnd`: rate da khoa tai luc tao deposit
+
+Tuyet doi khong dung float cho USDC o backend.
+
+------------------------------------------------------------------
+BACKEND - THIET KE CHI TIET
+
+1. Config moi trong `backend/src/config/payment.config.ts`
+
+Them block `usdc`:
+
+- `enabled`
+- `networkCode`
+- `chainId`
+- `rpcHttpUrl`
+- `rpcWsUrl` (optional)
+- `tokenContract`
+- `tokenSymbol` = `USDC`
+- `tokenDecimals` = `6`
+- `treasuryAddress`
+- `confirmationsRequired`
+- `expireMinutes`
+- `minAmount`
+- `maxAmount`
+- `allowedAmounts`
+- `quoteRateVnd`
+- `scanIntervalSeconds`
+- `explorerTxBaseUrl`
+- `explorerAddressBaseUrl`
+
+Ghi chu:
+
+- Phase 1 dung rate config tay (`quoteRateVnd`) de giam complexity
+- Phase 2 moi tinh den rate provider ben ngoai
+
+2. File can them / sua o backend
+
+Sua:
+
+- `backend/package.json` (them client EVM, de xuat `viem`)
+- `backend/src/common/constants/index.ts`
+- `backend/src/config/payment.config.ts`
+- `backend/src/modules/wallet/entities/deposit.entity.ts`
+- `backend/src/modules/payment/dto/create-deposit.dto.ts`
+- `backend/src/modules/payment/payment.service.ts`
+- `backend/src/modules/payment/payment.controller.ts`
+- `backend/src/jobs/job.constants.ts`
+- `backend/src/jobs/job-queue.service.ts`
+- `backend/src/jobs/payment.processor.ts`
+
+Them moi:
+
+- `backend/src/modules/payment/services/usdc-quote.service.ts`
+- `backend/src/modules/payment/services/usdc-qr.service.ts`
+- `backend/src/modules/payment/services/usdc-watcher.service.ts`
+- `backend/src/modules/payment/dto/rescan-usdc-deposit.dto.ts` (neu can)
+- `backend/src/database/migrations/<timestamp>-AddUsdcPaymentMethod.ts`
+- `backend/src/modules/payment/entities/payment-chain-cursor.entity.ts` hoac dat trong module phu hop
+
+Thu vien de xuat:
+
+- Backend: `viem`
+- Frontend: khong bat buoc them package moi neu chi render du lieu backend tra ve
+
+3. Quote service
+
+`UsdcQuoteService` chiu trach nhiem:
+
+1. Nhan `amount` VND
+2. Lay `quoteRateVnd`
+3. Tinh `baseAtomicAmount`
+4. Gan suffix unique de tranh trung quote dang active
+5. Tra ve:
+   - `creditedAmountVnd`
+   - `quotedAssetAmountAtomic`
+   - `quotedAssetDisplay`
+   - `rateVnd`
+
+Pseudo:
+
+```ts
+const baseAtomicAmount = Math.ceil((amountVnd * 1_000_000) / rateVnd);
+const uniqueSuffix = await allocateUniqueSuffix(); // vi du 137
+const quotedAtomicAmount = baseAtomicAmount + uniqueSuffix;
+```
+
+Rule:
+
+- Chi uniqueness trong tap active deposits
+- Neu suffix clash thi retry
+- Khong duoc lam quoted amount vuot max business rule
+
+4. QR service
+
+`UsdcQrService` tao:
+
+- `raw`: payload cho QR
+- `deepLink`: wallet-compatible link
+- `imageDataUrl`: QR base64
+
+Payload toi thieu can encode:
+
+- network / chainId
+- token contract
+- treasury address
+- quoted exact amount
+
+Neu muon an toan, service tra ca:
+
+- `raw`
+- `deepLink`
+- `address`
+- `tokenContract`
+- `amountDisplay`
+
+Frontend khong tu tinh lai amount.
+
+5. Tao deposit USDC trong `PaymentService`
+
+Cap nhat `createDeposit()`:
+
+```ts
+switch (paymentMethod) {
+  case 'usdc':
+    return this.createUsdcDeposit(userId, dto.amount);
+  case 'momo_qr':
+  case 'vcb_qr':
+  case 'ocb_qr':
+    ...
+}
+```
+
+`createUsdcDeposit()`:
+
+1. validate config dang enable
+2. validate amount theo rule phase 1
+3. expire deposit qua han cua user neu co
+4. neu user da co 1 USDC deposit active thi tra ve ban ghi do thay vi tao moi
+5. tao quote USDC exact
+6. tao QR + deep link
+7. luu deposit:
+   - `paymentMethod = 'usdc'`
+   - `amount = VND credited`
+   - `receiverAddress = treasury address`
+   - `networkCode`
+   - `assetSymbol = 'USDC'`
+   - `assetDecimals = 6`
+   - `tokenContract`
+   - `quotedAssetAmountAtomic`
+   - `quoteRateVnd`
+   - `status = 'pending'`
+   - `expiresAt`
+8. enqueue job expire deposit nhu flow hien tai
+9. return deposit + payment info cho frontend
+
+6. Response shape cho USDC
+
+Nen mo rong `formatDepositResponse()` thanh response chung:
+
+```ts
+{
+  deposit: {...},
+  payment: {
+    method: 'usdc',
+    autoConfirm: true,
+    receiver: {
+      address: '0x...',
+      network: 'base',
+      tokenSymbol: 'USDC',
+      tokenContract: '0x...',
+    },
+    asset: {
+      symbol: 'USDC',
+      decimals: 6,
+      quotedAmountAtomic: '4000137',
+      quotedAmountDisplay: '4.000137',
+    },
+    quote: {
+      creditedAmountVnd: 100000,
+      rateVnd: 25000,
+      expiresAt: '...'
+    },
+    qr: {
+      imageDataUrl: 'data:image/png;base64,...',
+      deepLink: '...',
+      raw: '...'
+    },
+    explorer: {
+      addressUrl: '...',
+      txBaseUrl: '...'
+    },
+    instructions: [...]
+  }
+}
+```
+
+Nen refactor type frontend tu `ManualDeposit*` thanh `Deposit*` tong quat, vi tu nay khong con dung nua khi ho tro USDC.
+
+7. Watcher service
+
+`UsdcWatcherService` co 2 cach:
+
+1. Polling RPC bang HTTP
+2. Subscription bang WebSocket
+
+Cho repo nay, uu tien polling + BullMQ de de van hanh:
+
+- them job `sync-usdc-transfers`
+- repeat moi 15-30 giay
+- luu `last_scanned_block` trong `payment_chain_cursors`
+- doc `Transfer` logs cua token contract
+- filter `to == treasuryAddress`
+- tim deposit active co `quoted_asset_amount_atomic == value`
+
+Implementation hint:
+
+- dung `viem` public client
+- query `getLogs` theo ABI event `Transfer(address indexed from, address indexed to, uint256 value)`
+- sau do goi `getBlockNumber()` de tinh confirmations
+
+Flow matching:
+
+1. Lay block range chua scan
+2. Query logs token `Transfer(from, to, value)`
+3. Bo qua log khong dung treasury address
+4. Match bang:
+   - `paymentMethod = 'usdc'`
+   - `networkCode` khop
+   - `quotedAssetAmountAtomic = value`
+   - status nam trong `pending | detected | confirming`
+   - `expiresAt` chua qua han hoac co chinh sach grace window
+5. Neu khong match -> bo qua
+6. Neu match:
+   - luu `txHash`
+   - `senderAddress`
+   - `receivedAssetAmountAtomic`
+   - `blockNumber`
+   - `detectedAt`
+   - tinh confirmations
+7. Neu confirmations < required -> `confirming`
+8. Neu confirmations >= required -> goi `completeUsdcDeposit()`
+
+8. Complete deposit on-chain
+
+`completeUsdcDeposit()` phai chay trong transaction DB:
+
+1. lock deposit row
+2. verify lai:
+   - payment method = usdc
+   - status chua completed
+   - amount on-chain = quoted amount
+   - token contract dung
+3. lock wallet row
+4. cong `wallet.balance += deposit.amount`
+5. update deposit:
+   - `status = 'completed'`
+   - `completedAt = now`
+   - `confirmations = ...`
+   - `webhookData` / raw on-chain metadata
+6. tao `transactions` row:
+   - `type = 'deposit'`
+   - `status = 'completed'`
+   - `referenceType = 'deposit'`
+   - `metadata.provider = 'usdc'`
+   - `metadata.network = networkCode`
+   - `metadata.txHash = txHash`
+   - `metadata.quotedAssetAmountAtomic`
+   - `metadata.receivedAssetAmountAtomic`
+   - `metadata.quoteRateVnd`
+
+Sau transaction DB:
+
+- emit `wallet:balance_updated`
+- tao notification "Nap tien USDC thanh cong"
+
+9. Xu ly lech so tien / sai du lieu
+
+Rule de xuat cho phase 1:
+
+- Exact amount: auto complete
+- Nho hon quote: `review_required`, reason = `underpaid`
+- Lon hon quote: `review_required`, reason = `overpaid`
+- Dung amount nhung quote da het han: `review_required`, reason = `late_payment`
+- Sai token contract: watcher bo qua, khong auto hoan tien
+- Sai network: he thong khong detect duoc, UI phai canh bao rat ro
+- 1 quote da co txHash roi ma lai nhan tx hash thu 2: `review_required`, reason = `duplicate_payment`
+
+Khong nen auto credit partial trong phase 1.
+Admin moi la nguoi quyet dinh case ngoai le.
+
+10. API backend can co
+
+Giu lai API cu neu co the:
+
+- `GET /payment/methods`
+- `POST /payment/deposits`
+- `GET /payment/deposits`
+- `GET /payment/deposits/:id/status`
+
+Them moi:
+
+- `POST /payment/deposits/:id/rescan`
+  User bam "Kiem tra lai" de enqueue scan som hon.
+
+- `GET /payment/admin/deposits/review`
+  Tra ve deposit can admin review, trong do co USDC `review_required`.
+
+- `PATCH /payment/admin/deposits/:id`
+  Mo rong payload de support:
+  - `approved: boolean`
+  - `note?: string`
+  - `creditedAmount?: number` (optional, chi dung cho review_required)
+
+Neu muon giam thay doi frontend admin, co the dung lai endpoint cu va them query params theo method/status.
+
+11. Admin review logic
+
+Can support 3 action:
+
+1. Approve exact quote
+   Credit dung `deposit.amount`
+
+2. Approve custom VND amount
+   Dung cho underpaid / overpaid / case can dieu chinh tay
+
+3. Reject
+   Khong cong vi, luu note ro ly do
+
+Khuyen nghi:
+
+- chi cho `creditedAmount` khi deposit.status = `review_required`
+- luu `adminConfirmedBy`, `adminNote`, `completedAt`
+
+12. Notification + realtime
+
+Khi deposit USDC complete:
+
+- emit socket `wallet:balance_updated`
+- dispatch notification type moi, vi du `deposit_completed`
+
+Neu chua muon mo rong notification type, it nhat emit event balance de frontend tu refresh.
+
+13. Security va van hanh
+
+Bat buoc:
+
+1. So sanh token contract theo config, khong tin data tu frontend
+2. So sanh chain/network theo config
+3. Khong credit o 0 confirmation
+4. Chot exact atomic amount, khong compare float
+5. Pessimistic lock khi complete deposit
+6. Job idempotent: scan lai nhieu lan khong duoc credit 2 lan
+7. Validate treasury address va token contract tu env ngay luc boot app
+8. Log day du txHash, blockNumber, senderAddress de audit
+
+------------------------------------------------------------------
+FRONTEND - THIET KE CHI TIET
+
+1. File can sua
+
+- `frontend/src/types/payment.types.ts`
+- `frontend/src/lib/payment.ts`
+- `frontend/src/services/api/payment.api.ts`
+- `frontend/src/components/wallet/DepositForm.tsx`
+- `frontend/src/components/payment/DepositStatusBadge.tsx`
+- `frontend/src/app/admin/page.tsx`
+
+Co the can them:
+
+- `frontend/src/components/wallet/UsdcPaymentCard.tsx`
+- `frontend/src/components/wallet/UsdcDepositTimeline.tsx`
+
+2. Thay doi type frontend
+
+Can them thong tin cho method `usdc`:
+
+- `receiver.address`
+- `receiver.network`
+- `receiver.tokenSymbol`
+- `receiver.tokenContract`
+- `asset.quotedAmountAtomic`
+- `asset.quotedAmountDisplay`
+- `quote.rateVnd`
+- `reviewReason`
+- `txHash`
+- `confirmations`
+
+Nen doi ten:
+
+- `ManualDeposit` -> `DepositRecord`
+- `ManualDepositPaymentInfo` -> `DepositPaymentInfo`
+
+Neu chua refactor ngay, van co the mo rong type cu, nhung ky thuat thi ten "manual" se sai ngu nghia.
+
+3. Wallet page flow
+
+Tai `DepositForm.tsx`:
+
+Them card payment method moi:
+
+- label: `USDC`
+- subtitle: `Chuyen stablecoin vao dia chi he thong, auto credit sau khi du confirmations`
+- badge: `Auto`
+
+User flow:
+
+1. Chon menh gia VND nhu hien tai
+2. Chon `USDC`
+3. Bam tao deposit
+4. Hien:
+   - network badge
+   - exact USDC amount
+   - treasury address
+   - QR
+   - token contract (rut gon)
+   - countdown
+   - nut copy amount
+   - nut copy address
+   - nut mo explorer address
+   - nut "Kiem tra lai"
+5. Poll `getDepositStatus` moi 10-15 giay khi deposit dang active
+6. Khi status `confirming`, hien so block xac nhan
+7. Khi `completed`, toast thanh cong va refresh wallet
+8. Khi `review_required`, hien message "He thong da ghi nhan giao dich, admin se kiem tra thu cong"
+
+4. Noi dung UI can hien ro
+
+Bat buoc canh bao:
+
+- Chi gui dung USDC tren dung network
+- Khong gui token khac vao dia chi nay
+- Gui dung so tien exact den 6 chu so thap phan
+- Phi gas duoc tra bang native token cua chain, khong tru vao so USDC he thong yeu cau
+- Neu gui sai amount, he thong co the can admin xu ly thu cong
+
+5. Mapping status UI
+
+- `pending` -> "Cho ban chuyen USDC"
+- `detected` -> "Da phat hien giao dich"
+- `confirming` -> "Dang cho xac nhan blockchain"
+- `completed` -> "Da cong tien vao vi"
+- `review_required` -> "Can admin doi soat"
+- `expired` -> "Quote da het han"
+- `failed` -> "Nap tien that bai"
+
+6. Hien thi lich su
+
+Tai history card:
+
+- them icon / label cho `usdc`
+- hien `quotedAmountDisplay USDC`
+- hien `txHash` neu co
+- hien `networkCode`
+- neu `review_required` thi hien `reviewReason`
+
+7. Admin page
+
+Tai `/admin`, them section moi cho on-chain review:
+
+- tab hoac section `USDC Review`
+- hien cac item `review_required`
+- card can co:
+  - user
+  - amount VND du kien
+  - quoted USDC
+  - received USDC
+  - network
+  - sender address
+  - tx hash
+  - block number
+  - ly do review
+  - admin note
+
+Actions:
+
+- `Duyet theo quote`
+- `Duyet custom`
+- `Tu choi`
+
+De tranh thao tac nham, bat buoc co confirm dialog.
+
+8. Refresh va realtime
+
+Khi frontend nhan:
+
+- socket `wallet:balance_updated`
+
+Thi:
+
+- cap nhat store balance
+- invalidate query wallet
+- neu user dang mo wallet page, history cung nen refresh
+
+------------------------------------------------------------------
+THU TU THUC HIEN DE XUAT
+
+Phase A - Data + config
+
+1. Them `usdc` vao constants
+2. Them config `payment.usdc`
+3. Tao migration them cot USDC vao `deposits`
+4. Tao bang `payment_chain_cursors`
+5. Update entity `DepositEntity`
+
+Phase B - Backend core
+
+1. Viet `UsdcQuoteService`
+2. Viet `UsdcQrService`
+3. Mo rong `PaymentService.createDeposit()`
+4. Mo rong `getAvailablePaymentMethods()`
+5. Mo rong `formatDepositResponse()`
+6. Them `rescan` endpoint
+
+Phase C - Blockchain watcher
+
+1. Them job `sync-usdc-transfers`
+2. Them service scan RPC va map log
+3. Complete deposit trong transaction
+4. Emit wallet update + notification
+5. Them retry / idempotency guard
+
+Phase D - Frontend user flow
+
+1. Update type + API client
+2. Them card method `USDC`
+3. Render quote/address/QR/countdown
+4. Poll status
+5. Hien state `confirming`, `review_required`, `completed`
+
+Phase E - Admin flow
+
+1. API list review_required
+2. Admin panel hien USDC review queue
+3. Confirm dialog
+4. Approve custom amount / reject
+
+Phase F - Hardening
+
+1. Test duplicate scan
+2. Test tx den muon
+3. Test tx sai amount
+4. Test restart worker giua luc confirming
+5. Test idempotent settlement
+
+------------------------------------------------------------------
+TEST CASES BAT BUOC
+
+1. Happy path
+
+- Tao deposit 100.000d
+- Backend quote 4.000137 USDC
+- User gui dung 4.000137 USDC
+- He thong detect tx
+- Sau N confirmations -> wallet tang 100.000d
+- Tao transaction `deposit`
+
+2. Underpayment
+
+- Quote 4.000137
+- User gui 3.900000
+- Khong auto credit
+- Deposit vao `review_required`
+
+3. Overpayment
+
+- Quote 4.000137
+- User gui 4.100000
+- Khong auto credit
+- Deposit vao `review_required`
+
+4. Late payment
+
+- Quote het han
+- User moi gui tien
+- Deposit vao `review_required`
+
+5. Duplicate scan job
+
+- Worker scan cung 1 tx 2-3 lan
+- Wallet chi duoc cong 1 lan
+
+6. Chain restart
+
+- Worker dung giua luc tx dang `confirming`
+- Khoi dong lai
+- Cursor tiep tuc scan dung, khong bo sot
+
+7. Admin approve custom
+
+- Deposit `review_required`
+- Admin nhap so VND custom
+- Wallet duoc cong dung so do
+- Transaction metadata luu `reviewMode = manual_custom`
+
+8. Frontend UX
+
+- Copy amount
+- Copy address
+- Poll status dung
+- Hien canh bao network ro rang
+
+------------------------------------------------------------------
+OPEN QUESTIONS DE CHOT TRUOC KHI CODE
+
+1. Chon network nao cho phase 1?
+   De xuat chot 1 network duy nhat, khong lam multi-chain ngay.
+
+2. Rate USDC/VND co dung config tay khong?
+   De xuat: co. De nhanh ship va de audit.
+
+3. Admin co duoc approve custom amount khong?
+   De xuat: co, chi cho `review_required`.
+
+4. Quote co duoc auto refresh khi het han khong?
+   De xuat: khong. User tao deposit moi.
+
+5. Co can "user paste txHash" khong?
+   De xuat: optional, khong can cho MVP.
+
+------------------------------------------------------------------
+GHI CHU QUAN TRONG
+
+1. Day la payment bang USDC de nap vao wallet noi bo, khong phai he thong thanh toan smart contract.
+2. Truong hop gui sai network hoac gui nham token la case rui ro cao, frontend phai canh bao rat manh.
+3. Tuyet doi khong compare amount bang decimal float o backend.
+4. Neu muon mo rong multi-chain sau nay, hay giu field `networkCode`, `tokenContract`, `assetSymbol` ngay tu dau.
+
+Ket luan
+
+Huong phu hop nhat voi codebase hien tai la:
+
+- them `paymentMethod = usdc`
+- dung 1 treasury address co dinh
+- match bang exact quoted USDC amount
+- auto credit sau confirmations
+- admin review fallback cho moi case lech
+
+Huong nay giong tinh than cua flow bank QR hien co: cung la "1 receiver co dinh + 1 dau hieu nhan dang duy nhat cho tung deposit", nhung thay `noi dung chuyen khoan` bang `so tien USDC exact`.
