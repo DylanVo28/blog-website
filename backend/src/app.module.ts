@@ -1,3 +1,4 @@
+import { getBackendEnvFilePaths } from './config/env-paths';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
@@ -35,7 +36,7 @@ import { RefundProcessor } from './jobs/refund.processor';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      envFilePath: getBackendEnvFilePaths(),
       load: [
         databaseConfig,
         redisConfig,
