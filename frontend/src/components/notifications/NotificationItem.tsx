@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useMutation } from "@tanstack/react-query";
 import {
   BellRing,
   Bot,
@@ -10,9 +10,13 @@ import {
   Sparkles,
   Wallet,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { getApiErrorMessage } from "@/lib/api";
 import { getNotificationHref, getNotificationTypeLabel } from "@/lib/notifications";
 import { formatDateTime, formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
+import { notificationsApi } from "@/services/api/notifications.api";
 import { useNotificationStore } from "@/stores/notificationStore";
 import type { Notification } from "@/types/notification.types";
 
@@ -63,8 +67,15 @@ export function NotificationItem({
   mode = "page",
   onSelect,
 }: NotificationItemProps) {
+  const router = useRouter();
   const markAsRead = useNotificationStore((state) => state.markAsRead);
   const href = getNotificationHref(notification);
+  const markReadMutation = useMutation({
+    mutationFn: () => notificationsApi.markRead(notification.id),
+    onError: (error) => {
+      toast.error(getApiErrorMessage(error, "Không thể đồng bộ trạng thái đã đọc."));
+    },
+  });
 
   const content = (
     <div
@@ -113,15 +124,16 @@ export function NotificationItem({
 
   const handleSelect = () => {
     markAsRead(notification.id);
+    markReadMutation.mutate();
     onSelect?.();
+
+    if (href) {
+      router.push(href);
+    }
   };
 
-  return href ? (
-    <Link href={href} onClick={handleSelect}>
-      {content}
-    </Link>
-  ) : (
-    <button type="button" className="w-full" onClick={handleSelect}>
+  return (
+    <button type="button" className="w-full text-left" onClick={handleSelect}>
       {content}
     </button>
   );

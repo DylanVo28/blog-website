@@ -67,6 +67,7 @@ export class AiAnswerProcessor implements OnModuleInit, OnModuleDestroy {
             recipientId: job.data.askerId,
             payload: {
               questionId: job.data.questionId,
+              postId: job.data.postId,
               reason: 'ai_answer_failed',
             },
           });

@@ -12,6 +12,7 @@ import { CommentsModule } from './modules/comments/comments.module';
 import { PaymentModule } from './modules/payment/payment.module';
 import { PostsModule } from './modules/posts/posts.module';
 import { QuestionsModule } from './modules/questions/questions.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { UsersModule } from './modules/users/users.module';
 import { WalletModule } from './modules/wallet/wallet.module';
@@ -57,6 +58,7 @@ import { RefundProcessor } from './jobs/refund.processor';
     UsersModule,
     PostsModule,
     CommentsModule,
+    NotificationsModule,
     QuestionsModule,
     WalletModule,
     PaymentModule,

@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { JobQueueService } from '../../jobs/job-queue.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PostEntity } from '../posts/entities/post.entity';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { CommentEntity } from './entities/comment.entity';
@@ -21,7 +21,7 @@ export class CommentsService {
   ];
 
   constructor(
-    private readonly jobQueueService: JobQueueService,
+    private readonly notificationsService: NotificationsService,
     @InjectRepository(CommentEntity)
     private readonly commentsRepository: Repository<CommentEntity>,
     @InjectRepository(PostEntity)
@@ -51,7 +51,7 @@ export class CommentsService {
       : null;
 
     if (post.authorId !== userId) {
-      this.queueNotification({
+      this.dispatchNotification({
         type: 'comment_created',
         recipientId: post.authorId,
         payload: {
@@ -127,14 +127,14 @@ export class CommentsService {
     return matchCount >= 2;
   }
 
-  private queueNotification(input: {
+  private dispatchNotification(input: {
     type: string;
     recipientId: string;
     payload: Record<string, unknown>;
   }) {
-    void this.jobQueueService.enqueueNotification(input).catch((error) => {
+    void this.notificationsService.dispatch(input).catch((error) => {
       this.logger.warn(
-        `Unable to enqueue comment notification for recipient ${input.recipientId}.`,
+        `Unable to dispatch comment notification for recipient ${input.recipientId}.`,
         error instanceof Error ? error.message : undefined,
       );
     });

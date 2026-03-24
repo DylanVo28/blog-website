@@ -1,12 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { useMutation } from "@tanstack/react-query";
 import { BellRing, CheckCheck } from "lucide-react";
+import { getApiErrorMessage } from "@/lib/api";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "@/components/ui/toast";
 import { NotificationItem } from "@/components/notifications/NotificationItem";
+import { notificationsApi } from "@/services/api/notifications.api";
 import { useNotificationStore } from "@/stores/notificationStore";
 
 interface NotificationListProps {
@@ -22,6 +26,12 @@ export function NotificationList({
   const notifications = useNotificationStore((state) => state.notifications);
   const unreadCount = useNotificationStore((state) => state.unreadCount);
   const markAllAsRead = useNotificationStore((state) => state.markAllAsRead);
+  const markAllMutation = useMutation({
+    mutationFn: () => notificationsApi.markAllRead(),
+    onError: (error) => {
+      toast.error(getApiErrorMessage(error, "Không thể đồng bộ trạng thái đã đọc."));
+    },
+  });
 
   if (!hydrated) {
     return (
@@ -73,7 +83,16 @@ export function NotificationList({
             </div>
 
             {unreadCount > 0 ? (
-              <Button type="button" variant="ghost" size="sm" onClick={() => markAllAsRead()}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={markAllMutation.isPending}
+                onClick={() => {
+                  markAllAsRead();
+                  markAllMutation.mutate();
+                }}
+              >
                 <CheckCheck className="size-4" />
                 Đã đọc hết
               </Button>
@@ -112,7 +131,15 @@ export function NotificationList({
           </div>
 
           {unreadCount > 0 ? (
-            <Button type="button" variant="outline" onClick={() => markAllAsRead()}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={markAllMutation.isPending}
+              onClick={() => {
+                markAllAsRead();
+                markAllMutation.mutate();
+              }}
+            >
               <CheckCheck className="size-4" />
               Đánh dấu tất cả đã đọc
             </Button>

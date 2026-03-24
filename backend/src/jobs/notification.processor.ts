@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { Worker } from 'bullmq';
+import { NotificationsService } from '../modules/notifications/notifications.service';
 import { JobQueueService } from './job-queue.service';
 import { JOB_NAMES, JOB_QUEUE_NAMES, NotificationJobData } from './job.constants';
 
@@ -13,7 +14,10 @@ export class NotificationProcessor implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NotificationProcessor.name);
   private worker: Worker<NotificationJobData> | null = null;
 
-  constructor(private readonly jobQueueService: JobQueueService) {}
+  constructor(
+    private readonly jobQueueService: JobQueueService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   onModuleInit() {
     this.worker = this.jobQueueService.createWorker<NotificationJobData>(
@@ -24,11 +28,7 @@ export class NotificationProcessor implements OnModuleInit, OnModuleDestroy {
           return null;
         }
 
-        return this.sendNotification(
-          job.data.type,
-          job.data.recipientId,
-          job.data.payload,
-        );
+        return this.sendNotification(job.data);
       },
       {
         concurrency: 5,
@@ -43,20 +43,11 @@ export class NotificationProcessor implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async sendNotification(
-    type: string,
-    recipientId: string,
-    payload?: Record<string, unknown>,
-  ) {
+  async sendNotification(data: NotificationJobData) {
     this.logger.log(
-      `Notification queued: ${type} -> ${recipientId} ${payload ? JSON.stringify(payload) : ''}`.trim(),
+      `Dispatching notification: ${data.type} -> ${data.recipientId}`,
     );
 
-    return {
-      type,
-      recipientId,
-      payload: payload ?? null,
-      queued: true,
-    };
+    return this.notificationsService.dispatch(data);
   }
 }
