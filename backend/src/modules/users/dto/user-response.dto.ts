@@ -1,4 +1,5 @@
 import { AppRole } from '../../../common/constants';
+import type { AuthProvider } from '../../auth/types/social-auth.types';
 
 export class UserResponseDto {
   id!: string;
@@ -10,6 +11,8 @@ export class UserResponseDto {
   role!: AppRole;
   isVerified!: boolean;
   emailVerifiedAt!: Date;
+  authProvider!: AuthProvider;
+  isPasswordSet!: boolean;
   isBanned!: boolean;
   bannedAt!: Date | null;
   createdAt!: Date;

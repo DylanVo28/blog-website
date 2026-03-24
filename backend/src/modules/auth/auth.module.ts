@@ -11,6 +11,10 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { EmailVerificationEntity } from './entities/email-verification.entity';
 import { PasswordResetTokenEntity } from './entities/password-reset-token.entity';
+import { SocialAccountEntity } from './entities/social-account.entity';
+import { GitHubAuthService } from './services/github-auth.service';
+import { GoogleAuthService } from './services/google-auth.service';
+import { SocialAuthService } from './services/social-auth.service';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -24,6 +28,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       WalletEntity,
       EmailVerificationEntity,
       PasswordResetTokenEntity,
+      SocialAccountEntity,
     ]),
     JwtModule.registerAsync({
       inject: [ConfigService],
@@ -33,7 +38,14 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtRefreshStrategy],
+  providers: [
+    AuthService,
+    SocialAuthService,
+    GoogleAuthService,
+    GitHubAuthService,
+    JwtStrategy,
+    JwtRefreshStrategy,
+  ],
   exports: [AuthService, JwtModule, PassportModule],
 })
 export class AuthModule {}

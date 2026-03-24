@@ -266,6 +266,8 @@ export class AuthService {
         role: 'reader',
         isVerified: true,
         emailVerifiedAt: verifiedAt,
+        authProvider: 'local',
+        isPasswordSet: true,
       });
 
       const savedUser = await manager.save(UserEntity, createdUser);
@@ -292,7 +294,7 @@ export class AuthService {
       return savedUser;
     });
 
-    return this.buildAuthResponse(user);
+    return this.createSessionForUser(user);
   }
 
   async login(dto: LoginDto) {
@@ -306,14 +308,18 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
+    if (!user.passwordHash) {
+      throw new UnauthorizedException(
+        'Tài khoản này chưa có mật khẩu. Hãy đăng nhập bằng Google/GitHub hoặc đặt lại mật khẩu để tạo mật khẩu mới.',
+      );
+    }
+
     const isPasswordValid = await verifyPassword(dto.password, user.passwordHash);
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
-    this.ensureUserIsActive(user);
-
-    return this.buildAuthResponse(user);
+    return this.createSessionForUser(user);
   }
 
   async refresh(dto: RefreshTokenDto) {
@@ -498,15 +504,17 @@ export class AuthService {
 
     this.ensureUserIsActive(user);
 
-    const isSamePassword = await verifyPassword(
-      dto.newPassword,
-      user.passwordHash,
-    );
-
-    if (isSamePassword) {
-      throw new BadRequestException(
-        'Mật khẩu mới không được trùng với mật khẩu cũ.',
+    if (user.passwordHash) {
+      const isSamePassword = await verifyPassword(
+        dto.newPassword,
+        user.passwordHash,
       );
+
+      if (isSamePassword) {
+        throw new BadRequestException(
+          'Mật khẩu mới không được trùng với mật khẩu cũ.',
+        );
+      }
     }
 
     const passwordHash = await hashPassword(dto.newPassword);
@@ -520,6 +528,7 @@ export class AuthService {
         },
         {
           passwordHash,
+          isPasswordSet: true,
           passwordChangedAt,
           resetPasswordToken: null,
           resetPasswordExpiresAt: null,
@@ -559,8 +568,12 @@ export class AuthService {
     };
   }
 
+  async createSessionForUser(user: UserEntity) {
+    this.ensureUserIsActive(user);
+    return this.buildAuthResponse(user);
+  }
+
   private async buildAuthResponse(user: UserEntity) {
-    const payload = this.buildPayload(user);
     const accessToken = await this.signAccessToken(user);
     const refreshToken = await this.signRefreshToken(user);
 
@@ -575,6 +588,8 @@ export class AuthService {
         role: user.role,
         isVerified: user.isVerified,
         emailVerifiedAt: user.emailVerifiedAt,
+        authProvider: user.authProvider,
+        isPasswordSet: user.isPasswordSet,
         isBanned: Boolean(user.bannedAt),
         bannedAt: user.bannedAt,
         createdAt: user.createdAt,

@@ -126,6 +126,8 @@ export class UsersService {
       role: user.role,
       isVerified: user.isVerified,
       emailVerifiedAt: user.emailVerifiedAt,
+      authProvider: user.authProvider,
+      isPasswordSet: user.isPasswordSet,
       isBanned: Boolean(user.bannedAt),
       bannedAt: user.bannedAt,
       createdAt: user.createdAt,

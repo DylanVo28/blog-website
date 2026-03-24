@@ -1,4 +1,14 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
@@ -9,10 +19,109 @@ import { ResendOtpDto } from './dto/resend-otp.dto';
 import { SendVerificationDto } from './dto/send-verification.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyResetTokenDto } from './dto/verify-reset-token.dto';
+import { SocialAuthService } from './services/social-auth.service';
+import type { SocialProvider } from './types/social-auth.types';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly socialAuthService: SocialAuthService,
+  ) {}
+
+  @Get(':provider(google|github)')
+  async redirectToProvider(
+    @Param('provider') provider: SocialProvider,
+    @Res() res: Response,
+    @Query('redirect') redirect?: string,
+  ) {
+    const authRequest = await this.socialAuthService.createAuthorizationRequest(
+      provider,
+      redirect,
+    );
+
+    res.cookie(authRequest.cookieName, authRequest.stateToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: authRequest.maxAge,
+      path: '/api/auth',
+    });
+
+    return res.redirect(authRequest.authorizationUrl);
+  }
+
+  @Get(':provider(google|github)/callback')
+  async handleSocialCallback(
+    @Param('provider') provider: SocialProvider,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('code') code?: string,
+    @Query('state') state?: string,
+    @Query('error') error?: string,
+  ) {
+    const cookieName = this.socialAuthService.getStateCookieName(provider);
+    const cookieState = this.readCookie(req.headers.cookie, cookieName);
+    const frontendSuccessUrl = process.env.SOCIAL_AUTH_SUCCESS_URL
+      ? process.env.SOCIAL_AUTH_SUCCESS_URL
+      : 'http://localhost:3001/auth/social/callback';
+    const frontendFailureUrl = process.env.SOCIAL_AUTH_FAILURE_URL
+      ? process.env.SOCIAL_AUTH_FAILURE_URL
+      : 'http://localhost:3001/login?error=social_auth_failed';
+
+    res.clearCookie(cookieName, {
+      path: '/api/auth',
+    });
+
+    let redirect: string | undefined;
+
+    try {
+      redirect = await this.socialAuthService.validateCallbackState(
+        provider,
+        state,
+        cookieState,
+      );
+
+      if (error) {
+        return res.redirect(
+          this.buildFrontendFailureUrl(frontendFailureUrl, error, redirect),
+        );
+      }
+
+      if (!code) {
+        return res.redirect(
+          this.buildFrontendFailureUrl(
+            frontendFailureUrl,
+            'OAuth provider did not return an authorization code.',
+            redirect,
+          ),
+        );
+      }
+
+      const session = await this.socialAuthService.authenticateWithCode(
+        provider,
+        code,
+      );
+      const params = new URLSearchParams({
+        accessToken: session.accessToken,
+        refreshToken: session.refreshToken,
+        redirect,
+      });
+
+      return res.redirect(
+        `${frontendSuccessUrl.replace(/\/$/, '')}?${params.toString()}`,
+      );
+    } catch (callbackError) {
+      const message =
+        callbackError instanceof Error
+          ? callbackError.message
+          : 'Social authentication failed.';
+
+      return res.redirect(
+        this.buildFrontendFailureUrl(frontendFailureUrl, message, redirect),
+      );
+    }
+  }
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
@@ -72,5 +181,33 @@ export class AuthController {
   @Post('password/reset')
   resetPasswordV2(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  private buildFrontendFailureUrl(
+    baseUrl: string,
+    detail: string,
+    redirect?: string,
+  ) {
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    const redirectParam = redirect
+      ? `&redirect=${encodeURIComponent(redirect)}`
+      : '';
+    return `${baseUrl}${separator}detail=${encodeURIComponent(detail)}${redirectParam}`;
+  }
+  private readCookie(cookieHeader: string | undefined, name: string) {
+    if (!cookieHeader) {
+      return null;
+    }
+
+    const cookie = cookieHeader
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${name}=`));
+
+    if (!cookie) {
+      return null;
+    }
+
+    return decodeURIComponent(cookie.slice(name.length + 1));
   }
 }

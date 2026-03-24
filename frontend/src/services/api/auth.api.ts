@@ -1,4 +1,5 @@
 import apiClient from "@/services/api/client";
+import { API_URL } from "@/lib/constants";
 import type { ApiResponse } from "@/types/api.types";
 import type {
   AuthSession,
@@ -14,6 +15,7 @@ import type {
   VerifyResetPasswordPayload,
   VerifyResetPasswordResult,
 } from "@/types/auth.types";
+import type { SocialProvider } from "@/types/user.types";
 import type { UserProfile } from "@/types/user.types";
 
 interface LogoutResult {
@@ -22,6 +24,18 @@ interface LogoutResult {
 }
 
 export const authApi = {
+  getSocialLoginUrl: (provider: SocialProvider, redirect?: string) => {
+    const url = new URL(
+      `${API_URL.replace(/\/$/, "")}/auth/${provider}`,
+    );
+
+    if (redirect && redirect.startsWith("/") && !redirect.startsWith("//")) {
+      url.searchParams.set("redirect", redirect);
+    }
+
+    return url.toString();
+  },
+
   login: (payload: LoginPayload) =>
     apiClient.post<ApiResponse<AuthSession>>("/auth/login", payload),
 

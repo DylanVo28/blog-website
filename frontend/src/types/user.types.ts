@@ -1,3 +1,5 @@
+export type SocialProvider = "google" | "github";
+export type AuthProvider = "local" | SocialProvider;
 export type UserRole = "reader" | "author" | "admin";
 
 export interface AuthorInfo {
@@ -13,6 +15,8 @@ export interface UserProfile extends AuthorInfo {
   role: UserRole;
   isVerified: boolean;
   emailVerifiedAt?: string | null;
+  authProvider?: AuthProvider;
+  isPasswordSet?: boolean;
   isBanned?: boolean;
   bannedAt?: string | null;
   createdAt?: string;

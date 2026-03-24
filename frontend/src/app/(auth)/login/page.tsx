@@ -7,9 +7,9 @@ export default function LoginPage() {
     <AuthShell
       badge="Đăng nhập"
       title="Quay lại để tiếp tục viết, đọc và đặt câu hỏi."
-      description="Đăng nhập sẽ khôi phục phiên người dùng, bootstrap số dư ví và mở khóa các route đã được bảo vệ ở phase 1."
-      helperTitle="Nền auth đã sẵn sàng cho phase sau"
-      helperDescription="Form này dùng thật với backend hiện tại và redirect về route gốc bạn vừa định truy cập."
+      description="Bạn có thể đăng nhập bằng email/mật khẩu hoặc dùng Google, GitHub để tạo phiên nhanh với cùng hệ thống JWT + refresh token."
+      helperTitle="JWT flow + social login"
+      helperDescription="Backend sẽ xử lý OAuth callback, auto-link theo email nếu phù hợp và trả bạn về đúng route đang cần truy cập."
       footer={
         <p>
           Chưa có tài khoản?{" "}

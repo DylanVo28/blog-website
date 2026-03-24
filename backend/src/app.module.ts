@@ -26,6 +26,7 @@ import { JobsModule } from './jobs/jobs.module';
 import { paymentConfig } from './config/payment.config';
 import { PaymentProcessor } from './jobs/payment.processor';
 import { redisConfig } from './config/redis.config';
+import { socialAuthConfig } from './config/social-auth.config';
 import { EmbeddingProcessor } from './jobs/embedding.processor';
 import { NotificationProcessor } from './jobs/notification.processor';
 import { RefundProcessor } from './jobs/refund.processor';
@@ -42,6 +43,7 @@ import { RefundProcessor } from './jobs/refund.processor';
         paymentConfig,
         aiConfig,
         mailConfig,
+        socialAuthConfig,
       ],
     }),
     TypeOrmModule.forRootAsync({
