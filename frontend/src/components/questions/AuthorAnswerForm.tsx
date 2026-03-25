@@ -10,14 +10,12 @@ import { questionsApi } from "@/services/api/questions.api";
 
 interface AuthorAnswerFormProps {
   questionId: string;
-  postId: string;
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 export function AuthorAnswerForm({
   questionId,
-  postId,
   onCancel,
   onSuccess,
 }: AuthorAnswerFormProps) {
@@ -26,9 +24,13 @@ export function AuthorAnswerForm({
 
   const answerMutation = useMutation({
     mutationFn: () => questionsApi.answer(questionId, answer.trim()),
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Đã gửi câu trả lời.");
-      void queryClient.invalidateQueries({ queryKey: ["questions", postId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["questions"] }),
+        queryClient.invalidateQueries({ queryKey: ["wallet"] }),
+        queryClient.invalidateQueries({ queryKey: ["posts"] }),
+      ]);
       onSuccess();
     },
     onError: (error) => {

@@ -71,12 +71,16 @@ export function PostsDashboard() {
           <CardHeader>
             <CardTitle className="text-3xl">Quản lý bài viết của tôi</CardTitle>
             <CardDescription>
-              Theo dõi draft, bài đã xuất bản và thao tác chỉnh sửa/lưu trữ ngay trong phase 3.
+              Theo dõi draft, bài đã xuất bản và chỉnh sửa/lưu trữ nội dung ngay trong không gian
+              dashboard tác giả của phase 7.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-wrap gap-3">
             <Button asChild>
               <Link href="/posts/new">Tạo bài viết mới</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/dashboard/questions">Mở hộp thư câu hỏi</Link>
             </Button>
           </CardContent>
         </Card>

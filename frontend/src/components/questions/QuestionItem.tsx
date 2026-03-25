@@ -127,7 +127,6 @@ export function QuestionItem({ question, isAuthor }: QuestionItemProps) {
           {showAnswerForm ? (
             <AuthorAnswerForm
               questionId={question.id}
-              postId={question.postId}
               onCancel={() => setShowAnswerForm(false)}
               onSuccess={() => setShowAnswerForm(false)}
             />
