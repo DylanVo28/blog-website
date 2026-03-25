@@ -95,3 +95,29 @@ export const moneyAmountSchema = z
     message: "Số tiền không hợp lệ.",
   })
   .positive("Số tiền phải lớn hơn 0.");
+
+const optionalTrimmedString = (max: number, message: string) =>
+  z.string().trim().max(max, message);
+
+export const profileSettingsSchema = z
+  .object({
+    displayName: displayNameSchema,
+    username: usernameSchema,
+    bio: optionalTrimmedString(1000, "Bio tối đa 1000 ký tự."),
+    bankName: optionalTrimmedString(120, "Tên ngân hàng tối đa 120 ký tự."),
+    bankAccount: optionalTrimmedString(50, "Số tài khoản tối đa 50 ký tự."),
+    bankHolder: optionalTrimmedString(120, "Tên chủ tài khoản tối đa 120 ký tự."),
+  })
+  .refine(
+    (value) => {
+      const bankValues = [value.bankName, value.bankAccount, value.bankHolder].filter(
+        (item) => item.length > 0,
+      );
+
+      return bankValues.length === 0 || bankValues.length === 3;
+    },
+    {
+      message: "Nếu lưu thông tin ngân hàng, vui lòng nhập đủ tên ngân hàng, số tài khoản và chủ tài khoản.",
+      path: ["bankName"],
+    },
+  );

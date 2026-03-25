@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { primaryNavigation, secondaryNavigation } from "@/lib/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -94,12 +95,16 @@ export function MobileNav() {
         <SheetHeader>
           <SheetTitle>Inkline</SheetTitle>
           <SheetDescription>
-            Điều hướng responsive cho auth flow, ví và các khu vực chính của ứng dụng.
+            Điều hướng mobile cho profile, admin, ví và các khu vực chính của ứng dụng.
           </SheetDescription>
         </SheetHeader>
 
+        <div className="mt-4 flex justify-end">
+          <ThemeToggle />
+        </div>
+
         {hydrated && isAuthenticated && user ? (
-          <div className="mt-6 rounded-[1.5rem] border border-border/70 bg-white/75 px-4 py-4">
+          <div className="mt-6 rounded-[1.5rem] border border-border/70 bg-card/75 px-4 py-4">
             <p className="text-sm font-semibold text-foreground">{user.displayName}</p>
             <p className="mt-1 text-sm text-muted-foreground">{user.email}</p>
           </div>

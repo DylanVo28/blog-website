@@ -1,6 +1,8 @@
 export const APP_NAME = "Inkline";
 export const APP_DESCRIPTION =
   "Blog platform frontend foundation cho hệ thống bài viết, comment miễn phí và câu hỏi trả phí.";
+export const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3001";
 
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000/api";

@@ -65,6 +65,7 @@ export interface WithdrawalRequest {
 export interface AdminWalletUserSummary {
   id: string;
   email: string | null;
+  username?: string | null;
   displayName: string | null;
   avatarUrl: string | null;
   role: string;

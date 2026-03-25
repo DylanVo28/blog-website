@@ -26,10 +26,19 @@ export async function generateMetadata({
   return {
     title: post.title,
     description: post.excerpt ?? post.contentPlain ?? "Chi tiết bài viết",
+    alternates: {
+      canonical: `/posts/${post.slug}`,
+    },
     openGraph: {
       title: post.title,
       description: post.excerpt ?? undefined,
-      images: post.coverImageUrl ? [post.coverImageUrl] : [],
+      images: [`/posts/${post.slug}/opengraph-image`],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: post.title,
+      description: post.excerpt ?? undefined,
+      images: [`/posts/${post.slug}/opengraph-image`],
     },
   };
 }

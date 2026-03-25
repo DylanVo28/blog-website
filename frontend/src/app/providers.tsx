@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { SessionBootstrapper } from "@/components/auth/SessionBootstrapper";
 import { SocketProvider } from "@/components/providers/SocketProvider";
+import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { Toaster } from "@/components/ui/toast";
 
 interface ProvidersProps {
@@ -31,9 +32,11 @@ export function Providers({ children }: ProvidersProps) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
       <SessionBootstrapper />
       <SocketProvider>{children}</SocketProvider>
       <Toaster />
+      </ThemeProvider>
       {process.env.NODE_ENV === "development" ? (
         <ReactQueryDevtools initialIsOpen={false} />
       ) : null}

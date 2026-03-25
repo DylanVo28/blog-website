@@ -82,7 +82,6 @@ export function PostCard({ post }: PostCardProps) {
                 alt={post.title}
                 width={640}
                 height={480}
-                unoptimized
                 sizes="(max-width: 768px) 100vw, 220px"
                 className="h-full min-h-48 w-full object-cover"
               />

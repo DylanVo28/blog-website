@@ -25,6 +25,15 @@ export class UserEntity {
   @Column({ type: 'text', nullable: true })
   bio!: string | null;
 
+  @Column({ name: 'bank_name', type: 'varchar', length: 120, nullable: true })
+  bankName!: string | null;
+
+  @Column({ name: 'bank_account', type: 'varchar', length: 50, nullable: true })
+  bankAccount!: string | null;
+
+  @Column({ name: 'bank_holder', type: 'varchar', length: 120, nullable: true })
+  bankHolder!: string | null;
+
   @Column({ type: 'varchar', length: 20, default: 'reader' })
   role!: AppRole;
 

@@ -37,6 +37,21 @@ export class AdminController {
     return this.adminService.listTransactions();
   }
 
+  @Get('posts')
+  getPosts() {
+    return this.adminService.listPosts();
+  }
+
+  @Patch('posts/:id/approve')
+  approvePost(@Param('id') postId: string) {
+    return this.adminService.approvePost(postId);
+  }
+
+  @Patch('posts/:id/reject')
+  rejectPost(@Param('id') postId: string) {
+    return this.adminService.rejectPost(postId);
+  }
+
   @Get('withdrawals')
   getWithdrawals() {
     return this.adminService.listWithdrawals();
@@ -70,5 +85,10 @@ export class AdminController {
     @Body() dto: BanUserDto,
   ) {
     return this.adminService.banUser(userId, adminId, dto.reason);
+  }
+
+  @Post('users/:id/unban')
+  unbanUser(@Param('id') userId: string, @CurrentUser('sub') adminId: string) {
+    return this.adminService.unbanUser(userId, adminId);
   }
 }

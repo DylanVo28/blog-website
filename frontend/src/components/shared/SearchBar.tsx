@@ -44,7 +44,7 @@ export function SearchBar({ className }: SearchBarProps) {
         name="q"
         defaultValue={initialQuery}
         placeholder="Tìm bài viết, tác giả, chủ đề..."
-        className="h-11 rounded-full border-border/70 bg-white/75 pl-10 pr-4"
+        className="h-11 rounded-full border-border/70 bg-card/75 pl-10 pr-4"
         aria-label="Tìm kiếm bài viết"
       />
     </form>

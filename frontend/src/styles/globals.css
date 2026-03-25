@@ -36,6 +36,41 @@
   --sidebar-ring: oklch(0.51 0.13 31);
 }
 
+html.dark {
+  --background: oklch(0.19 0.02 255);
+  --foreground: oklch(0.95 0.01 90);
+  --card: oklch(0.24 0.02 255);
+  --card-foreground: oklch(0.95 0.01 90);
+  --popover: oklch(0.23 0.02 255);
+  --popover-foreground: oklch(0.95 0.01 90);
+  --primary: oklch(0.74 0.13 46);
+  --primary-foreground: oklch(0.19 0.02 255);
+  --secondary: oklch(0.29 0.02 255);
+  --secondary-foreground: oklch(0.95 0.01 90);
+  --muted: oklch(0.27 0.02 255);
+  --muted-foreground: oklch(0.75 0.02 95);
+  --accent: oklch(0.34 0.04 230);
+  --accent-foreground: oklch(0.97 0.01 90);
+  --destructive: oklch(0.67 0.2 25);
+  --destructive-foreground: oklch(0.98 0.01 95);
+  --border: oklch(0.34 0.02 255);
+  --input: oklch(0.31 0.02 255);
+  --ring: oklch(0.74 0.13 46);
+  --chart-1: oklch(0.67 0.16 48);
+  --chart-2: oklch(0.7 0.11 170);
+  --chart-3: oklch(0.69 0.12 264);
+  --chart-4: oklch(0.73 0.14 112);
+  --chart-5: oklch(0.69 0.17 21);
+  --sidebar: oklch(0.21 0.02 255);
+  --sidebar-foreground: oklch(0.95 0.01 90);
+  --sidebar-primary: oklch(0.74 0.13 46);
+  --sidebar-primary-foreground: oklch(0.19 0.02 255);
+  --sidebar-accent: oklch(0.29 0.03 250);
+  --sidebar-accent-foreground: oklch(0.95 0.01 90);
+  --sidebar-border: oklch(0.34 0.02 255);
+  --sidebar-ring: oklch(0.74 0.13 46);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -83,6 +118,7 @@
 
 html {
   scroll-behavior: smooth;
+  background: var(--background);
 }
 
 body {
@@ -95,6 +131,17 @@ body {
   color: var(--foreground);
   font-family: var(--font-manrope), sans-serif;
   text-rendering: optimizeLegibility;
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
+}
+
+html.dark body {
+  background:
+    radial-gradient(circle at top left, rgb(245 165 94 / 0.14), transparent 24%),
+    radial-gradient(circle at top right, rgb(56 189 248 / 0.12), transparent 22%),
+    linear-gradient(180deg, rgb(16 20 30 / 0.98), rgb(14 18 28 / 0.98)),
+    var(--background);
 }
 
 main {
@@ -118,7 +165,7 @@ textarea {
 }
 
 .surface-panel {
-  background: color-mix(in oklab, var(--card) 92%, white);
+  background: color-mix(in oklab, var(--card) 92%, transparent);
   backdrop-filter: blur(20px);
 }
 
@@ -128,6 +175,12 @@ textarea {
     linear-gradient(90deg, rgb(102 85 62 / 0.035) 1px, transparent 1px);
   background-position: center;
   background-size: 24px 24px;
+}
+
+html.dark .paper-grid {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.03) 1px, transparent 1px);
 }
 
 .tiptap-editor,

@@ -58,7 +58,6 @@ export function PostDetail({ post, onAskAI }: PostDetailProps) {
             alt={post.title}
             width={1400}
             height={840}
-            unoptimized
             sizes="100vw"
             className="max-h-[520px] w-full object-cover"
           />
@@ -67,7 +66,7 @@ export function PostDetail({ post, onAskAI }: PostDetailProps) {
 
       <div
         ref={contentRef}
-        className="rounded-[2rem] border border-border/70 bg-white/75 px-5 py-6 shadow-sm md:px-8"
+        className="rounded-[2rem] border border-border/70 bg-card/75 px-5 py-6 shadow-sm md:px-8"
       >
         <RichTextRenderer content={post.content} />
       </div>

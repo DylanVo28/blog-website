@@ -459,8 +459,14 @@ export function RegisterForm() {
               id="register-username"
               placeholder="nguyenvana"
               autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               disabled={registerMutation.isPending}
-              {...accountForm.register("username")}
+              {...accountForm.register("username", {
+                setValueAs: (value) =>
+                  typeof value === "string" ? value.trim().toLowerCase() : "",
+              })}
             />
             <p className="text-xs text-muted-foreground">
               Username sẽ được lưu dạng chữ thường và dùng cho hồ sơ công khai sau này.

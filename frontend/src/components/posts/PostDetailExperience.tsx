@@ -1,20 +1,45 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useEffectEvent, useState } from "react";
-import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PostDetail } from "@/components/posts/PostDetail";
-import { CommentSection } from "@/components/comments/CommentSection";
-import { QuestionSection } from "@/components/questions/QuestionSection";
 import { buildAiQuestionFromSelection } from "@/lib/questions";
 import type { Post } from "@/types/post.types";
 import type { QuestionPrefill } from "@/types/question.types";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface PostDetailExperienceProps {
   post: Post;
 }
 
 type DetailTab = "questions" | "comments";
+
+const CommentSection = dynamic(
+  () => import("@/components/comments/CommentSection").then((mod) => mod.CommentSection),
+  {
+    loading: () => <InteractionPanelSkeleton label="Đang tải bình luận..." />,
+  },
+);
+
+const QuestionSection = dynamic(
+  () => import("@/components/questions/QuestionSection").then((mod) => mod.QuestionSection),
+  {
+    loading: () => <InteractionPanelSkeleton label="Đang tải question..." />,
+  },
+);
+
+function InteractionPanelSkeleton({ label }: { label: string }) {
+  return (
+    <div className="space-y-4 rounded-[1.6rem] border border-border/70 bg-card/75 p-5 shadow-sm">
+      <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary/70">{label}</p>
+      <Skeleton className="h-20 rounded-[1.3rem]" />
+      <Skeleton className="h-32 rounded-[1.3rem]" />
+      <Skeleton className="h-28 rounded-[1.3rem]" />
+    </div>
+  );
+}
 
 export function PostDetailExperience({ post }: PostDetailExperienceProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("questions");

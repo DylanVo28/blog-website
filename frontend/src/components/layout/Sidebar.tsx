@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Gauge, Layers3, ShieldCheck, UserRound, WalletCards } from "lucide-react";
+import { Gauge, Layers3, ShieldCheck, UserRound } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { secondaryNavigation } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
@@ -11,19 +11,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 const checkpoints = [
   {
-    icon: Layers3,
-    title: "State + Query",
-    description: "Zustand, TanStack Query, middleware và axios client đã nối sẵn.",
-  },
-  {
-    icon: WalletCards,
-    title: "Wallet-ready",
-    description: "Store số dư và constants phí câu hỏi đã sẵn sàng cho phase 4-5.",
+    icon: UserRound,
+    title: "Profile ready",
+    description: "Trang hồ sơ công khai và settings đã được nối với dữ liệu user thật.",
   },
   {
     icon: ShieldCheck,
-    title: "Auth gate",
-    description: "Cookie-based route guard cho auth, protected routes và admin routes.",
+    title: "Admin console",
+    description: "Admin có dashboard tổng quan, moderation users, posts và treasury queue.",
+  },
+  {
+    icon: Layers3,
+    title: "Polish layer",
+    description: "Dark mode, mobile bottom nav và SEO routes được thêm cho phase 8.",
   },
 ];
 
@@ -45,20 +45,20 @@ export function Sidebar() {
         <Card className="paper-grid">
           <CardHeader>
             <Badge variant="success" className="w-fit">
-              Phase 2 Ready
+              Phase 8 Live
             </Badge>
             <CardTitle className="flex items-center gap-2 text-[1.9rem]">
               <Gauge className="size-5 text-primary" />
-              Auth + layout shell
+              Profile + admin shell
             </CardTitle>
             <CardDescription>
-              Sidebar giờ phản ánh được trạng thái auth cơ bản và gom các lối tắt quan
-              trọng cho phase kế tiếp.
+              Không gian điều hướng giờ ưu tiên hồ sơ cá nhân, moderation và các lối tắt
+              vận hành để chốt vòng frontend tuần 8.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {isAuthenticated && user ? (
-              <div className="rounded-[1.5rem] border border-border/70 bg-white/75 px-4 py-4">
+              <div className="rounded-[1.5rem] border border-border/70 bg-card/75 px-4 py-4">
                 <div className="mb-3 flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
                   <UserRound className="size-5" />
                 </div>
@@ -66,9 +66,9 @@ export function Sidebar() {
                 <p className="mt-1 text-sm text-muted-foreground">{user.email}</p>
               </div>
             ) : (
-              <div className="rounded-[1.5rem] border border-dashed border-border/80 bg-white/70 px-4 py-4 text-sm leading-6 text-muted-foreground">
-                Đăng nhập để xem wallet badge, user menu và các route protected hoạt động
-                đầy đủ theo phase 2.
+              <div className="rounded-[1.5rem] border border-dashed border-border/80 bg-card/70 px-4 py-4 text-sm leading-6 text-muted-foreground">
+                Đăng nhập để mở profile settings, dashboard tác giả và admin console theo
+                phase 8.
               </div>
             )}
 
@@ -80,7 +80,7 @@ export function Sidebar() {
                   "block rounded-2xl px-4 py-3 text-sm font-medium transition-colors",
                   pathname === item.href
                     ? "bg-primary text-primary-foreground"
-                    : "bg-white/70 text-foreground hover:bg-accent",
+                    : "bg-card/70 text-foreground hover:bg-accent",
                 )}
               >
                 {item.label}

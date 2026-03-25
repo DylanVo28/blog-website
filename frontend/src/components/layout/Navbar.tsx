@@ -17,6 +17,7 @@ import { SearchBar } from "@/components/shared/SearchBar";
 import { primaryNavigation } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { MobileNav } from "@/components/layout/MobileNav";
@@ -54,7 +55,7 @@ export function Navbar() {
               Inkline
             </Link>
             <p className="hidden text-xs uppercase tracking-[0.24em] text-muted-foreground sm:block">
-              Blog Auth + Layout Phase 2
+              Profile • Admin • Phase 8
             </p>
           </div>
         </div>
@@ -84,6 +85,7 @@ export function Navbar() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           {hydrated ? (
             isAuthenticated && user ? (
               <>
@@ -97,7 +99,7 @@ export function Navbar() {
                 <NotificationBell className="hidden md:inline-flex" />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <button className="inline-flex items-center rounded-full border border-border/70 bg-white/70 p-1 transition-colors hover:bg-accent focus-visible:ring-4 focus-visible:ring-ring/20">
+                    <button className="inline-flex items-center rounded-full border border-border/70 bg-card/70 p-1 transition-colors hover:bg-accent focus-visible:ring-4 focus-visible:ring-ring/20">
                       <Avatar className="size-9">
                         <AvatarImage src={user.avatarUrl ?? undefined} alt={user.displayName} />
                         <AvatarFallback name={user.displayName} />
