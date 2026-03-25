@@ -1,1 +1,0 @@
-comment height quá dài, hãy fix nhỏ c định, có nút seemore, khi click sẽ expand height dài ra

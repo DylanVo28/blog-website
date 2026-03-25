@@ -7,6 +7,7 @@ import { formatCurrency, formatRelativeTime } from "@/lib/formatters";
 import { AIAnswerDisplay } from "@/components/questions/AIAnswerDisplay";
 import { AuthorAnswerForm } from "@/components/questions/AuthorAnswerForm";
 import { RefundCountdown } from "@/components/questions/RefundCountdown";
+import { ExpandableText } from "@/components/shared/ExpandableText";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -90,9 +91,12 @@ export function QuestionItem({ question, isAuthor }: QuestionItemProps) {
         ) : null}
       </div>
 
-      <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-foreground/92">
-        {question.content}
-      </p>
+      <ExpandableText
+        className="mt-4"
+        content={question.content}
+        collapsedMaxHeight={140}
+        contentClassName="text-sm leading-7 text-foreground/92"
+      />
 
       {isPending && !isAiTarget && question.deadlineAt ? (
         <div className="mt-4">
@@ -115,9 +119,12 @@ export function QuestionItem({ question, isAuthor }: QuestionItemProps) {
           {isAiTarget ? (
             <AIAnswerDisplay content={question.answer} />
           ) : (
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-foreground/92">
-              {question.answer}
-            </p>
+            <ExpandableText
+              className="mt-3"
+              content={question.answer}
+              collapsedMaxHeight={168}
+              contentClassName="text-sm leading-7 text-foreground/92"
+            />
           )}
         </div>
       ) : null}

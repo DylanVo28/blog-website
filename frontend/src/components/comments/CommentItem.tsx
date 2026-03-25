@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { CommentForm } from "@/components/comments/CommentForm";
+import { ExpandableText } from "@/components/shared/ExpandableText";
 import { commentsApi } from "@/services/api/comments.api";
 import { useAuthStore } from "@/stores/authStore";
 import type { Comment } from "@/types/comment.types";
@@ -75,9 +76,12 @@ export function CommentItem({
               />
             </div>
           ) : (
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground/92">
-              {comment.content}
-            </p>
+            <ExpandableText
+              className="mt-2"
+              content={comment.content}
+              collapsedMaxHeight={112}
+              contentClassName="text-sm leading-7 text-foreground/92"
+            />
           )}
 
           {!isEditing ? (

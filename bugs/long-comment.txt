@@ -1,0 +1,21 @@
+UI hiện tại đang hiển thị reply theo kiểu lồng nhiều tầng, khiến cuộc hội thoại rất rối và khó đọc. Hãy refactor lại phần giao diện reply theo nguyên tắc phẳng (flat reply view), không dùng nested reply.
+
+Yêu cầu cụ thể:
+- Nếu user B reply user A, thì message của user B phải hiển thị ở một dòng/message block riêng.
+- Nếu user C reply user B, thì message của user C cũng phải hiển thị ở một dòng/message block riêng khác.
+- Không render reply theo kiểu lồng message B bên trong message A, hay message C bên trong message B.
+- Mỗi message luôn là một item độc lập trong danh sách chat.
+- Quan hệ reply chỉ nên thể hiện bằng metadata nhỏ phía trên hoặc trong message, ví dụ: “Reply to user A” hoặc preview ngắn của message được reply.
+- UI phải giữ được ngữ cảnh ai đang reply ai, nhưng bố cục vẫn phải phẳng, dễ scan, dễ đọc.
+- Không dùng indent sâu dần theo cấp reply.
+- Tránh tình trạng reply chồng nhiều lớp làm vỡ layout hoặc khó theo dõi trên mobile.
+
+Mục tiêu:
+- Biến toàn bộ reply thread thành dạng flat list.
+- Mỗi reply là một message riêng biệt.
+- Chỉ giữ thông tin tham chiếu đến message gốc, không nhúng nguyên reply chain vào bên trong nhau.
+
+Hãy cập nhật cả structure component và style nếu cần để bảo đảm:
+1. dễ đọc,
+2. dễ maintain,
+3. hiển thị tốt trên desktop và mobile.
