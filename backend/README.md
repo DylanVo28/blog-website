@@ -3,7 +3,7 @@
 Backend hiện đã có deployment stack cơ bản cho Phase 9:
 
 - NestJS production image bằng multi-stage Docker build
-- Docker Compose chạy đủ `api`, PostgreSQL (`pgvector`), Redis và MinIO
+- Docker Compose chạy `api`, PostgreSQL (`pgvector`) và Redis
 - API tự chạy migrations trước khi start container
 - Health check tại `/api/health`
 
@@ -40,7 +40,7 @@ docker compose down -v
 ```bash
 cd backend
 cp .env.example .env
-docker compose up -d postgres redis minio
+docker compose up -d postgres redis
 npm install
 npm run migration:run
 npm run start:dev
@@ -50,6 +50,7 @@ npm run start:dev
 
 - `docker compose up --build -d` sẽ build image mới và tự apply migrations từ `dist/database/migrations/*.js`.
 - Trong compose, API dùng host nội bộ `postgres` và `redis`; khi chạy local ngoài Docker có thể giữ `localhost` trong `.env`.
+- Upload ảnh mặc định dùng Cloudinary nếu cấu hình đủ biến môi trường; nếu chưa cấu hình thì backend sẽ fallback sang thư mục local `uploads/`.
 - Tiền được lưu bằng `BIGINT` theo đơn vị đồng và mọi giao dịch nên tiếp tục đi qua transaction log.
 
 ## SMTP / Email
