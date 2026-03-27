@@ -1,8 +1,12 @@
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
 export const APP_DEFAULTS = {
   host: '0.0.0.0',
   publicHost: 'localhost',
   port: 3000,
-  frontendUrl: 'http://localhost:3001',
+  frontendUrl: IS_PRODUCTION
+    ? 'https://blog-frontend-rouge-two.vercel.app'
+    : 'http://localhost:3001',
 } as const;
 
 export const DATABASE_DEFAULTS = {
