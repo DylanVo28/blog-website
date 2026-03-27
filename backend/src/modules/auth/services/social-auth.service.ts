@@ -33,6 +33,14 @@ interface AuthorizationRequest {
   maxAge: number;
 }
 
+interface SocialProviderService {
+  buildAuthorizationUrl(state: string, callbackUrl?: string): string;
+  getProfileFromCode(
+    code: string,
+    callbackUrl?: string,
+  ): Promise<SocialProfile>;
+}
+
 @Injectable()
 export class SocialAuthService {
   private static readonly STATE_TTL_SECONDS = 10 * 60;
@@ -55,6 +63,7 @@ export class SocialAuthService {
   async createAuthorizationRequest(
     provider: SocialProvider,
     redirectPath?: string,
+    callbackUrl?: string,
   ): Promise<AuthorizationRequest> {
     const redirect = this.normalizeRedirectPath(redirectPath);
     const stateToken = await this.jwtService.signAsync(
@@ -73,6 +82,7 @@ export class SocialAuthService {
     return {
       authorizationUrl: this.getProviderService(provider).buildAuthorizationUrl(
         stateToken,
+        callbackUrl,
       ),
       cookieName: this.getStateCookieName(provider),
       stateToken,
@@ -117,9 +127,14 @@ export class SocialAuthService {
     return payload.redirect;
   }
 
-  async authenticateWithCode(provider: SocialProvider, code: string) {
+  async authenticateWithCode(
+    provider: SocialProvider,
+    code: string,
+    callbackUrl?: string,
+  ) {
     const profile = await this.getProviderService(provider).getProfileFromCode(
       code,
+      callbackUrl,
     );
     const user = await this.findOrCreateUserForProfile(profile);
     return this.authService.createSessionForUser(user);
@@ -284,7 +299,7 @@ export class SocialAuthService {
     return redirect;
   }
 
-  private getProviderService(provider: SocialProvider) {
+  private getProviderService(provider: SocialProvider): SocialProviderService {
     if (provider === 'google') {
       return this.googleAuthService;
     }

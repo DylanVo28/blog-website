@@ -33,11 +33,15 @@ interface GitHubEmailResponse {
 export class GitHubAuthService {
   constructor(private readonly configService: ConfigService) {}
 
-  buildAuthorizationUrl(state: string) {
-    const { clientId, callbackUrl } = this.getConfig();
+  buildAuthorizationUrl(state: string, callbackUrl?: string) {
+    const { clientId, callbackUrl: configuredCallbackUrl } = this.getConfig();
+    const finalCallbackUrl = this.resolveCallbackUrl(
+      callbackUrl,
+      configuredCallbackUrl,
+    );
     const params = new URLSearchParams({
       client_id: clientId,
-      redirect_uri: callbackUrl,
+      redirect_uri: finalCallbackUrl,
       scope: 'read:user user:email',
       state,
     });
@@ -45,8 +49,19 @@ export class GitHubAuthService {
     return `https://github.com/login/oauth/authorize?${params.toString()}`;
   }
 
-  async getProfileFromCode(code: string): Promise<SocialProfile> {
-    const { clientId, clientSecret, callbackUrl } = this.getConfig();
+  async getProfileFromCode(
+    code: string,
+    callbackUrl?: string,
+  ): Promise<SocialProfile> {
+    const {
+      clientId,
+      clientSecret,
+      callbackUrl: configuredCallbackUrl,
+    } = this.getConfig();
+    const finalCallbackUrl = this.resolveCallbackUrl(
+      callbackUrl,
+      configuredCallbackUrl,
+    );
     const tokenResponse = await fetch(
       'https://github.com/login/oauth/access_token',
       {
@@ -59,7 +74,7 @@ export class GitHubAuthService {
           client_id: clientId,
           client_secret: clientSecret,
           code,
-          redirect_uri: callbackUrl,
+          redirect_uri: finalCallbackUrl,
         }),
       },
     );
@@ -154,7 +169,7 @@ export class GitHubAuthService {
       'socialAuth.github.callbackUrl',
     );
 
-    if (!clientId || !clientSecret || !callbackUrl) {
+    if (!clientId || !clientSecret) {
       throw new InternalServerErrorException(
         'GitHub social login chưa được cấu hình đầy đủ.',
       );
@@ -165,6 +180,22 @@ export class GitHubAuthService {
       clientSecret,
       callbackUrl,
     };
+  }
+
+  private resolveCallbackUrl(
+    callbackUrl: string | undefined,
+    configuredCallbackUrl: string | undefined,
+  ) {
+    const finalCallbackUrl =
+      callbackUrl?.trim() || configuredCallbackUrl?.trim();
+
+    if (!finalCallbackUrl) {
+      throw new InternalServerErrorException(
+        'GitHub social login chưa được cấu hình đầy đủ.',
+      );
+    }
+
+    return finalCallbackUrl;
   }
 
   private async parseJson<T>(response: Response, fallbackMessage: string) {

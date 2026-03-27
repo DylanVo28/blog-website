@@ -27,11 +27,15 @@ interface GoogleUserInfoResponse {
 export class GoogleAuthService {
   constructor(private readonly configService: ConfigService) {}
 
-  buildAuthorizationUrl(state: string) {
-    const { clientId, callbackUrl } = this.getConfig();
+  buildAuthorizationUrl(state: string, callbackUrl?: string) {
+    const { clientId, callbackUrl: configuredCallbackUrl } = this.getConfig();
+    const finalCallbackUrl = this.resolveCallbackUrl(
+      callbackUrl,
+      configuredCallbackUrl,
+    );
     const params = new URLSearchParams({
       client_id: clientId,
-      redirect_uri: callbackUrl,
+      redirect_uri: finalCallbackUrl,
       response_type: 'code',
       scope: 'openid email profile',
       access_type: 'offline',
@@ -42,8 +46,19 @@ export class GoogleAuthService {
     return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
   }
 
-  async getProfileFromCode(code: string): Promise<SocialProfile> {
-    const { clientId, clientSecret, callbackUrl } = this.getConfig();
+  async getProfileFromCode(
+    code: string,
+    callbackUrl?: string,
+  ): Promise<SocialProfile> {
+    const {
+      clientId,
+      clientSecret,
+      callbackUrl: configuredCallbackUrl,
+    } = this.getConfig();
+    const finalCallbackUrl = this.resolveCallbackUrl(
+      callbackUrl,
+      configuredCallbackUrl,
+    );
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: {
@@ -54,7 +69,7 @@ export class GoogleAuthService {
         client_secret: clientSecret,
         code,
         grant_type: 'authorization_code',
-        redirect_uri: callbackUrl,
+        redirect_uri: finalCallbackUrl,
       }),
     });
 
@@ -122,7 +137,7 @@ export class GoogleAuthService {
       'socialAuth.google.callbackUrl',
     );
 
-    if (!clientId || !clientSecret || !callbackUrl) {
+    if (!clientId || !clientSecret) {
       throw new InternalServerErrorException(
         'Google social login chưa được cấu hình đầy đủ.',
       );
@@ -133,6 +148,22 @@ export class GoogleAuthService {
       clientSecret,
       callbackUrl,
     };
+  }
+
+  private resolveCallbackUrl(
+    callbackUrl: string | undefined,
+    configuredCallbackUrl: string | undefined,
+  ) {
+    const finalCallbackUrl =
+      callbackUrl?.trim() || configuredCallbackUrl?.trim();
+
+    if (!finalCallbackUrl) {
+      throw new InternalServerErrorException(
+        'Google social login chưa được cấu hình đầy đủ.',
+      );
+    }
+
+    return finalCallbackUrl;
   }
 
   private async parseJson<T>(response: Response, fallbackMessage: string) {

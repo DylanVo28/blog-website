@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  InternalServerErrorException,
   NotFoundException,
   Param,
   Post,
@@ -9,6 +10,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -28,11 +30,13 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly socialAuthService: SocialAuthService,
+    private readonly configService: ConfigService,
   ) {}
 
   @Get(':provider')
   async redirectToProvider(
     @Param('provider') providerParam: string,
+    @Req() req: Request,
     @Res() res: Response,
     @Query('redirect') redirect?: string,
   ) {
@@ -40,6 +44,7 @@ export class AuthController {
     const authRequest = await this.socialAuthService.createAuthorizationRequest(
       provider,
       redirect,
+      this.buildCallbackUrl(req),
     );
 
     res.cookie(authRequest.cookieName, authRequest.stateToken, {
@@ -65,12 +70,13 @@ export class AuthController {
     const provider = this.parseProvider(providerParam);
     const cookieName = this.socialAuthService.getStateCookieName(provider);
     const cookieState = this.readCookie(req.headers.cookie, cookieName);
-    const frontendSuccessUrl = process.env.SOCIAL_AUTH_SUCCESS_URL
-      ? process.env.SOCIAL_AUTH_SUCCESS_URL
-      : 'http://localhost:3001/auth/social/callback';
-    const frontendFailureUrl = process.env.SOCIAL_AUTH_FAILURE_URL
-      ? process.env.SOCIAL_AUTH_FAILURE_URL
-      : 'http://localhost:3001/login?error=social_auth_failed';
+    const callbackUrl = this.getCurrentRequestUrl(req);
+    const frontendSuccessUrl =
+      this.configService.get<string>('socialAuth.frontendSuccessUrl') ??
+      'http://localhost:3001/auth/social/callback';
+    const frontendFailureUrl =
+      this.configService.get<string>('socialAuth.frontendFailureUrl') ??
+      'http://localhost:3001/login?error=social_auth_failed';
 
     res.clearCookie(cookieName, {
       path: '/api/auth',
@@ -104,12 +110,14 @@ export class AuthController {
       const session = await this.socialAuthService.authenticateWithCode(
         provider,
         code,
+        callbackUrl,
       );
-      const params = new URLSearchParams({
-        accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
-        redirect,
-      });
+      const params = new URLSearchParams();
+      params.set('accessToken', session.accessToken);
+      params.set('refreshToken', session.refreshToken);
+      if (redirect) {
+        params.set('redirect', redirect);
+      }
 
       return res.redirect(
         `${frontendSuccessUrl.replace(/\/$/, '')}?${params.toString()}`,
@@ -212,6 +220,53 @@ export class AuthController {
     }
 
     return decodeURIComponent(cookie.slice(name.length + 1));
+  }
+
+  private buildCallbackUrl(req: Request) {
+    const requestUrl = this.buildPublicRequestUrl(req);
+    requestUrl.pathname = `${requestUrl.pathname.replace(/\/$/, '')}/callback`;
+    requestUrl.search = '';
+    requestUrl.hash = '';
+    return requestUrl.toString();
+  }
+
+  private getCurrentRequestUrl(req: Request) {
+    const requestUrl = this.buildPublicRequestUrl(req);
+    requestUrl.search = '';
+    requestUrl.hash = '';
+    return requestUrl.toString();
+  }
+
+  private buildPublicRequestUrl(req: Request) {
+    const configuredPublicApiUrl = this.configService
+      .get<string>('socialAuth.publicApiUrl')
+      ?.trim();
+
+    if (configuredPublicApiUrl) {
+      return new URL(req.originalUrl, configuredPublicApiUrl);
+    }
+
+    const protocol =
+      this.readForwardedHeader(req.headers['x-forwarded-proto']) ??
+      req.protocol ??
+      'http';
+    const host =
+      this.readForwardedHeader(req.headers['x-forwarded-host']) ??
+      req.get('host');
+
+    if (!host) {
+      throw new InternalServerErrorException(
+        'Không thể xác định public URL cho social login.',
+      );
+    }
+
+    return new URL(req.originalUrl, `${protocol}://${host}`);
+  }
+
+  private readForwardedHeader(value: string | string[] | undefined) {
+    const rawValue = Array.isArray(value) ? value[0] : value;
+    const normalized = rawValue?.split(',')[0]?.trim();
+    return normalized || null;
   }
 
   private parseProvider(provider: string): SocialProvider {

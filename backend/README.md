@@ -72,6 +72,27 @@ SMTP_IGNORE_TLS=false
 
 Nếu chưa cấu hình SMTP, backend sẽ bỏ qua việc gửi mail và vẫn trả dev token khi chạy ngoài production để bạn test flow reset password.
 
+## Social Login
+
+Backend hiện tự suy ra callback URL social login từ request thực tế, nên local và production có thể dùng cùng codebase mà không cần hardcode callback khác host.
+
+Thiết lập tối thiểu trong `backend/.env`:
+
+```bash
+FRONTEND_URL=http://localhost:3001
+API_PUBLIC_URL=
+GOOGLE_CALLBACK_URL=
+GITHUB_CALLBACK_URL=
+SOCIAL_AUTH_SUCCESS_URL=
+SOCIAL_AUTH_FAILURE_URL=
+```
+
+- Để trống `API_PUBLIC_URL`, `GOOGLE_CALLBACK_URL`, `GITHUB_CALLBACK_URL` nếu backend nhận đúng host public từ request.
+- Chỉ set các biến này khi bạn chạy sau reverse proxy/CDN và host public không trùng host mà Node nhìn thấy.
+- Trong Google Cloud Console, hãy thêm đúng redirect URI mà backend đang dùng, ví dụ:
+  - `http://localhost:3000/api/auth/google/callback`
+  - `https://your-backend-domain/api/auth/google/callback`
+
 ## Payment QR
 
 Repo hiện hỗ trợ song song:
