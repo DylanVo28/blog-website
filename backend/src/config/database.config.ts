@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { DataSourceOptions } from 'typeorm';
+import { DATABASE_DEFAULTS } from '../common/constants';
 
 function toNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -9,30 +10,31 @@ function toNumber(value: string | undefined, fallback: number): number {
 }
 
 function isSslEnabled(): boolean {
-  return process.env.DB_SSL === 'true';
+  return process.env.DB_SSL === 'true' ? true : DATABASE_DEFAULTS.ssl;
 }
 
 function getDatabaseBaseOptions(): DataSourceOptions {
   return {
     type: 'postgres',
-    host: process.env.DB_HOST ?? 'localhost',
-    port: toNumber(process.env.DB_PORT, 5432),
-    username: process.env.DB_USERNAME ?? 'postgres',
+    host: process.env.DB_HOST ?? DATABASE_DEFAULTS.host,
+    port: toNumber(process.env.DB_PORT, DATABASE_DEFAULTS.port),
+    username: process.env.DB_USERNAME ?? DATABASE_DEFAULTS.username,
     password: process.env.DB_PASSWORD ?? 'postgres',
-    database: process.env.DB_NAME ?? 'blog_platform',
+    database: process.env.DB_NAME ?? DATABASE_DEFAULTS.database,
     synchronize: false,
-    logging: process.env.DB_LOGGING === 'true',
+    logging:
+      process.env.DB_LOGGING === 'true' ? true : DATABASE_DEFAULTS.logging,
     ssl: isSslEnabled() ? { rejectUnauthorized: false } : false,
     entities: [],
   };
 }
 
 export const databaseConfig = registerAs('database', () => ({
-  host: process.env.DB_HOST ?? 'localhost',
-  port: toNumber(process.env.DB_PORT, 5432),
-  username: process.env.DB_USERNAME ?? 'postgres',
+  host: process.env.DB_HOST ?? DATABASE_DEFAULTS.host,
+  port: toNumber(process.env.DB_PORT, DATABASE_DEFAULTS.port),
+  username: process.env.DB_USERNAME ?? DATABASE_DEFAULTS.username,
   password: process.env.DB_PASSWORD ?? 'postgres',
-  database: process.env.DB_NAME ?? 'blog_platform',
+  database: process.env.DB_NAME ?? DATABASE_DEFAULTS.database,
   ssl: isSslEnabled(),
 }));
 

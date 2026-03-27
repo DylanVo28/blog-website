@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AI_DEFAULTS } from '../../../common/constants';
 
 export interface EmbeddingResult {
   provider: string;
@@ -16,7 +17,8 @@ export class EmbeddingService {
 
   async embed(text: string): Promise<EmbeddingResult> {
     const dimensions =
-      this.configService.get<number>('ai.embeddingDimensions') ?? 768;
+      this.configService.get<number>('ai.embeddingDimensions') ??
+      AI_DEFAULTS.embeddingDimensions;
     const normalized = this.normalizeText(text);
     const tokens = normalized.split(/\s+/).filter(Boolean);
     const features = this.buildFeatures(tokens);
@@ -39,7 +41,7 @@ export class EmbeddingService {
       provider: 'deterministic-local',
       model:
         this.configService.get<string>('ai.embeddingModel') ??
-        'text-embedding-004',
+        AI_DEFAULTS.embeddingModel,
       dimensions,
       vector: normalizedVector,
       vectorLiteral: this.toVectorLiteral(normalizedVector),

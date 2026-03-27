@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { AI_DEFAULTS } from '../../common/constants';
 import { JobQueueService } from '../../jobs/job-queue.service';
 import { PostEntity } from '../posts/entities/post.entity';
 import { QuestionEntity } from '../questions/entities/question.entity';
@@ -324,15 +325,18 @@ export class AiService {
     }
 
     const model =
-      this.configService.get<string>('ai.model') ?? 'claude-opus-4.6';
+      this.configService.get<string>('ai.model') ?? AI_DEFAULTS.model;
     const apiVersion =
-      this.configService.get<string>('ai.apiVersion') ?? '2023-06-01';
-    const maxTokens = this.configService.get<number>('ai.maxTokens') ?? 1024;
+      this.configService.get<string>('ai.apiVersion') ?? AI_DEFAULTS.apiVersion;
+    const maxTokens =
+      this.configService.get<number>('ai.maxTokens') ?? AI_DEFAULTS.maxTokens;
     const temperature =
-      this.configService.get<number>('ai.temperature') ?? 0.2;
-    const timeoutMs = this.configService.get<number>('ai.timeoutMs') ?? 30000;
+      this.configService.get<number>('ai.temperature') ??
+      AI_DEFAULTS.temperature;
+    const timeoutMs =
+      this.configService.get<number>('ai.timeoutMs') ?? AI_DEFAULTS.timeoutMs;
     const baseUrl =
-      this.configService.get<string>('ai.baseUrl') ?? 'https://api.anthropic.com';
+      this.configService.get<string>('ai.baseUrl') ?? AI_DEFAULTS.baseUrl;
     const endpoint = this.buildMessagesEndpoint(baseUrl);
 
     const abortController = new AbortController();

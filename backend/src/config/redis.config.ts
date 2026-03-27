@@ -1,4 +1,5 @@
 import { registerAs } from '@nestjs/config';
+import { REDIS_DEFAULTS } from '../common/constants';
 
 function toNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -34,10 +35,14 @@ export const redisConfig = registerAs('redis', () => {
 
   return {
     ...(parsedUrl ?? {}),
-    host: parsedUrl?.host ?? process.env.REDIS_HOST ?? 'localhost',
-    port: parsedUrl?.port ?? toNumber(process.env.REDIS_PORT, 6379),
+    host: parsedUrl?.host ?? process.env.REDIS_HOST ?? REDIS_DEFAULTS.host,
+    port:
+      parsedUrl?.port ??
+      toNumber(process.env.REDIS_PORT, REDIS_DEFAULTS.port),
     username: parsedUrl?.username ?? process.env.REDIS_USERNAME ?? '',
     password: parsedUrl?.password ?? process.env.REDIS_PASSWORD ?? '',
-    tls: parsedUrl?.tls ?? (process.env.REDIS_TLS === 'true' ? {} : undefined),
+    tls:
+      parsedUrl?.tls ??
+      (process.env.REDIS_TLS === 'true' || REDIS_DEFAULTS.tls ? {} : undefined),
   };
 });

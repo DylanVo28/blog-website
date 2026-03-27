@@ -1,4 +1,5 @@
 import { registerAs } from '@nestjs/config';
+import { APP_DEFAULTS, SOCIAL_AUTH_DEFAULTS } from '../common/constants';
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, '');
@@ -11,7 +12,7 @@ function readOptionalEnv(name: string) {
 
 export const socialAuthConfig = registerAs('socialAuth', () => {
   const frontendBaseUrl = trimTrailingSlash(
-    process.env.FRONTEND_URL?.trim() || 'http://localhost:3001',
+    process.env.FRONTEND_URL?.trim() || APP_DEFAULTS.frontendUrl,
   );
 
   return {
@@ -29,9 +30,9 @@ export const socialAuthConfig = registerAs('socialAuth', () => {
     frontendBaseUrl,
     frontendSuccessUrl:
       process.env.SOCIAL_AUTH_SUCCESS_URL?.trim() ||
-      `${frontendBaseUrl}/auth/social/callback`,
+      `${frontendBaseUrl}${SOCIAL_AUTH_DEFAULTS.frontendSuccessPath}`,
     frontendFailureUrl:
       process.env.SOCIAL_AUTH_FAILURE_URL?.trim() ||
-      `${frontendBaseUrl}/login?error=social_auth_failed`,
+      `${frontendBaseUrl}${SOCIAL_AUTH_DEFAULTS.frontendFailurePath}`,
   };
 });

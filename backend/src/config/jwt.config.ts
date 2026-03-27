@@ -1,11 +1,19 @@
 import { registerAs } from '@nestjs/config';
+import { JWT_DEFAULTS } from '../common/constants';
 
 export const jwtConfig = registerAs('jwt', () => ({
-  accessSecret: process.env.JWT_ACCESS_SECRET ?? 'replace-access-secret',
-  refreshSecret: process.env.JWT_REFRESH_SECRET ?? 'replace-refresh-secret',
+  accessSecret:
+    process.env.JWT_ACCESS_SECRET ?? JWT_DEFAULTS.accessSecretPlaceholder,
+  refreshSecret:
+    process.env.JWT_REFRESH_SECRET ?? JWT_DEFAULTS.refreshSecretPlaceholder,
   verificationSecret:
-    process.env.JWT_VERIFICATION_SECRET ?? 'replace-verification-secret',
-  accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
-  refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '7d',
-  verificationExpiresIn: process.env.JWT_VERIFICATION_EXPIRES_IN ?? '15m',
+    process.env.JWT_VERIFICATION_SECRET ??
+    JWT_DEFAULTS.verificationSecretPlaceholder,
+  accessExpiresIn:
+    process.env.JWT_ACCESS_EXPIRES_IN ?? JWT_DEFAULTS.accessExpiresIn,
+  refreshExpiresIn:
+    process.env.JWT_REFRESH_EXPIRES_IN ?? JWT_DEFAULTS.refreshExpiresIn,
+  verificationExpiresIn:
+    process.env.JWT_VERIFICATION_EXPIRES_IN ??
+    JWT_DEFAULTS.verificationExpiresIn,
 }));

@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job, JobsOptions, Processor, Queue, Worker } from 'bullmq';
+import { REDIS_DEFAULTS } from '../common/constants';
 import {
   AiAnswerJobData,
   ExpireDepositJobData,
@@ -70,8 +71,10 @@ export class JobQueueService implements OnModuleDestroy {
   constructor(private readonly configService: ConfigService) {}
 
   private createRedisConnection(): RedisConnectionOptions {
-    const host = this.configService.get<string>('redis.host') ?? 'localhost';
-    const port = this.configService.get<number>('redis.port') ?? 6379;
+    const host =
+      this.configService.get<string>('redis.host') ?? REDIS_DEFAULTS.host;
+    const port =
+      this.configService.get<number>('redis.port') ?? REDIS_DEFAULTS.port;
     const username = this.configService.get<string>('redis.username')?.trim();
     const password = this.configService.get<string>('redis.password')?.trim();
     const tls = this.configService.get<Record<string, never> | undefined>(

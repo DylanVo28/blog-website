@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import nodemailer, { Transporter } from 'nodemailer';
+import { MAIL_DEFAULTS } from '../../common/constants';
 
 interface PasswordResetEmailInput {
   to: string;
@@ -113,14 +114,17 @@ export class MailService {
     }
 
     const host = this.configService.get<string>('mail.host') ?? '';
-    const port = this.configService.get<number>('mail.port') ?? 587;
-    const secure = this.configService.get<boolean>('mail.secure') ?? false;
+    const port = this.configService.get<number>('mail.port') ?? MAIL_DEFAULTS.port;
+    const secure =
+      this.configService.get<boolean>('mail.secure') ?? MAIL_DEFAULTS.secure;
     const user = this.configService.get<string>('mail.user') ?? '';
     const pass = this.configService.get<string>('mail.pass') ?? '';
     const requireTls =
-      this.configService.get<boolean>('mail.requireTls') ?? false;
+      this.configService.get<boolean>('mail.requireTls') ??
+      MAIL_DEFAULTS.requireTls;
     const ignoreTls =
-      this.configService.get<boolean>('mail.ignoreTls') ?? false;
+      this.configService.get<boolean>('mail.ignoreTls') ??
+      MAIL_DEFAULTS.ignoreTls;
 
     this.transporter = nodemailer.createTransport({
       host,
@@ -139,7 +143,8 @@ export class MailService {
   }
 
   private getFromAddress(): string {
-    const fromName = this.configService.get<string>('mail.fromName') ?? 'Inkline';
+    const fromName =
+      this.configService.get<string>('mail.fromName') ?? MAIL_DEFAULTS.fromName;
     const fromEmail = this.configService.get<string>('mail.fromEmail') ?? '';
     const safeFromName = fromName.replaceAll('"', '');
 

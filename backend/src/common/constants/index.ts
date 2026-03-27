@@ -1,5 +1,7 @@
 export const ROLES_KEY = 'roles';
 
+export * from './config.constants';
+
 export const APP_ROLES = ['reader', 'author', 'admin'] as const;
 export type AppRole = (typeof APP_ROLES)[number];
 

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { PAYMENT_DEFAULTS } from '../../../common/constants';
 
 interface VietQrInput {
   bankCode: string;
@@ -15,7 +16,7 @@ export class VietQrService {
 
   generateQrUrl(input: VietQrInput) {
     const url = new URL(
-      `${this.baseUrl}/${input.bankCode}-${input.accountNumber}-${input.template ?? 'compact2'}.png`,
+      `${this.baseUrl}/${input.bankCode}-${input.accountNumber}-${input.template ?? PAYMENT_DEFAULTS.vcbQr.template}.png`,
     );
 
     url.searchParams.set('amount', String(input.amount));

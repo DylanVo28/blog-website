@@ -6,6 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, LessThan, Repository } from 'typeorm';
+import { PAYMENT_DEFAULTS } from '../../common/constants';
 import { JobQueueService } from '../../jobs/job-queue.service';
 import { toNumber } from '../../common/utils/number.util';
 import { UserEntity } from '../users/entities/user.entity';
@@ -953,13 +954,16 @@ export class PaymentService {
         this.configService.get<string>('payment.momoQr.phone')?.trim() ?? '',
       name: this.configService.get<string>('payment.momoQr.name')?.trim() ?? '',
       minAmount: Number(
-        this.configService.get<number>('payment.momoQr.minAmount') ?? 10000,
+        this.configService.get<number>('payment.momoQr.minAmount') ??
+          PAYMENT_DEFAULTS.momoQr.minAmount,
       ),
       maxAmount: Number(
-        this.configService.get<number>('payment.momoQr.maxAmount') ?? 5000000,
+        this.configService.get<number>('payment.momoQr.maxAmount') ??
+          PAYMENT_DEFAULTS.momoQr.maxAmount,
       ),
       expireMinutes: Number(
-        this.configService.get<number>('payment.momoQr.expireMinutes') ?? 30,
+        this.configService.get<number>('payment.momoQr.expireMinutes') ??
+          PAYMENT_DEFAULTS.momoQr.expireMinutes,
       ),
       allowedAmounts: this.normalizeAllowedAmounts(
         this.configService.get<number[]>('payment.momoQr.allowedAmounts') ?? [],
@@ -1002,15 +1006,26 @@ export class PaymentService {
         '',
       template:
         this.configService.get<string>(`${configKey}.template`)?.trim() ??
-        'compact2',
+        (method === 'vcb_qr'
+          ? PAYMENT_DEFAULTS.vcbQr.template
+          : PAYMENT_DEFAULTS.ocbQr.template),
       minAmount: Number(
-        this.configService.get<number>(`${configKey}.minAmount`) ?? 10000,
+        this.configService.get<number>(`${configKey}.minAmount`) ??
+          (method === 'vcb_qr'
+            ? PAYMENT_DEFAULTS.vcbQr.minAmount
+            : PAYMENT_DEFAULTS.ocbQr.minAmount),
       ),
       maxAmount: Number(
-        this.configService.get<number>(`${configKey}.maxAmount`) ?? 5000000,
+        this.configService.get<number>(`${configKey}.maxAmount`) ??
+          (method === 'vcb_qr'
+            ? PAYMENT_DEFAULTS.vcbQr.maxAmount
+            : PAYMENT_DEFAULTS.ocbQr.maxAmount),
       ),
       expireMinutes: Number(
-        this.configService.get<number>(`${configKey}.expireMinutes`) ?? 15,
+        this.configService.get<number>(`${configKey}.expireMinutes`) ??
+          (method === 'vcb_qr'
+            ? PAYMENT_DEFAULTS.vcbQr.expireMinutes
+            : PAYMENT_DEFAULTS.ocbQr.expireMinutes),
       ),
       allowedAmounts: this.normalizeAllowedAmounts(
         this.configService.get<number[]>(`${configKey}.allowedAmounts`) ?? [],

@@ -7,6 +7,7 @@ import {
   type UploadApiErrorResponse,
   type UploadApiResponse,
 } from 'cloudinary';
+import { APP_DEFAULTS } from '../../common/constants';
 
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/avif',
@@ -300,9 +301,10 @@ export class UploadService {
       return explicitPublicUrl.replace(/\/$/, '');
     }
 
-    const host = (process.env.APP_HOST ?? 'localhost').trim();
-    const publicHost = host === '0.0.0.0' ? 'localhost' : host;
-    const port = Number(process.env.APP_PORT ?? 3000);
+    const host = (process.env.APP_HOST ?? APP_DEFAULTS.publicHost).trim();
+    const publicHost =
+      host === APP_DEFAULTS.host ? APP_DEFAULTS.publicHost : host;
+    const port = Number(process.env.APP_PORT ?? APP_DEFAULTS.port);
 
     return `http://${publicHost}:${port}`;
   }

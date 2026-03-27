@@ -13,7 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, LessThan, MoreThan, Repository } from 'typeorm';
-import { AppRole } from '../../common/constants';
+import { APP_DEFAULTS, AppRole } from '../../common/constants';
 import { hashPassword, verifyPassword } from '../../common/utils/password.util';
 import { generateToken, hashToken } from '../../common/utils/token.util';
 import { MailService } from '../mail/mail.service';
@@ -728,7 +728,8 @@ export class AuthService {
 
   private buildResetPasswordUrl(rawToken: string) {
     const frontendUrl =
-      this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:3001';
+      this.configService.get<string>('socialAuth.frontendBaseUrl') ??
+      APP_DEFAULTS.frontendUrl;
 
     return `${frontendUrl.replace(/\/$/, '')}/reset-password?token=${rawToken}`;
   }
