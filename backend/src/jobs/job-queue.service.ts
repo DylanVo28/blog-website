@@ -13,13 +13,19 @@ import {
   RefundSweepJobData,
 } from './job.constants';
 
+interface RedisConnectionOptions {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  tls?: Record<string, never>;
+  maxRetriesPerRequest: null;
+}
+
 @Injectable()
 export class JobQueueService implements OnModuleDestroy {
-  private readonly connection = {
-    host: this.configService.get<string>('redis.host') ?? 'localhost',
-    port: this.configService.get<number>('redis.port') ?? 6379,
-    maxRetriesPerRequest: null as null,
-  };
+  private readonly connection: RedisConnectionOptions =
+    this.createRedisConnection();
 
   private readonly embeddingQueue = new Queue(JOB_QUEUE_NAMES.embedding, {
     connection: this.connection,
@@ -62,6 +68,25 @@ export class JobQueueService implements OnModuleDestroy {
   });
 
   constructor(private readonly configService: ConfigService) {}
+
+  private createRedisConnection(): RedisConnectionOptions {
+    const host = this.configService.get<string>('redis.host') ?? 'localhost';
+    const port = this.configService.get<number>('redis.port') ?? 6379;
+    const username = this.configService.get<string>('redis.username')?.trim();
+    const password = this.configService.get<string>('redis.password')?.trim();
+    const tls = this.configService.get<Record<string, never> | undefined>(
+      'redis.tls',
+    );
+
+    return {
+      host,
+      port,
+      username: username || undefined,
+      password: password || undefined,
+      tls,
+      maxRetriesPerRequest: null,
+    };
+  }
 
   createWorker<TData = unknown, TResult = unknown>(
     queueName: string,

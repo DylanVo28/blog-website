@@ -17,7 +17,7 @@ async function bootstrap(): Promise<void> {
   });
 
   const host = process.env.APP_HOST ?? '0.0.0.0';
-  const port = Number(process.env.APP_PORT ?? 3000);
+  const port = Number(process.env.PORT ?? process.env.APP_PORT ?? 3000);
   await app.listen(port, host);
 
   const publicHost = host === '0.0.0.0' ? 'localhost' : host;

@@ -24,7 +24,9 @@ COPY --from=deps /app/node_modules ./node_modules
 RUN npm prune --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
+COPY scripts/start.prod.sh ./scripts/start.prod.sh
+RUN chmod +x ./scripts/start.prod.sh
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start:prod"]
+CMD ["./scripts/start.prod.sh"]
