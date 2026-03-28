@@ -7,12 +7,19 @@ Backend hiện đã có deployment stack cơ bản cho Phase 9:
 - API tự chạy migrations trước khi start container
 - Health check tại `/api/health`
 
+Backend sẽ tự nạp env theo thứ tự:
+
+- `.env.<APP_ENV>` hoặc `.env.<NODE_ENV>`
+- `.env` làm fallback nếu còn biến chưa có
+
+`APP_ENV` được ưu tiên hơn `NODE_ENV`. Nếu bạn không set gì, backend mặc định dùng `development`.
+
 ## Chạy bằng Docker
 
 ```bash
 cd backend
-cp .env.example .env
-docker compose up --build -d
+cp .env.example .env.production
+docker compose --env-file .env.production up --build -d
 ```
 
 Kiểm tra trạng thái:
@@ -39,23 +46,34 @@ docker compose down -v
 
 ```bash
 cd backend
-cp .env.example .env
-docker compose up -d postgres redis
+cp .env.example .env.development
+docker compose --env-file .env.development up -d postgres redis
 npm install
 npm run migration:run
 npm run start:dev
 ```
 
+## Chạy staging
+
+```bash
+cd backend
+cp .env.example .env.staging
+npm install
+npm run build
+npm run migration:run:staging
+npm run start:staging
+```
+
 ## Ghi chú
 
-- `docker compose up --build -d` sẽ build image mới và tự apply migrations từ `dist/database/migrations/*.js`.
-- Trong compose, API dùng host nội bộ `postgres` và `redis`; khi chạy local ngoài Docker có thể giữ `localhost` trong `.env`.
+- `docker compose --env-file .env.production up --build -d` sẽ build image mới và tự apply migrations từ `dist/database/migrations/*.js`.
+- Trong compose, API dùng host nội bộ `postgres` và `redis`; khi chạy local ngoài Docker có thể giữ `localhost` trong `.env.development`.
 - Upload ảnh mặc định dùng Cloudinary nếu cấu hình đủ biến môi trường; nếu chưa cấu hình thì backend sẽ fallback sang thư mục local `uploads/`.
 - Tiền được lưu bằng `BIGINT` theo đơn vị đồng và mọi giao dịch nên tiếp tục đi qua transaction log.
 
 ## SMTP / Email
 
-Backend đã có `MailService` dùng SMTP qua `nodemailer`. Để bật email forgot/reset password, hãy cấu hình các biến sau trong `backend/.env`:
+Backend đã có `MailService` dùng SMTP qua `nodemailer`. Để bật email forgot/reset password, hãy cấu hình các biến sau trong file env tương ứng, ví dụ `backend/.env.development`, `backend/.env.staging`, hoặc `backend/.env.production`:
 
 ```bash
 FRONTEND_URL=http://localhost:3001
@@ -76,18 +94,18 @@ Nếu chưa cấu hình SMTP, backend sẽ bỏ qua việc gửi mail và vẫn 
 
 Backend hiện tự suy ra callback URL social login từ request thực tế, nên local và production có thể dùng cùng codebase mà không cần hardcode callback khác host.
 
-Thiết lập tối thiểu trong `backend/.env`:
+Thiết lập tối thiểu trong file env tương ứng:
 
 ```bash
 FRONTEND_URL=http://localhost:3001
-API_PUBLIC_URL=
+APP_PUBLIC_URL=
 GOOGLE_CALLBACK_URL=
 GITHUB_CALLBACK_URL=
 SOCIAL_AUTH_SUCCESS_URL=
 SOCIAL_AUTH_FAILURE_URL=
 ```
 
-- Để trống `API_PUBLIC_URL`, `GOOGLE_CALLBACK_URL`, `GITHUB_CALLBACK_URL` nếu backend nhận đúng host public từ request.
+- Để trống `APP_PUBLIC_URL`, `GOOGLE_CALLBACK_URL`, `GITHUB_CALLBACK_URL` nếu backend nhận đúng host public từ request.
 - Chỉ set các biến này khi bạn chạy sau reverse proxy/CDN và host public không trùng host mà Node nhìn thấy.
 - Trong Google Cloud Console, hãy thêm đúng redirect URI mà backend đang dùng, ví dụ:
   - `http://localhost:3000/api/auth/google/callback`
@@ -101,7 +119,7 @@ Repo hiện hỗ trợ song song:
 - `vcb_qr`: user quét VietQR Vietcombank, SePay gửi webhook về backend để auto cộng ví.
 - `ocb_qr`: user quét VietQR OCB, SePay gửi webhook về backend để auto cộng ví.
 
-Cấu hình tối thiểu cho `vcb_qr` trong `backend/.env`:
+Cấu hình tối thiểu cho `vcb_qr` trong file env tương ứng:
 
 ```bash
 VCB_QR_BANK_CODE=970436

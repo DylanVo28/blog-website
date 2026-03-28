@@ -296,7 +296,9 @@ export class UploadService {
   }
 
   private getPublicBaseUrl() {
-    const explicitPublicUrl = process.env.APP_PUBLIC_URL?.trim();
+    const explicitPublicUrl =
+      process.env.APP_PUBLIC_URL?.trim() ||
+      process.env.API_PUBLIC_URL?.trim();
     if (explicitPublicUrl) {
       return explicitPublicUrl.replace(/\/$/, '');
     }

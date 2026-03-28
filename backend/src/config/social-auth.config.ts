@@ -14,6 +14,8 @@ export const socialAuthConfig = registerAs('socialAuth', () => {
   const frontendBaseUrl = trimTrailingSlash(
     process.env.FRONTEND_URL?.trim() || APP_DEFAULTS.frontendUrl,
   );
+  const publicApiUrl =
+    readOptionalEnv('APP_PUBLIC_URL') || readOptionalEnv('API_PUBLIC_URL');
 
   return {
     google: {
@@ -26,7 +28,7 @@ export const socialAuthConfig = registerAs('socialAuth', () => {
       clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
       callbackUrl: readOptionalEnv('GITHUB_CALLBACK_URL'),
     },
-    publicApiUrl: readOptionalEnv('API_PUBLIC_URL'),
+    publicApiUrl,
     frontendBaseUrl,
     frontendSuccessUrl:
       process.env.SOCIAL_AUTH_SUCCESS_URL?.trim() ||

@@ -6,8 +6,9 @@ services:
     container_name: blog_backend_api
     restart: unless-stopped
     env_file:
-      - .env
+      - .env.production
     environment:
+      APP_ENV: production
       NODE_ENV: production
       APP_HOST: 0.0.0.0
       APP_PORT: ${APP_PORT:-3000}

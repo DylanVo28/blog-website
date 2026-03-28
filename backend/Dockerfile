@@ -17,6 +17,7 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
+ENV APP_ENV=production
 ENV NODE_ENV=production
 
 COPY package*.json ./

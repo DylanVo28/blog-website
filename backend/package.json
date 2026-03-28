@@ -5,15 +5,19 @@
   "description": "Backend foundation for the monetized blog platform.",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/main.js",
-    "start:prod": "node dist/main.js",
-    "start:dev": "ts-node-dev --respawn --transpile-only src/main.ts",
-    "migration:run": "typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:run",
-    "migration:revert": "typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:revert",
-    "migration:show": "typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:show",
-    "migration:run:prod": "typeorm -d dist/database/typeorm.config.js migration:run",
-    "migration:revert:prod": "typeorm -d dist/database/typeorm.config.js migration:revert",
-    "migration:show:prod": "typeorm -d dist/database/typeorm.config.js migration:show"
+    "start": "APP_ENV=production NODE_ENV=production node dist/main.js",
+    "start:prod": "APP_ENV=production NODE_ENV=production node dist/main.js",
+    "start:staging": "APP_ENV=staging NODE_ENV=production node dist/main.js",
+    "start:dev": "APP_ENV=development NODE_ENV=development ts-node-dev --respawn --transpile-only src/main.ts",
+    "migration:run": "APP_ENV=development NODE_ENV=development typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:run",
+    "migration:revert": "APP_ENV=development NODE_ENV=development typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:revert",
+    "migration:show": "APP_ENV=development NODE_ENV=development typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:show",
+    "migration:run:staging": "APP_ENV=staging NODE_ENV=production typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:run",
+    "migration:revert:staging": "APP_ENV=staging NODE_ENV=production typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:revert",
+    "migration:show:staging": "APP_ENV=staging NODE_ENV=production typeorm-ts-node-commonjs -d src/database/typeorm.config.ts migration:show",
+    "migration:run:prod": "APP_ENV=production NODE_ENV=production typeorm -d dist/database/typeorm.config.js migration:run",
+    "migration:revert:prod": "APP_ENV=production NODE_ENV=production typeorm -d dist/database/typeorm.config.js migration:revert",
+    "migration:show:prod": "APP_ENV=production NODE_ENV=production typeorm -d dist/database/typeorm.config.js migration:show"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.17",
