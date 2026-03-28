@@ -29,7 +29,7 @@ export function NotificationBell({ className }: NotificationBellProps) {
         <button
           type="button"
           className={cn(
-            "relative inline-flex size-10 items-center justify-center rounded-full border border-border/70 bg-white/70 text-foreground transition-colors hover:bg-accent",
+            "surface-panel relative inline-flex size-10 items-center justify-center rounded-full border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_16%,transparent),transparent_62%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,var(--color-accent)_28%))] text-foreground shadow-sm transition-[transform,box-shadow,border-color] hover:-translate-y-0.5 hover:shadow-md",
             className,
           )}
           aria-label="Mở thông báo"

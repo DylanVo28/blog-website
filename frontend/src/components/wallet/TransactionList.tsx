@@ -49,7 +49,7 @@ export function TransactionList({ className }: TransactionListProps) {
   return (
     <div className={className}>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-white/75 px-4 py-2 text-sm text-muted-foreground">
+        <div className="surface-panel inline-flex items-center gap-2 rounded-full border border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] px-4 py-2 text-sm text-muted-foreground">
           <Filter className="size-4 text-primary" />
           Lọc giao dịch
         </div>

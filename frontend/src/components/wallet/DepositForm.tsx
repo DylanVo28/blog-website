@@ -78,14 +78,14 @@ function getHeroTitle(method: string | null | undefined, bankName: string | null
 
 function getHeroClassName(method: string | null | undefined) {
   if (method === "vcb_qr") {
-    return "bg-[linear-gradient(135deg,#0f3d2e,#13795b_56%,#46c78a)]";
+    return "border border-[color-mix(in_oklab,var(--color-border)_42%,rgb(16,185,129)_58%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(16,185,129)_24%,transparent),transparent_42%),linear-gradient(135deg,color-mix(in_oklab,var(--color-card)_62%,rgb(6,95,70)_38%),color-mix(in_oklab,var(--color-card)_42%,rgb(4,120,87)_58%)_56%,color-mix(in_oklab,var(--color-card)_30%,rgb(74,222,128)_70%))]";
   }
 
   if (method === "ocb_qr") {
-    return "bg-[linear-gradient(135deg,#6d3208,#d16014_56%,#ffb25c)]";
+    return "border border-[color-mix(in_oklab,var(--color-border)_42%,rgb(245,158,11)_58%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(245,158,11)_22%,transparent),transparent_42%),linear-gradient(135deg,color-mix(in_oklab,var(--color-card)_62%,rgb(124,45,18)_38%),color-mix(in_oklab,var(--color-card)_40%,rgb(194,65,12)_60%)_56%,color-mix(in_oklab,var(--color-card)_28%,rgb(251,191,36)_72%))]";
   }
 
-  return "bg-[linear-gradient(135deg,#46215d,#bb2874_58%,#f17fa2)]";
+  return "border border-[color-mix(in_oklab,var(--color-border)_42%,rgb(217,70,239)_58%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(217,70,239)_22%,transparent),transparent_42%),linear-gradient(135deg,color-mix(in_oklab,var(--color-card)_60%,rgb(88,28,135)_40%),color-mix(in_oklab,var(--color-card)_38%,rgb(190,24,93)_62%)_58%,color-mix(in_oklab,var(--color-card)_28%,rgb(244,114,182)_72%))]";
 }
 
 function getStepLabels(method: string | null | undefined) {
@@ -155,26 +155,35 @@ function getMethodCardMeta(method: string) {
   if (method === "vcb_qr") {
     return {
       icon: <Landmark className="size-5" />,
-      iconClassName: "bg-emerald-100 text-emerald-700",
-      activeClassName: "border-emerald-300 bg-emerald-50 shadow-sm",
-      idleClassName: "border-border/70 bg-white/80 hover:border-emerald-200",
+      iconClassName:
+        "bg-[color-mix(in_oklab,rgb(16,185,129)_18%,transparent)] text-emerald-700 dark:text-emerald-300",
+      activeClassName:
+        "border-[color-mix(in_oklab,var(--color-border)_48%,rgb(16,185,129)_52%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(16,185,129)_16%,transparent),transparent_54%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,rgb(16,185,129)_28%))] shadow-sm",
+      idleClassName:
+        "border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] hover:border-[color-mix(in_oklab,var(--color-border)_48%,rgb(16,185,129)_52%)]",
     };
   }
 
   if (method === "ocb_qr") {
     return {
       icon: <Landmark className="size-5" />,
-      iconClassName: "bg-amber-100 text-amber-700",
-      activeClassName: "border-amber-300 bg-amber-50 shadow-sm",
-      idleClassName: "border-border/70 bg-white/80 hover:border-amber-200",
+      iconClassName:
+        "bg-[color-mix(in_oklab,rgb(245,158,11)_18%,transparent)] text-amber-700 dark:text-amber-300",
+      activeClassName:
+        "border-[color-mix(in_oklab,var(--color-border)_48%,rgb(245,158,11)_52%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(245,158,11)_16%,transparent),transparent_54%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,rgb(245,158,11)_28%))] shadow-sm",
+      idleClassName:
+        "border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] hover:border-[color-mix(in_oklab,var(--color-border)_48%,rgb(245,158,11)_52%)]",
     };
   }
 
   return {
     icon: <WalletCards className="size-5" />,
-    iconClassName: "bg-fuchsia-100 text-fuchsia-700",
-    activeClassName: "border-fuchsia-300 bg-fuchsia-50 shadow-sm",
-    idleClassName: "border-border/70 bg-white/80 hover:border-fuchsia-200",
+    iconClassName:
+      "bg-[color-mix(in_oklab,rgb(217,70,239)_18%,transparent)] text-fuchsia-700 dark:text-fuchsia-300",
+    activeClassName:
+      "border-[color-mix(in_oklab,var(--color-border)_48%,rgb(217,70,239)_52%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(217,70,239)_16%,transparent),transparent_54%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,rgb(217,70,239)_28%))] shadow-sm",
+    idleClassName:
+      "border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] hover:border-[color-mix(in_oklab,var(--color-border)_48%,rgb(217,70,239)_52%)]",
   };
 }
 
@@ -372,9 +381,14 @@ export function DepositForm() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <Card className={cn("overflow-hidden border-0 text-white", getHeroClassName(currentMethod))}>
+      <Card
+        className={cn(
+          "overflow-hidden text-foreground shadow-[0_28px_90px_-50px_rgba(25,32,56,0.38)]",
+          getHeroClassName(currentMethod),
+        )}
+      >
         <CardHeader className="space-y-4">
-          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-white/70">
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary/80">
             {getHeroTitle(currentMethod, currentBankName)}
           </p>
 
@@ -389,21 +403,23 @@ export function DepositForm() {
                     className={cn(
                       "flex size-10 items-center justify-center rounded-full border text-sm font-semibold",
                       isActive
-                        ? "border-white/30 bg-white/16 text-white"
-                        : "border-white/10 bg-white/5 text-white/55",
+                        ? "border-border/60 bg-[color-mix(in_oklab,var(--color-card)_80%,transparent)] text-foreground"
+                        : "border-border/45 bg-[color-mix(in_oklab,var(--color-card)_42%,transparent)] text-muted-foreground",
                     )}
                   >
                     {index + 1}
                   </div>
-                  <span className={isActive ? "text-white" : "text-white/60"}>{label}</span>
+                  <span className={isActive ? "text-foreground" : "text-muted-foreground"}>{label}</span>
                 </div>
               );
             })}
           </div>
 
           <div>
-            <CardTitle className="text-white">{getDepositHeadline(currentMethod, currentStatus)}</CardTitle>
-            <CardDescription className="text-white/80">
+            <CardTitle className="text-foreground">
+              {getDepositHeadline(currentMethod, currentStatus)}
+            </CardTitle>
+            <CardDescription className="text-muted-foreground">
               {getHeroDescription(currentMethod, currentBankName)}
             </CardDescription>
           </div>
@@ -433,7 +449,7 @@ export function DepositForm() {
                       setAmount(method.allowedAmounts[0] ?? method.minAmount);
                     }}
                     className={cn(
-                      "rounded-[1.4rem] border-2 p-4 text-left transition-all",
+                      "surface-panel rounded-[1.4rem] border-2 p-4 text-left transition-all",
                       isActive ? meta.activeClassName : meta.idleClassName,
                     )}
                   >
@@ -489,7 +505,7 @@ export function DepositForm() {
                 ) : null}
               </div>
 
-              <div className="rounded-[1.6rem] border border-border/70 bg-muted/30 p-5">
+              <div className="surface-panel rounded-[1.6rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_84%,transparent),color-mix(in_oklab,var(--color-muted)_60%,transparent))] p-5">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
                   Thông tin nhận tiền
                 </p>
@@ -554,7 +570,7 @@ export function DepositForm() {
 
             <CardContent className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
               <div className="space-y-4">
-                <div className="rounded-[1.5rem] border border-border/70 bg-muted/20 p-4">
+                <div className="surface-panel rounded-[1.5rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_14%,transparent),transparent_52%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                   <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
                     Nội dung chuyển khoản
                   </p>
@@ -577,7 +593,7 @@ export function DepositForm() {
                       ? "Đây là mã đối soát để webhook ngân hàng khớp giao dịch. Nếu thay đổi nội dung này, hệ thống sẽ không thể tự cộng ví."
                       : "Đây là mã đối soát duy nhất. Nếu đổi nội dung này, admin sẽ khó xác nhận chính xác giao dịch."}
                   </p>
-                  <p className="mt-2 text-sm leading-6 text-amber-700">
+                  <p className="mt-2 text-sm leading-6 text-[color-mix(in_oklab,rgb(245,158,11)_72%,var(--color-foreground)_28%)]">
                     {isCurrentBankFlow
                       ? "Hãy giữ nguyên đúng số tiền và nội dung. Sau khi chuyển thành công, hệ thống sẽ tự cập nhật khi SePay gửi webhook về."
                       : "QR MoMo cá nhân có thể chỉ tự điền người nhận và số tiền. Nếu app MoMo chưa hiện nội dung, hãy dán mã này thủ công vào ô lời nhắn."}
@@ -585,13 +601,13 @@ export function DepositForm() {
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
-                  <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                  <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                     <p className="text-sm text-muted-foreground">Số tiền</p>
                     <p className="mt-2 text-2xl font-semibold text-foreground">
                       {formatCurrency(displayDeposit.amount)}
                     </p>
                   </div>
-                  <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                  <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                     <p className="text-sm text-muted-foreground">
                       {isCurrentBankFlow ? "Tài khoản nhận" : "Người nhận"}
                     </p>
@@ -606,7 +622,7 @@ export function DepositForm() {
                   </div>
                 </div>
 
-                <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                   <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
                     Các bước cần làm
                   </p>
@@ -696,13 +712,13 @@ export function DepositForm() {
                 </div>
               </div>
 
-              <div className="space-y-4 rounded-[1.8rem] border border-border/70 bg-white/80 p-5 text-center">
+              <div className="surface-panel space-y-4 rounded-[1.8rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_12%,transparent),transparent_56%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-5 text-center">
                 <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary/70">
                   {isCurrentBankFlow
                     ? `VietQR ${currentDeposit.payment.receiver.bankName ?? formatMethodLabel(currentMethod)}`
                     : "MoMo QR"}
                 </p>
-                <div className="overflow-hidden rounded-[1.5rem] border border-border/70 bg-white p-3">
+                <div className="overflow-hidden rounded-[1.5rem] border border-border/70 bg-[color-mix(in_oklab,var(--color-card)_92%,transparent)] p-3">
                   {currentDeposit.payment.qr.imageDataUrl ? (
                     <Image
                       src={currentDeposit.payment.qr.imageDataUrl}
@@ -784,7 +800,7 @@ export function DepositForm() {
           </CardHeader>
           <CardContent className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-4">
-              <div className="rounded-[1.5rem] border border-border/70 bg-white/80 p-5">
+              <div className="surface-panel rounded-[1.5rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-5">
                 <div className="flex items-center gap-3">
                   <div className="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
                     <TimerReset className="size-5" />
@@ -799,13 +815,13 @@ export function DepositForm() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                   <p className="text-sm text-muted-foreground">Số tiền</p>
                   <p className="mt-2 text-2xl font-semibold text-foreground">
                     {formatCurrency(displayDeposit.amount)}
                   </p>
                 </div>
-                <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                   <p className="text-sm text-muted-foreground">Mã nạp</p>
                   <p className="mt-2 font-mono text-lg font-semibold tracking-[0.16em] text-foreground">
                     {displayDeposit.depositCode}
@@ -814,7 +830,7 @@ export function DepositForm() {
               </div>
 
               {displayDeposit.transferProofUrl ? (
-                <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                   <p className="text-sm text-muted-foreground">Proof đã gửi</p>
                   <a
                     href={displayDeposit.transferProofUrl}
@@ -829,7 +845,7 @@ export function DepositForm() {
               ) : null}
 
               {displayDeposit.adminNote ? (
-                <div className="rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+                <div className="surface-panel rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
                   <p className="text-sm text-muted-foreground">Ghi chú admin</p>
                   <p className="mt-2 text-sm leading-6 text-foreground">{displayDeposit.adminNote}</p>
                 </div>
@@ -853,20 +869,20 @@ export function DepositForm() {
               </div>
             </div>
 
-            <div className="flex items-center justify-center rounded-[1.8rem] border border-border/70 bg-white/70 p-6">
+            <div className="surface-panel flex items-center justify-center rounded-[1.8rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_84%,transparent),color-mix(in_oklab,var(--color-muted)_58%,transparent))] p-6">
               <LoadingSpinner label="Đang chờ admin xác nhận giao dịch..." />
             </div>
           </CardContent>
         </Card>
       ) : displayDeposit?.status === "completed" ? (
-        <Card className="overflow-hidden border-0 bg-[radial-gradient(circle_at_top_left,rgba(176,243,215,0.45),transparent_42%),linear-gradient(135deg,#14532d,#1d8c5d_54%,#65d59a)] text-white">
+        <Card className="overflow-hidden border border-[color-mix(in_oklab,var(--color-border)_42%,rgb(16,185,129)_58%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(16,185,129)_26%,transparent),transparent_42%),linear-gradient(135deg,color-mix(in_oklab,var(--color-card)_60%,rgb(6,95,70)_40%),color-mix(in_oklab,var(--color-card)_40%,rgb(5,150,105)_60%)_54%,color-mix(in_oklab,var(--color-card)_28%,rgb(110,231,183)_72%))] text-foreground shadow-[0_28px_90px_-50px_rgba(25,32,56,0.38)]">
           <CardHeader className="items-start gap-4">
-            <div className="flex size-14 items-center justify-center rounded-full border border-white/20 bg-white/10">
+            <div className="flex size-14 items-center justify-center rounded-full border border-border/60 bg-[color-mix(in_oklab,var(--color-card)_72%,transparent)] text-emerald-700 dark:text-emerald-300">
               <CheckCircle2 className="size-7" />
             </div>
             <div>
-              <CardTitle className="text-white">Nạp tiền thành công</CardTitle>
-              <CardDescription className="text-white/80">
+              <CardTitle className="text-foreground">Nạp tiền thành công</CardTitle>
+              <CardDescription className="text-foreground/80">
                 {formatCurrency(displayDeposit.amount)} đã được cộng vào ví của bạn qua{" "}
                 {formatMethodLabel(displayDeposit.paymentMethod)}.
               </CardDescription>
@@ -874,26 +890,26 @@ export function DepositForm() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4">
-                <p className="text-sm text-white/70">Mã nạp</p>
-                <p className="mt-2 font-mono font-semibold tracking-[0.16em] text-white">
+              <div className="rounded-[1.3rem] border border-border/60 bg-[color-mix(in_oklab,var(--color-card)_74%,transparent)] p-4">
+                <p className="text-sm text-foreground/70">Mã nạp</p>
+                <p className="mt-2 font-mono font-semibold tracking-[0.16em] text-foreground">
                   {displayDeposit.depositCode}
                 </p>
               </div>
-              <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4">
-                <p className="text-sm text-white/70">Hoàn tất lúc</p>
-                <p className="mt-2 font-semibold text-white">
+              <div className="rounded-[1.3rem] border border-border/60 bg-[color-mix(in_oklab,var(--color-card)_74%,transparent)] p-4">
+                <p className="text-sm text-foreground/70">Hoàn tất lúc</p>
+                <p className="mt-2 font-semibold text-foreground">
                   {formatDateTime(displayDeposit.matchedAt ?? displayDeposit.completedAt)}
                 </p>
               </div>
-              <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4">
-                <p className="text-sm text-white/70">Trạng thái</p>
-                <p className="mt-2 font-semibold text-white">Đã cộng vào ví</p>
+              <div className="rounded-[1.3rem] border border-border/60 bg-[color-mix(in_oklab,var(--color-card)_74%,transparent)] p-4">
+                <p className="text-sm text-foreground/70">Trạng thái</p>
+                <p className="mt-2 font-semibold text-foreground">Đã cộng vào ví</p>
               </div>
             </div>
 
             {displayDeposit.adminNote ? (
-              <div className="rounded-[1.3rem] border border-white/20 bg-white/10 p-4 text-sm leading-6 text-white/90">
+              <div className="rounded-[1.3rem] border border-border/60 bg-[color-mix(in_oklab,var(--color-card)_74%,transparent)] p-4 text-sm leading-6 text-foreground/90">
                 {displayDeposit.adminNote}
               </div>
             ) : null}
@@ -908,7 +924,7 @@ export function DepositForm() {
               <Button
                 type="button"
                 variant="outline"
-                className="border-white/25 bg-transparent text-white hover:bg-white/10"
+                className="border-border/60 bg-[color-mix(in_oklab,var(--color-card)_72%,transparent)] text-foreground hover:bg-accent/60"
                 onClick={resetFlow}
               >
                 Tạo deposit mới
@@ -963,7 +979,7 @@ export function DepositForm() {
             historyQuery.data.items.map((item: ManualDeposit) => (
               <div
                 key={item.id}
-                className="flex flex-wrap items-center justify-between gap-4 rounded-[1.4rem] border border-border/70 bg-white/80 px-4 py-4"
+                className="surface-panel flex flex-wrap items-center justify-between gap-4 rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] px-4 py-4"
               >
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">

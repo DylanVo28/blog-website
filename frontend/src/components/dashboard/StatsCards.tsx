@@ -26,29 +26,29 @@ export function StatsCards({
       label: "Thu nhập tháng này",
       value: formatCurrency(calculateThisMonthRevenue(transactions)),
       icon: TrendingUp,
-      color: "text-emerald-700",
-      bg: "bg-emerald-100",
+      iconClassName:
+        "bg-[color-mix(in_oklab,rgb(16,185,129)_18%,transparent)] text-emerald-700 dark:text-emerald-300",
     },
     {
       label: "Tổng thu nhập",
       value: formatCurrency(earnings?.totalEarned ?? 0),
       icon: Coins,
-      color: "text-primary",
-      bg: "bg-primary/10",
+      iconClassName:
+        "bg-[color-mix(in_oklab,var(--color-primary)_18%,transparent)] text-primary",
     },
     {
       label: "Câu hỏi chờ trả lời",
       value: pendingQuestionCount.toString(),
       icon: HelpCircle,
-      color: "text-amber-700",
-      bg: "bg-amber-100",
+      iconClassName:
+        "bg-[color-mix(in_oklab,rgb(245,158,11)_18%,transparent)] text-amber-700 dark:text-amber-300",
     },
     {
       label: "Bài đã xuất bản",
       value: publishedPostCount.toString(),
       icon: FileText,
-      color: "text-sky-700",
-      bg: "bg-sky-100",
+      iconClassName:
+        "bg-[color-mix(in_oklab,rgb(14,165,233)_18%,transparent)] text-sky-700 dark:text-sky-300",
     },
   ];
 
@@ -69,8 +69,13 @@ export function StatsCards({
                 )}
               </div>
 
-              <div className={cn("flex size-11 items-center justify-center rounded-2xl", stat.bg)}>
-                <stat.icon className={cn("size-5", stat.color)} />
+              <div
+                className={cn(
+                  "flex size-11 items-center justify-center rounded-2xl",
+                  stat.iconClassName,
+                )}
+              >
+                <stat.icon className="size-5" />
               </div>
             </div>
           </CardContent>

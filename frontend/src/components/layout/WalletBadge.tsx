@@ -19,13 +19,18 @@ export function WalletBadge({ balance: balanceProp, className }: WalletBadgeProp
   return (
     <Link
       href="/wallet"
+      aria-busy={isLoading}
       className={cn(
-        "inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-2 text-sm font-semibold text-amber-900 shadow-sm transition-colors hover:bg-amber-100",
+        "surface-panel inline-flex items-center gap-2 rounded-full border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_18%,transparent),transparent_58%),linear-gradient(135deg,color-mix(in_oklab,var(--color-card)_84%,var(--color-accent)_16%),color-mix(in_oklab,var(--color-card)_72%,var(--color-primary)_28%))] px-3 py-2 text-sm font-semibold text-foreground shadow-sm transition-[transform,box-shadow,border-color] hover:-translate-y-0.5 hover:shadow-md",
         className,
       )}
     >
-      <Wallet className="size-4" />
-      <span>{isLoading ? "Đang tải..." : formatCurrency(displayBalance)}</span>
+      <span className="flex size-7 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--color-primary)_16%,transparent)] text-primary">
+        <Wallet className="size-4" />
+      </span>
+      <span className={cn("transition-colors", isLoading ? "text-muted-foreground" : "text-foreground")}>
+        {isLoading ? "Đang tải..." : formatCurrency(displayBalance)}
+      </span>
     </Link>
   );
 }

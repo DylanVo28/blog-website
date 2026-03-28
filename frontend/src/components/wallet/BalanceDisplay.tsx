@@ -14,8 +14,8 @@ export function BalanceDisplay({
 }: BalanceDisplayProps) {
   return (
     <div className={cn("space-y-2", className)}>
-      <p className="text-sm uppercase tracking-[0.22em] text-white/78">{caption}</p>
-      <p className="font-serif text-4xl font-medium tracking-tight text-white md:text-5xl">
+      <p className="text-sm uppercase tracking-[0.22em] text-foreground/72">{caption}</p>
+      <p className="font-serif text-4xl font-medium tracking-tight text-foreground md:text-5xl">
         {formatCurrency(balance)}
       </p>
     </div>

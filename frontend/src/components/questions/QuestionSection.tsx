@@ -46,7 +46,7 @@ export function QuestionSection({
       {!isAuthor ? (
         <QuestionForm post={postRef} prefill={prefill} />
       ) : (
-        <div className="rounded-[1.6rem] border border-border/70 bg-white/75 p-5 shadow-sm">
+        <div className="surface-panel rounded-[1.6rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_14%,transparent),transparent_46%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_76%,var(--color-accent)_24%))] p-5 shadow-sm">
           <p className="text-sm leading-6 text-muted-foreground">
             Đây là các câu hỏi trả phí dành cho bài viết của bạn. Bạn có thể trả lời trực tiếp
             ngay bên dưới để giữ trải nghiệm premium cho độc giả.

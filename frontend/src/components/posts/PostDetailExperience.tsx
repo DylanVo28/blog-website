@@ -32,7 +32,7 @@ const QuestionSection = dynamic(
 
 function InteractionPanelSkeleton({ label }: { label: string }) {
   return (
-    <div className="space-y-4 rounded-[1.6rem] border border-border/70 bg-card/75 p-5 shadow-sm">
+    <div className="surface-panel space-y-4 rounded-[1.6rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_14%,transparent),transparent_44%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_76%,var(--color-accent)_24%))] p-5 shadow-sm">
       <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary/70">{label}</p>
       <Skeleton className="h-20 rounded-[1.3rem]" />
       <Skeleton className="h-32 rounded-[1.3rem]" />
@@ -111,16 +111,22 @@ export function PostDetailExperience({ post }: PostDetailExperienceProps) {
       <Separator />
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as DetailTab)}>
-        <TabsList className="w-full">
-          <TabsTrigger value="questions" className="flex-1">
+        <TabsList className="surface-panel h-auto w-full rounded-[1.6rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_82%,transparent),color-mix(in_oklab,var(--color-card)_68%,var(--color-accent)_32%))] p-1.5">
+          <TabsTrigger
+            value="questions"
+            className="flex-1 text-muted-foreground hover:text-foreground data-[state=active]:bg-[color-mix(in_oklab,var(--color-card)_92%,transparent)] data-[state=active]:text-foreground data-[state=active]:shadow-[0_12px_32px_-24px_rgba(25,32,56,0.55)]"
+          >
             Câu hỏi ({post.questionCount})
           </TabsTrigger>
-          <TabsTrigger value="comments" className="flex-1">
+          <TabsTrigger
+            value="comments"
+            className="flex-1 text-muted-foreground hover:text-foreground data-[state=active]:bg-[color-mix(in_oklab,var(--color-card)_92%,transparent)] data-[state=active]:text-foreground data-[state=active]:shadow-[0_12px_32px_-24px_rgba(25,32,56,0.55)]"
+          >
             Bình luận ({post.commentCount})
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="questions">
+        <TabsContent value="questions" className="mt-5">
           <div id="question-section">
             <QuestionSection
               postId={post.id}
@@ -132,7 +138,7 @@ export function PostDetailExperience({ post }: PostDetailExperienceProps) {
           </div>
         </TabsContent>
 
-        <TabsContent value="comments">
+        <TabsContent value="comments" className="mt-5">
           <div id="comment-section">
             <CommentSection
               postId={post.id}

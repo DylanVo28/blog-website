@@ -105,7 +105,7 @@ export function CommentForm({
 
   if (!isAuthenticated) {
     return (
-      <div className="rounded-[1.4rem] border border-dashed border-border/80 bg-muted/35 p-4">
+      <div className="surface-panel rounded-[1.4rem] border border-dashed border-border/80 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_74%,transparent),color-mix(in_oklab,var(--color-muted)_62%,transparent))] p-4">
         <p className="text-sm text-muted-foreground">Đăng nhập để viết bình luận.</p>
         <Button asChild className="mt-3" size="sm">
           <Link href={`/login?redirect=${encodeURIComponent(pathname)}`}>Đăng nhập</Link>
@@ -115,7 +115,10 @@ export function CommentForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3 rounded-[1.6rem] border border-border/70 bg-white/80 p-4 shadow-sm">
+    <form
+      onSubmit={handleSubmit}
+      className="surface-panel space-y-3 rounded-[1.6rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_12%,transparent),transparent_46%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_78%,var(--color-accent)_22%))] p-4 shadow-sm"
+    >
       {shouldSuggestQuestion ? (
         <QuestionSuggestion
           onDismiss={() => setDismissedSuggestion(true)}

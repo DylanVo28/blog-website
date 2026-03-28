@@ -36,7 +36,7 @@ export function CommentSection({ postId, onSwitchToQuestion }: CommentSectionPro
 
   return (
     <div className="space-y-6">
-      <div className="rounded-[1.6rem] border border-border/70 bg-white/80 p-5 shadow-sm">
+      <div className="surface-panel rounded-[1.6rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_14%,transparent),transparent_42%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_76%,var(--color-accent)_24%))] p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary/70">
@@ -59,7 +59,7 @@ export function CommentSection({ postId, onSwitchToQuestion }: CommentSectionPro
       {isAuthenticated ? (
         <CommentForm postId={postId} onSwitchToQuestion={onSwitchToQuestion} />
       ) : (
-        <div className="rounded-[1.6rem] border border-dashed border-border/80 bg-muted/35 p-5">
+        <div className="surface-panel rounded-[1.6rem] border border-dashed border-border/80 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_74%,transparent),color-mix(in_oklab,var(--color-muted)_62%,transparent))] p-5">
           <p className="text-sm leading-6 text-muted-foreground">
             Đăng nhập để bình luận hoặc tiếp tục cuộc trò chuyện với tác giả.
           </p>

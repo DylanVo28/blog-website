@@ -46,7 +46,7 @@ export function CommentItem({
 
   return (
     <div
-      className="space-y-3 rounded-[1.5rem] border border-border/70 bg-white/75 p-4 shadow-sm"
+      className="surface-panel space-y-3 rounded-[1.5rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_10%,transparent),transparent_52%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4 shadow-sm"
       style={{ marginLeft: depth > 0 ? `${Math.min(depth, 3) * 1.25}rem` : undefined }}
     >
       <div className="flex items-start gap-3">

@@ -50,7 +50,7 @@ export function PendingQuestions({
           <div className="space-y-4">
             {questions.slice(0, 3).map((question) => (
               <div key={question.id} className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-[1.2rem] border border-border/70 bg-white/78 px-4 py-3">
+                <div className="surface-panel flex flex-wrap items-center justify-between gap-2 rounded-[1.2rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] px-4 py-3">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/70">
                       Bài viết

@@ -36,18 +36,24 @@ export function TransactionItem({ transaction }: TransactionItemProps) {
   const Icon = iconMap[transaction.type] ?? CreditCard;
   const isPositive = transaction.direction === "in";
   const amountPrefix = isPositive ? "+" : transaction.direction === "out" ? "-" : "";
+  const iconToneClass = isPositive
+    ? "bg-[color-mix(in_oklab,rgb(16,185,129)_18%,transparent)] text-emerald-700 dark:text-emerald-300"
+    : transaction.direction === "out"
+      ? "bg-[color-mix(in_oklab,rgb(245,158,11)_18%,transparent)] text-amber-800 dark:text-amber-300"
+      : "bg-muted text-muted-foreground";
+  const amountToneClass = isPositive
+    ? "text-emerald-700 dark:text-emerald-300"
+    : transaction.direction === "out"
+      ? "text-amber-800 dark:text-amber-300"
+      : "text-foreground";
 
   return (
-    <div className="flex items-center justify-between gap-4 rounded-[1.35rem] border border-border/70 bg-white/70 px-4 py-4 transition-colors hover:bg-accent/40">
+    <div className="surface-panel flex items-center justify-between gap-4 rounded-[1.35rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] px-4 py-4 transition-colors hover:bg-accent/40">
       <div className="flex min-w-0 items-center gap-3">
         <div
           className={cn(
             "rounded-full p-2.5",
-            isPositive
-              ? "bg-emerald-100 text-emerald-700"
-              : transaction.direction === "out"
-                ? "bg-amber-100 text-amber-800"
-                : "bg-muted text-muted-foreground",
+            iconToneClass,
           )}
         >
           <Icon className="size-4" />
@@ -73,11 +79,7 @@ export function TransactionItem({ transaction }: TransactionItemProps) {
         <p
           className={cn(
             "text-base font-semibold",
-            isPositive
-              ? "text-emerald-700"
-              : transaction.direction === "out"
-                ? "text-amber-800"
-                : "text-foreground",
+            amountToneClass,
           )}
         >
           {amountPrefix}

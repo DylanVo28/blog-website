@@ -51,7 +51,7 @@ export function TopPosts({ posts, isLoading = false }: TopPostsProps) {
             {topPosts.map((post, index) => (
               <div
                 key={post.id}
-                className="rounded-[1.45rem] border border-border/70 bg-white/80 p-4"
+                className="surface-panel rounded-[1.45rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4"
               >
                 <div className="flex flex-wrap items-start gap-4">
                   <div className="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-sm font-semibold text-primary">

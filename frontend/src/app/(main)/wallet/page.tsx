@@ -87,7 +87,7 @@ export default function WalletPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="rounded-[1.25rem] border border-border/70 bg-white/70 px-4 py-4">
+                <div className="surface-panel rounded-[1.25rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_12%,transparent),transparent_52%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] px-4 py-4">
                   <p className="text-sm text-muted-foreground">Có thể rút ngay</p>
                   <p className="mt-2 text-2xl font-semibold text-foreground">
                     {earningsQuery.isLoading
@@ -99,7 +99,7 @@ export default function WalletPage() {
                         }).format(earningsQuery.data?.availableToWithdraw ?? 0)}
                   </p>
                 </div>
-                <div className="rounded-[1.25rem] border border-border/70 bg-white/70 px-4 py-4">
+                <div className="surface-panel rounded-[1.25rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_10%,transparent),transparent_56%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] px-4 py-4">
                   <p className="text-sm text-muted-foreground">Tổng thu nhập tích lũy</p>
                   <p className="mt-2 text-2xl font-semibold text-foreground">
                     {new Intl.NumberFormat("vi-VN", {

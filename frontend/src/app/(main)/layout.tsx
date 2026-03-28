@@ -13,7 +13,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     <div className="min-h-screen">
       <Navbar />
       <div className="mx-auto flex w-full max-w-[1400px] gap-6 px-4 pb-10 pt-2 md:px-6 md:pb-8">
-        <Sidebar />
+        {/*<Sidebar />*/}
         <main className="min-w-0 flex-1">{children}</main>
       </div>
       <Footer />

@@ -95,7 +95,10 @@ export function ExpandableText({
         <p
           id={contentId}
           ref={contentRef}
-          className={cn("whitespace-pre-wrap break-words [overflow-wrap:anywhere]", contentClassName)}
+          className={cn(
+            "whitespace-pre-wrap break-words text-foreground [overflow-wrap:anywhere]",
+            contentClassName,
+          )}
         >
           {content}
         </p>
@@ -109,7 +112,7 @@ export function ExpandableText({
           aria-controls={contentId}
           aria-expanded={isExpanded}
           className={cn(
-            "mt-2 h-auto px-0 text-xs font-semibold text-primary hover:bg-transparent hover:text-primary/80",
+            "mt-2 h-auto px-0 text-xs font-semibold text-[color-mix(in_oklab,var(--color-primary)_84%,var(--color-foreground)_16%)] hover:bg-transparent hover:text-primary",
             buttonClassName,
           )}
           onClick={() => setIsExpanded((value) => !value)}

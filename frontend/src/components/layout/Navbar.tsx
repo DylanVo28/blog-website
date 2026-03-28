@@ -54,9 +54,7 @@ export function Navbar() {
             <Link href="/" className="font-serif text-2xl font-medium tracking-tight">
               Inkline
             </Link>
-            <p className="hidden text-xs uppercase tracking-[0.24em] text-muted-foreground sm:block">
-              Profile • Admin • Phase 8
-            </p>
+
           </div>
         </div>
 
