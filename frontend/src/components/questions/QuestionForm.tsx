@@ -118,12 +118,12 @@ export function QuestionForm({ post, prefill }: QuestionFormProps) {
 
   return (
     <>
-      <div className="rounded-[1.8rem] border border-amber-200/70 bg-[linear-gradient(180deg,rgba(255,250,236,0.96),rgba(255,245,214,0.92))] p-5 shadow-sm">
+      <div className="surface-panel rounded-[1.8rem] border border-[color-mix(in_oklab,var(--color-border)_52%,rgb(245,158,11)_48%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(245,158,11)_16%,transparent),transparent_44%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_74%,rgb(245,158,11)_26%))] p-5 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-800">
+          <span className="rounded-full border border-border/60 bg-[color-mix(in_oklab,rgb(245,158,11)_18%,transparent)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-[color-mix(in_oklab,rgb(245,158,11)_76%,var(--color-foreground)_24%)]">
             Premium Question
           </span>
-          <span className="rounded-full border border-amber-300/70 bg-white/80 px-3 py-1 text-sm font-semibold text-amber-800">
+          <span className="rounded-full border border-[color-mix(in_oklab,var(--color-border)_52%,rgb(245,158,11)_48%)] bg-[color-mix(in_oklab,var(--color-card)_82%,transparent)] px-3 py-1 text-sm font-semibold text-[color-mix(in_oklab,rgb(245,158,11)_76%,var(--color-foreground)_24%)]">
             {formatCurrency(QUESTION_FEE)}
           </span>
         </div>
@@ -131,7 +131,7 @@ export function QuestionForm({ post, prefill }: QuestionFormProps) {
         <h3 className="mt-4 font-serif text-3xl font-medium tracking-tight text-balance">
           Đặt câu hỏi nổi bật cho bài viết này
         </h3>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-amber-950/80">
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-foreground/82">
           Bạn có thể hỏi tác giả hoặc nhờ AI giải thích ngay trong ngữ cảnh bài viết.
           Nếu câu hỏi cho tác giả quá hạn 48 giờ, backend sẽ hoàn tiền tự động.
         </p>
@@ -161,7 +161,7 @@ export function QuestionForm({ post, prefill }: QuestionFormProps) {
             ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-amber-950/75">
+              <p className="text-xs text-foreground/76">
                 Số dư hiện tại: <span className="font-semibold">{formatCurrency(balance)}</span>
               </p>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -172,7 +172,7 @@ export function QuestionForm({ post, prefill }: QuestionFormProps) {
             </div>
           </form>
         ) : (
-          <div className="mt-5 rounded-[1.4rem] border border-border/70 bg-white/80 p-4">
+          <div className="surface-panel mt-5 rounded-[1.4rem] border border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] p-4">
             <p className="text-sm text-muted-foreground">
               Đăng nhập để đặt câu hỏi trả phí và theo dõi trạng thái trả lời.
             </p>

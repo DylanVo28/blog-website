@@ -44,20 +44,26 @@ export function PaymentConfirmDialog({
           <div className="flex items-center justify-between rounded-[1.2rem] bg-muted/45 px-4 py-3 text-sm">
             <span className="text-muted-foreground">Người trả lời</span>
             <span className="inline-flex items-center gap-2 font-semibold text-foreground">
-              {target === "ai" ? <Bot className="size-4 text-fuchsia-700" /> : <User className="size-4 text-sky-700" />}
+              {target === "ai" ? (
+                <Bot className="size-4 text-fuchsia-700 dark:text-fuchsia-300" />
+              ) : (
+                <User className="size-4 text-sky-700 dark:text-sky-300" />
+              )}
               {target === "ai" ? "AI" : "Tác giả"}
             </span>
           </div>
 
           <div className="flex items-center justify-between rounded-[1.2rem] bg-muted/45 px-4 py-3 text-sm">
             <span className="text-muted-foreground">Chi phí</span>
-            <span className="font-semibold text-amber-700">{formatCurrency(amount)}</span>
+            <span className="font-semibold text-[color-mix(in_oklab,rgb(245,158,11)_76%,var(--color-foreground)_24%)]">
+              {formatCurrency(amount)}
+            </span>
           </div>
 
           {target === "author" ? (
-            <div className="flex items-start gap-3 rounded-[1.2rem] border border-emerald-200 bg-emerald-50/80 px-4 py-3">
-              <Shield className="mt-0.5 size-4 text-emerald-700" />
-              <p className="text-xs leading-6 text-emerald-900">
+            <div className="surface-panel flex items-start gap-3 rounded-[1.2rem] border border-[color-mix(in_oklab,var(--color-border)_52%,rgb(16,185,129)_48%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(16,185,129)_16%,transparent),transparent_54%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_78%,rgb(16,185,129)_22%))] px-4 py-3">
+              <Shield className="mt-0.5 size-4 text-emerald-700 dark:text-emerald-300" />
+              <p className="text-xs leading-6 text-foreground/88">
                 Nếu tác giả không trả lời trong 48 giờ, backend sẽ hoàn tiền tự động cho bạn.
               </p>
             </div>

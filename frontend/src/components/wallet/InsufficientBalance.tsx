@@ -31,7 +31,7 @@ export function InsufficientBalance({
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <AlertTriangle className="size-5 text-amber-600" />
+            <AlertTriangle className="size-5 text-[color-mix(in_oklab,rgb(245,158,11)_76%,var(--color-foreground)_24%)]" />
             Số dư ví chưa đủ
           </DialogTitle>
           <DialogDescription>

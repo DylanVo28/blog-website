@@ -19,17 +19,19 @@ export function QuestionTargetSelect({
         type="button"
         onClick={() => onChange("author")}
         className={cn(
-          "rounded-[1.4rem] border-2 p-4 text-left transition-all",
+          "surface-panel rounded-[1.4rem] border-2 p-4 text-left transition-all",
           value === "author"
-            ? "border-sky-300 bg-sky-50 shadow-sm"
-            : "border-border/70 bg-white/80 hover:border-sky-200",
+            ? "border-[color-mix(in_oklab,var(--color-border)_48%,rgb(14,165,233)_52%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(14,165,233)_16%,transparent),transparent_54%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,rgb(14,165,233)_28%))] shadow-sm"
+            : "border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] hover:border-[color-mix(in_oklab,var(--color-border)_48%,rgb(14,165,233)_52%)]",
         )}
       >
         <div className="flex items-start gap-3">
           <span
             className={cn(
               "rounded-full p-2",
-              value === "author" ? "bg-sky-100 text-sky-700" : "bg-muted text-muted-foreground",
+              value === "author"
+                ? "bg-[color-mix(in_oklab,rgb(14,165,233)_18%,transparent)] text-sky-700 dark:text-sky-300"
+                : "bg-muted text-muted-foreground",
             )}
           >
             <User className="size-5" />
@@ -47,10 +49,10 @@ export function QuestionTargetSelect({
         type="button"
         onClick={() => onChange("ai")}
         className={cn(
-          "rounded-[1.4rem] border-2 p-4 text-left transition-all",
+          "surface-panel rounded-[1.4rem] border-2 p-4 text-left transition-all",
           value === "ai"
-            ? "border-fuchsia-300 bg-fuchsia-50 shadow-sm"
-            : "border-border/70 bg-white/80 hover:border-fuchsia-200",
+            ? "border-[color-mix(in_oklab,var(--color-border)_48%,rgb(217,70,239)_52%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,rgb(217,70,239)_16%,transparent),transparent_54%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,rgb(217,70,239)_28%))] shadow-sm"
+            : "border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] hover:border-[color-mix(in_oklab,var(--color-border)_48%,rgb(217,70,239)_52%)]",
         )}
       >
         <div className="flex items-start gap-3">
@@ -58,7 +60,7 @@ export function QuestionTargetSelect({
             className={cn(
               "rounded-full p-2",
               value === "ai"
-                ? "bg-fuchsia-100 text-fuchsia-700"
+                ? "bg-[color-mix(in_oklab,rgb(217,70,239)_18%,transparent)] text-fuchsia-700 dark:text-fuchsia-300"
                 : "bg-muted text-muted-foreground",
             )}
           >

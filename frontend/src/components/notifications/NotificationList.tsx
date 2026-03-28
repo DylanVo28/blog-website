@@ -66,7 +66,7 @@ export function NotificationList({
   if (mode === "panel") {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="border-b border-border/70 px-6 py-5">
+        <div className="border-b border-border/70 bg-[color-mix(in_oklab,var(--color-card)_72%,transparent)] px-6 py-5">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/70">
@@ -102,7 +102,7 @@ export function NotificationList({
 
         <ScrollArea className="min-h-0 flex-1 px-4 py-4">{listContent}</ScrollArea>
 
-        <div className="border-t border-border/70 px-6 py-4">
+        <div className="border-t border-border/70 bg-[color-mix(in_oklab,var(--color-card)_72%,transparent)] px-6 py-4">
           <Button asChild className="w-full" variant="outline">
             <Link href="/notifications" onClick={onItemSelect}>
               Mở trang thông báo
@@ -114,7 +114,7 @@ export function NotificationList({
   }
 
   return (
-    <div className="surface-panel rounded-[1.85rem] border border-border/70 shadow-[0_24px_70px_-46px_rgba(25,32,56,0.35)]">
+    <div className="surface-panel rounded-[1.85rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_12%,transparent),transparent_42%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_90%,transparent),color-mix(in_oklab,var(--color-card)_78%,var(--color-accent)_22%))] shadow-[0_24px_70px_-46px_rgba(25,32,56,0.35)]">
       <div className="border-b border-border/70 px-6 py-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

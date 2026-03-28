@@ -47,15 +47,15 @@ function getNotificationIcon(type: Notification["type"]) {
 function getIconStyles(type: Notification["type"]) {
   switch (type) {
     case "new_question":
-      return "bg-amber-100 text-amber-700";
+      return "bg-[color-mix(in_oklab,rgb(245,158,11)_18%,transparent)] text-amber-700 dark:text-amber-300";
     case "question_answered":
-      return "bg-sky-100 text-sky-700";
+      return "bg-[color-mix(in_oklab,rgb(14,165,233)_18%,transparent)] text-sky-700 dark:text-sky-300";
     case "new_comment":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-[color-mix(in_oklab,rgb(16,185,129)_18%,transparent)] text-emerald-700 dark:text-emerald-300";
     case "question_refunded":
-      return "bg-rose-100 text-rose-700";
+      return "bg-[color-mix(in_oklab,rgb(244,63,94)_18%,transparent)] text-rose-700 dark:text-rose-300";
     case "earning_received":
-      return "bg-violet-100 text-violet-700";
+      return "bg-[color-mix(in_oklab,rgb(139,92,246)_18%,transparent)] text-violet-700 dark:text-violet-300";
     case "system":
     default:
       return "bg-secondary text-secondary-foreground";
@@ -82,8 +82,8 @@ export function NotificationItem({
       className={cn(
         "group flex items-start gap-3 rounded-[1.4rem] border px-4 py-4 text-left transition-colors",
         notification.isRead
-          ? "border-border/70 bg-white/70 hover:bg-accent/50"
-          : "border-primary/18 bg-primary/5 hover:bg-primary/8",
+          ? "surface-panel border-border/70 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_86%,transparent),color-mix(in_oklab,var(--color-card)_74%,var(--color-accent)_26%))] hover:bg-accent/50"
+          : "surface-panel border-[color-mix(in_oklab,var(--color-border)_52%,var(--color-primary)_48%)] bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_14%,transparent),transparent_56%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_72%,var(--color-primary)_28%))] hover:bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_18%,transparent),transparent_56%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_88%,transparent),color-mix(in_oklab,var(--color-card)_68%,var(--color-primary)_32%))]",
         mode === "panel" ? "shadow-none" : "shadow-sm",
       )}
     >
