@@ -49,16 +49,16 @@ export function PostFeed({ title, description }: PostFeedProps) {
 
   return (
     <div className="space-y-6">
-      <div className="surface-panel rounded-[2rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_16%,transparent),transparent_38%),radial-gradient(circle_at_bottom_right,color-mix(in_oklab,var(--color-accent)_22%,transparent),transparent_46%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_92%,var(--color-background)_8%),color-mix(in_oklab,var(--color-card)_78%,var(--color-accent)_22%))] px-6 py-8 shadow-sm">
-        <h1 className="font-serif text-4xl font-medium tracking-tight md:text-5xl">{title}</h1>
-        <p className="mt-3 max-w-3xl text-base leading-7 text-muted-foreground">{description}</p>
-        {query ? (
-          <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] px-4 py-2 text-sm text-muted-foreground backdrop-blur-sm">
-            <Search className="size-4 text-primary" />
-            Kết quả cho: <span className="font-semibold text-foreground">{query}</span>
-          </div>
-        ) : null}
-      </div>
+      {/*<div className="surface-panel rounded-[2rem] border border-border/70 bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--color-primary)_16%,transparent),transparent_38%),radial-gradient(circle_at_bottom_right,color-mix(in_oklab,var(--color-accent)_22%,transparent),transparent_46%),linear-gradient(180deg,color-mix(in_oklab,var(--color-card)_92%,var(--color-background)_8%),color-mix(in_oklab,var(--color-card)_78%,var(--color-accent)_22%))] px-6 py-8 shadow-sm">*/}
+      {/*  <h1 className="font-serif text-4xl font-medium tracking-tight md:text-5xl">{title}</h1>*/}
+      {/*  <p className="mt-3 max-w-3xl text-base leading-7 text-muted-foreground">{description}</p>*/}
+      {/*  {query ? (*/}
+      {/*    <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-border/70 bg-[color-mix(in_oklab,var(--color-card)_84%,transparent)] px-4 py-2 text-sm text-muted-foreground backdrop-blur-sm">*/}
+      {/*      <Search className="size-4 text-primary" />*/}
+      {/*      Kết quả cho: <span className="font-semibold text-foreground">{query}</span>*/}
+      {/*    </div>*/}
+      {/*  ) : null}*/}
+      {/*</div>*/}
 
       <CategoryFilter availableTags={availableTags} />
 
