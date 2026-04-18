@@ -2,6 +2,7 @@ import { getBackendEnvFilePaths } from './config/env-paths';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -10,6 +11,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CommentsModule } from './modules/comments/comments.module';
+import { ContentAgentModule } from './modules/content-agent/content-agent.module';
 import { PaymentModule } from './modules/payment/payment.module';
 import { PostsModule } from './modules/posts/posts.module';
 import { QuestionsModule } from './modules/questions/questions.module';
@@ -50,6 +52,7 @@ import { RefundProcessor } from './jobs/refund.processor';
     TypeOrmModule.forRootAsync({
       useFactory: () => buildTypeOrmOptions(),
     }),
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
@@ -68,6 +71,7 @@ import { RefundProcessor } from './jobs/refund.processor';
     AiModule,
     UploadModule,
     AdminModule,
+    ContentAgentModule,
   ],
   controllers: [AppController],
   providers: [

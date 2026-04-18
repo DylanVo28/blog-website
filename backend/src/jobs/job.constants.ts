@@ -6,6 +6,7 @@ export const JOB_QUEUE_NAMES = {
   refund: 'refund-queue',
   notification: 'notification-queue',
   payment: 'payment-queue',
+  contentAgent: 'content-agent-queue',
 } as const;
 
 export const JOB_NAMES = {
@@ -17,6 +18,7 @@ export const JOB_NAMES = {
   processVnpayCallback: 'process-vnpay-callback',
   processMomoCallback: 'process-momo-callback',
   expireDeposit: 'expire-deposit',
+  runScheduledContentAgent: 'run-scheduled-content-agent',
 } as const;
 
 export interface IndexPostEmbeddingsJobData {
@@ -52,6 +54,13 @@ export interface PaymentCallbackJobData {
 
 export interface ExpireDepositJobData {
   depositId: string;
+}
+
+export interface ContentAgentRunJobData {
+  runId: string;
+  configId: string;
+  idempotencyKey: string;
+  triggerSource: 'schedule' | 'manual';
 }
 
 export type PaymentJobData = PaymentCallbackJobData | ExpireDepositJobData;

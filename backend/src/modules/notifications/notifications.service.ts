@@ -141,6 +141,10 @@ export class NotificationsService {
         return this.buildQuestionAnsweredContent(input.payload);
       case 'question_refunded':
         return this.buildQuestionRefundedContent(input.payload);
+      case 'content_agent_run_succeeded':
+        return this.buildContentAgentSucceededContent(input.payload);
+      case 'content_agent_run_failed':
+        return this.buildContentAgentFailedContent(input.payload);
       default:
         return {
           actorId: null,
@@ -175,6 +179,51 @@ export class NotificationsService {
         postSlug: post?.slug ?? null,
         commentId,
         actorId,
+      },
+    };
+  }
+
+  private async buildContentAgentSucceededContent(
+    payload?: Record<string, unknown>,
+  ): Promise<NotificationContent> {
+    const postId = this.readString(payload?.postId);
+    const runId = this.readString(payload?.runId);
+    const post = await this.findPost(postId);
+    const configName =
+      this.readString(payload?.configName) ?? 'AI content agent';
+
+    return {
+      actorId: null,
+      type: 'content_agent_run_succeeded',
+      title: 'AI agent đã tạo bản nháp mới',
+      message: post
+        ? `${configName} vừa tạo bản nháp "${post.title}".`
+        : `${configName} vừa hoàn tất một lượt research và tạo bản nháp mới.`,
+      data: {
+        runId,
+        postId,
+        postSlug: post?.slug ?? null,
+        configId: this.readString(payload?.configId),
+      },
+    };
+  }
+
+  private async buildContentAgentFailedContent(
+    payload?: Record<string, unknown>,
+  ): Promise<NotificationContent> {
+    const configName =
+      this.readString(payload?.configName) ?? 'AI content agent';
+    const reason =
+      this.readString(payload?.reason) ?? 'Không xác định được nguyên nhân.';
+
+    return {
+      actorId: null,
+      type: 'content_agent_run_failed',
+      title: 'AI agent chạy lỗi',
+      message: `${configName} không thể tạo bản nháp mới. Lý do: ${reason}`,
+      data: {
+        runId: this.readString(payload?.runId),
+        configId: this.readString(payload?.configId),
       },
     };
   }

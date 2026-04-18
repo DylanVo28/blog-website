@@ -24,21 +24,38 @@ import { RetrievalContext, RetrievalService } from './rag/retrieval.service';
 interface AnthropicMessageResponse {
   id: string;
   model: string;
-  role: 'assistant';
-  stop_reason: string | null;
+  choices: Array<{
+    index: number;
+    finish_reason: string | null;
+    message: {
+      role: 'assistant';
+      content:
+        | string
+        | Array<
+            | {
+                type: 'text';
+                text?: string;
+              }
+            | {
+                type: string;
+                [key: string]: unknown;
+              }
+          >
+        | null;
+    };
+  }>;
   usage?: {
-    input_tokens: number;
-    output_tokens: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
   };
-  content: Array<
-    | {
-        type: 'text';
-        text: string;
-      }
-    | {
-        type: string;
-      }
-  >;
+}
+
+export interface GenerateTextInput {
+  systemPrompt: string;
+  userPrompt: string;
+  maxTokens?: number;
+  temperature?: number;
 }
 
 @Injectable()
@@ -66,15 +83,20 @@ export class AiService {
       ...dto,
       vector: questionEmbedding.vector,
     });
-    const anthropicResponse = await this.createAnthropicMessage(dto, contexts);
-    const answer = this.extractTextContent(anthropicResponse.content);
+    const completionResponse = await this.sendChatCompletion({
+      systemPrompt: this.buildSystemPrompt(contexts),
+      userPrompt: this.buildUserPrompt(dto, contexts),
+    });
+    const answer = this.extractTextContent(completionResponse);
+    const provider =
+      this.configService.get<string>('ai.provider') ?? AI_DEFAULTS.provider;
 
     return {
-      provider: 'anthropic',
-      model: anthropicResponse.model,
+      provider,
+      model: completionResponse.model,
       answer,
-      stopReason: anthropicResponse.stop_reason,
-      usage: anthropicResponse.usage ?? null,
+      stopReason: completionResponse.choices[0]?.finish_reason ?? null,
+      usage: completionResponse.usage ?? null,
       contexts,
       embeddingPreview: {
         provider: questionEmbedding.provider,
@@ -82,6 +104,20 @@ export class AiService {
         dimensions: questionEmbedding.dimensions,
         vectorPreview: questionEmbedding.vectorPreview,
       },
+    };
+  }
+
+  async generateText(input: GenerateTextInput) {
+    const completionResponse = await this.sendChatCompletion(input);
+    const provider =
+      this.configService.get<string>('ai.provider') ?? AI_DEFAULTS.provider;
+
+    return {
+      provider,
+      model: completionResponse.model,
+      text: this.extractTextContent(completionResponse),
+      stopReason: completionResponse.choices[0]?.finish_reason ?? null,
+      usage: completionResponse.usage ?? null,
     };
   }
 
@@ -312,32 +348,32 @@ export class AiService {
     };
   }
 
-  private async createAnthropicMessage(
-    dto: AiQuestionDto,
-    contexts: RetrievalContext[],
+  private async sendChatCompletion(
+    input: GenerateTextInput,
   ): Promise<AnthropicMessageResponse> {
     const apiKey = this.configService.get<string>('ai.apiKey');
 
     if (!apiKey) {
       throw new ServiceUnavailableException(
-        'Anthropic API key is missing. Set ANTHROPIC_API_KEY in the environment.',
+        'AI API key is missing. Set AI_API_KEY in the environment.',
       );
     }
 
     const model =
       this.configService.get<string>('ai.model') ?? AI_DEFAULTS.model;
-    const apiVersion =
-      this.configService.get<string>('ai.apiVersion') ?? AI_DEFAULTS.apiVersion;
     const maxTokens =
-      this.configService.get<number>('ai.maxTokens') ?? AI_DEFAULTS.maxTokens;
+      input.maxTokens ??
+      this.configService.get<number>('ai.maxTokens') ??
+      AI_DEFAULTS.maxTokens;
     const temperature =
+      input.temperature ??
       this.configService.get<number>('ai.temperature') ??
       AI_DEFAULTS.temperature;
     const timeoutMs =
       this.configService.get<number>('ai.timeoutMs') ?? AI_DEFAULTS.timeoutMs;
     const baseUrl =
       this.configService.get<string>('ai.baseUrl') ?? AI_DEFAULTS.baseUrl;
-    const endpoint = this.buildMessagesEndpoint(baseUrl);
+    const endpoint = this.buildChatCompletionsEndpoint(baseUrl);
 
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), timeoutMs);
@@ -345,40 +381,34 @@ export class AiService {
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: this.buildAuthHeaders({
-          apiKey,
-          apiVersion,
-          baseUrl,
-        }),
-        body: JSON.stringify({
+        headers: this.buildAuthHeaders(apiKey),
+        body: JSON.stringify(this.buildChatCompletionBody({
           model,
-          max_tokens: maxTokens,
+          maxTokens,
           temperature,
-          system: this.buildSystemPrompt(contexts),
-          messages: [
-            {
-              role: 'user',
-              content: this.buildUserPrompt(dto, contexts),
-            },
-          ],
-        }),
+          systemPrompt: input.systemPrompt,
+          userPrompt: input.userPrompt,
+        })),
         signal: abortController.signal,
       });
 
-      const requestId = response.headers.get('request-id');
+      const requestId =
+        response.headers.get('x-request-id') ?? response.headers.get('request-id');
       const rawBody = await response.text();
       const parsedBody = rawBody ? JSON.parse(rawBody) : null;
 
       if (!response.ok) {
         this.logger.error(
-          `Anthropic API failed with status ${response.status}`,
+          `AI chat completion API failed with status ${response.status}`,
           requestId ? `request-id=${requestId}` : undefined,
         );
 
         throw new HttpException(
           {
-            message: 'Anthropic API request failed.',
-            provider: 'anthropic',
+            message: 'AI chat completion request failed.',
+            provider:
+              this.configService.get<string>('ai.provider') ??
+              AI_DEFAULTS.provider,
             statusCode: response.status,
             requestId,
             details: parsedBody,
@@ -395,43 +425,54 @@ export class AiService {
 
       if (error instanceof Error && error.name === 'AbortError') {
         throw new ServiceUnavailableException(
-          `Anthropic API request timed out after ${timeoutMs}ms.`,
+          `AI chat completion request timed out after ${timeoutMs}ms.`,
         );
       }
 
       throw new ServiceUnavailableException(
-        'Unable to reach the Anthropic API endpoint.',
+        'Unable to reach the AI chat completion endpoint.',
       );
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  private buildMessagesEndpoint(baseUrl: string): string {
+  private buildChatCompletionsEndpoint(baseUrl: string): string {
     const normalized = baseUrl.replace(/\/+$/, '');
     return normalized.endsWith('/v1')
-      ? `${normalized}/messages`
-      : `${normalized}/v1/messages`;
+      ? `${normalized}/chat/completions`
+      : `${normalized}/v1/chat/completions`;
   }
 
-  private buildAuthHeaders(input: {
-    apiKey: string;
-    apiVersion: string;
-    baseUrl: string;
-  }): Record<string, string> {
-    const normalizedBaseUrl = input.baseUrl.replace(/\/+$/, '');
-    const headers: Record<string, string> = {
+  private buildAuthHeaders(apiKey: string): Record<string, string> {
+    return {
       'content-type': 'application/json',
-      'anthropic-version': input.apiVersion,
+      Authorization: `Bearer ${apiKey}`,
     };
+  }
 
-    if (normalizedBaseUrl === 'https://api.anthropic.com') {
-      headers['x-api-key'] = input.apiKey;
-      return headers;
-    }
-
-    headers.Authorization = `Bearer ${input.apiKey}`;
-    return headers;
+  private buildChatCompletionBody(input: {
+    model: string;
+    maxTokens: number;
+    temperature: number;
+    systemPrompt: string;
+    userPrompt: string;
+  }) {
+    return {
+      model: input.model,
+      max_tokens: input.maxTokens,
+      temperature: input.temperature,
+      messages: [
+        {
+          role: 'system',
+          content: input.systemPrompt,
+        },
+        {
+          role: 'user',
+          content: input.userPrompt,
+        },
+      ],
+    };
   }
 
   private buildSystemPrompt(
@@ -519,13 +560,31 @@ export class AiService {
   }
 
   private extractTextContent(
-    content: AnthropicMessageResponse['content'],
+    response: AnthropicMessageResponse,
   ): string {
+    const content = response.choices[0]?.message?.content;
+
+    if (typeof content === 'string') {
+      return content.trim();
+    }
+
+    if (!Array.isArray(content)) {
+      return '';
+    }
+
     return content
-      .filter((block): block is { type: 'text'; text: string } =>
-        block.type === 'text' && 'text' in block,
-      )
-      .map((block) => block.text.trim())
+      .map((block) => {
+        if (
+          block &&
+          typeof block === 'object' &&
+          block.type === 'text' &&
+          typeof block.text === 'string'
+        ) {
+          return block.text.trim();
+        }
+
+        return '';
+      })
       .filter(Boolean)
       .join('\n\n');
   }

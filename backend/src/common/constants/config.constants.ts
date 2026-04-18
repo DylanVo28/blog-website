@@ -42,12 +42,12 @@ export const JWT_DEFAULTS = {
 } as const;
 
 export const AI_DEFAULTS = {
-  provider: 'anthropic',
-  model: 'claude-opus-4.6',
+  provider: 'openai-compatible',
+  model: 'gpt-5.4',
   embeddingModel: 'text-embedding-004',
   embeddingDimensions: 768,
-  baseUrl: 'https://api.anthropic.com',
-  apiVersion: '2023-06-01',
+  baseUrl: 'https://llm.chiasegpu.vn',
+  apiVersion: '',
   maxTokens: 1024,
   temperature: 0.2,
   timeoutMs: 30000,
