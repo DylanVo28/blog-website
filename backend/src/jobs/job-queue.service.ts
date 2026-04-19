@@ -234,7 +234,12 @@ export class JobQueueService implements OnModuleDestroy {
     );
   }
 
-  async enqueueContentAgentRun(data: ContentAgentRunJobData) {
+  async enqueueContentAgentRun(
+    data: ContentAgentRunJobData,
+    options?: {
+      jobId?: string;
+    },
+  ) {
     return this.addJobWithTimeout(
       this.contentAgentQueue,
       JOB_NAMES.runScheduledContentAgent,
@@ -242,7 +247,7 @@ export class JobQueueService implements OnModuleDestroy {
       this.buildJobOptions({
         attempts: 3,
         priority: data.triggerSource === 'schedule' ? 3 : 1,
-        jobId: data.idempotencyKey,
+        jobId: options?.jobId ?? data.idempotencyKey,
       }),
       `enqueue content agent run ${data.runId}`,
     );

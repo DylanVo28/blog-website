@@ -48,4 +48,9 @@ export class ContentAgentController {
   getRun(@Param('id') runId: string) {
     return this.contentAgentService.getRun(runId);
   }
+
+  @Post('runs/:id/retry')
+  retryRun(@Param('id') runId: string) {
+    return this.contentAgentService.retryRun(runId);
+  }
 }

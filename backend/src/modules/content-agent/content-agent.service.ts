@@ -75,6 +75,25 @@ interface GeneratedDraft {
   writerMode: 'ai' | 'fallback';
 }
 
+export interface ScheduledRunQueueItem {
+  configId: string;
+  runId: string;
+  scheduledFor: Date;
+  triggerSource: ContentAgentTriggerSource;
+}
+
+export interface ScheduleDueRunsResult {
+  checkedAt: string;
+  totalConfigs: number;
+  dueConfigs: number;
+  acceptedRuns: number;
+  runs: ScheduledRunQueueItem[];
+  skippedConfigs: Array<{
+    configId: string;
+    reason: string;
+  }>;
+}
+
 @Injectable()
 export class ContentAgentService {
   private readonly logger = new Logger(ContentAgentService.name);
@@ -244,13 +263,22 @@ export class ContentAgentService {
     return this.createAndEnqueueRun(config, triggerSource);
   }
 
-  async scheduleDueRuns() {
-    const now = new Date();
+  async triggerScheduledRuns() {
+    return this.scheduleDueRuns();
+  }
+
+  async scheduleDueRuns(now = new Date()): Promise<ScheduleDueRunsResult> {
     const configs = await this.configRepository.find({
       where: {
         enabled: true,
       },
+      order: {
+        createdAt: 'ASC',
+      },
     });
+    const runs: ScheduledRunQueueItem[] = [];
+    const skippedConfigs: ScheduleDueRunsResult['skippedConfigs'] = [];
+    let dueConfigs = 0;
 
     for (const config of configs) {
       const readiness = this.validateConfigReadiness(config);
@@ -258,6 +286,10 @@ export class ContentAgentService {
         this.logger.warn(
           `Skipping content agent config ${config.id}: ${readiness.reasons.join(' ')}`,
         );
+        skippedConfigs.push({
+          configId: config.id,
+          reason: readiness.reasons.join(' '),
+        });
         continue;
       }
 
@@ -269,8 +301,106 @@ export class ContentAgentService {
         continue;
       }
 
-      await this.createAndEnqueueRun(config, 'schedule', parts);
+      dueConfigs += 1;
+
+      try {
+        const queuedRun = await this.createAndEnqueueRun(
+          config,
+          'schedule',
+          parts,
+          now,
+        );
+
+        runs.push({
+          configId: config.id,
+          runId: queuedRun.run.id,
+          scheduledFor: queuedRun.run.scheduledFor,
+          triggerSource: 'schedule',
+        });
+      } catch (error) {
+        const reason =
+          error instanceof Error
+            ? error.message
+            : 'Unable to enqueue scheduled content agent run.';
+        this.logger.error(
+          `Unable to enqueue scheduled content agent run for config ${config.id}.`,
+          error instanceof Error ? error.stack : undefined,
+        );
+        skippedConfigs.push({
+          configId: config.id,
+          reason,
+        });
+      }
     }
+
+    return {
+      checkedAt: now.toISOString(),
+      totalConfigs: configs.length,
+      dueConfigs,
+      acceptedRuns: runs.length,
+      runs,
+      skippedConfigs,
+    };
+  }
+
+  async retryRun(runId: string) {
+    const run = await this.findRunOrFail(runId);
+    const previousStatus = run.status;
+
+    if (previousStatus !== 'failed' && previousStatus !== 'skipped') {
+      throw new BadRequestException(
+        'Only failed or skipped content agent runs can be retried.',
+      );
+    }
+
+    if (run.draftPostId) {
+      throw new BadRequestException(
+        'This run already created a draft post. Trigger a new run instead of retrying it.',
+      );
+    }
+
+    const config = await this.findConfigOrFail(run.configId);
+    const readiness = this.validateConfigReadiness(config);
+
+    if (!readiness.ready) {
+      throw new BadRequestException(readiness.reasons.join(' '));
+    }
+
+    await this.researchItemRepository.delete({
+      runId,
+    });
+
+    run.status = 'queued';
+    run.failureReason = null;
+    run.selectedResearchItemId = null;
+    run.draftPostId = null;
+    run.draftTitle = null;
+    run.draftExcerpt = null;
+    run.draftContent = null;
+    run.draftContentPlain = null;
+    run.citations = [];
+    run.validationResult = {};
+    run.metadata = {
+      retryRequestedAt: new Date().toISOString(),
+      retriedFromStatus: previousStatus,
+    };
+    run.startedAt = null;
+    run.finishedAt = null;
+    await this.runRepository.save(run);
+
+    await this.jobQueueService.enqueueContentAgentRun(
+      {
+        runId: run.id,
+        configId: run.configId,
+        idempotencyKey: run.idempotencyKey,
+        triggerSource: run.triggerSource,
+      },
+      {
+        jobId: `${run.idempotencyKey}:retry:${Date.now()}`,
+      },
+    );
+
+    return this.getRun(run.id);
   }
 
   async executeRun(runId: string) {
@@ -392,8 +522,9 @@ export class ContentAgentService {
     config: ContentAgentConfigEntity,
     triggerSource: ContentAgentTriggerSource,
     timeZoneParts?: TimeZoneParts,
+    scheduledAt?: Date,
   ) {
-    const scheduledFor = this.roundToMinute(new Date());
+    const scheduledFor = this.roundToMinute(scheduledAt ?? new Date());
     const parts = timeZoneParts ?? this.getTimeZoneParts(scheduledFor, config.timezone);
     const idempotencyKey = [
       'content-agent',
